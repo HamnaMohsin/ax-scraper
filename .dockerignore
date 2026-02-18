@@ -21,14 +21,13 @@ venv/
 
 # Large files (VERY IMPORTANT)
 *.faiss
-*.pkl
 *.pt
 *.bin
 *.model
 
 # If embeddings are large, exclude them
-google_product_categories_embeddings.pkl
 
 # Any dataset folders
 data/
 datasets/
+
