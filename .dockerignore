@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+venv/
+.venv/
+.env1
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+
+# Large files (VERY IMPORTANT)
+*.faiss
+*.pkl
+*.pt
+*.bin
+*.model
+
+# If embeddings are large, exclude them
+google_product_categories_embeddings.pkl
+
+# Any dataset folders
+data/
+datasets/
