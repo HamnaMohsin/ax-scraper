@@ -1,9 +1,8 @@
-#Import "sqlalchemy" could not be resolved
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from models import Product  # adjust import if needed
-
-DATABASE_URL = "sqlite:///./products.db"  # adjust path if different
+from database.py import DATABASE_URL,engine 
+#DATABASE_URL = "sqlite:///./products.db"  # adjust path if different
 
 engine = create_engine(
     DATABASE_URL,
