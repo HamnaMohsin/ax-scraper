@@ -25,22 +25,14 @@ jobs:
           ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'ENDSSH'
             set -e
             cd /opt/ax-scraper
-
             echo "==> Pulling latest code..."
             git pull origin main
-
             echo "==> Activating virtualenv..."
             source venv/bin/activate
-
             echo "==> Installing/updating dependencies..."
             pip install -r requirements.txt --quiet
-
-            echo "==> Reinstalling Playwright browsers if needed..."
-            playwright install chromium
-
             echo "==> Restarting service..."
             sudo systemctl restart ax-scraper
-
             echo "==> Verifying service is running..."
             sleep 3
             sudo systemctl is-active ax-scraper
