@@ -21,7 +21,9 @@ def clean_text(text: str) -> str:
 
 def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
     print("Opening browser...")
-    base_url = url.split('#')[0]
+    base_url = url.split('#')[0].strip()
+    if not base_url.startswith("http"):
+      base_url = "https://" + base_url
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
