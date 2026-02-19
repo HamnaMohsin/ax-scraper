@@ -33,7 +33,7 @@ Return JSON in this EXACT format:
   "refined_description": "Improved product description with embedded bullet points"
 }}
 """
-
+    client=""
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -58,4 +58,5 @@ Return JSON in this EXACT format:
         return {
             "refined_title": title,
             "refined_description": description
+
         }
