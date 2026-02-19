@@ -1,0 +1,48 @@
+name: Deploy to GCP
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: SSH Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to VM
+        run: |
+          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'ENDSSH'
+            set -e
+            cd /opt/ax-scraper
+
+            echo "==> Pulling latest code..."
+            git pull origin main
+
+            echo "==> Activating virtualenv..."
+            source venv/bin/activate
+
+            echo "==> Installing/updating dependencies..."
+            pip install -r requirements.txt --quiet
+
+            echo "==> Reinstalling Playwright browsers if needed..."
+            playwright install chromium
+
+            echo "==> Restarting service..."
+            sudo systemctl restart ax-scraper
+
+            echo "==> Verifying service is running..."
+            sleep 3
+            sudo systemctl is-active ax-scraper
+            echo "Deploy complete!"
+          ENDSSH
