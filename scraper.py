@@ -34,13 +34,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
     with sync_playwright() as p:
 
-        # Launch Chromium in headless mode, routed through local Tor SOCKS5 proxy
-        # Tor gives us a US exit node (configured in /etc/tor/torrc)
-        # to prevent AliExpress geo-redirecting to regional sites (de, nl, it etc.)
-        browser = p.chromium.launch(
-            headless=True,
-            proxy={"server": "socks5://127.0.0.1:9050"}
-        )
+        # Launch Chromium in headless mode
+        browser = p.chromium.launch(headless=True)
 
         # Create browser context with en-US locale and Accept-Language header
         # This tells AliExpress to serve English content
