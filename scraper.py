@@ -42,7 +42,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
         for attempt in range(max_retries):
             try:
                 page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
-                page.wait_for_load_state("networkidle", timeout=60000)
+                page.wait_for_timeout(8000)
                 break
             except Exception as e:
                 print(f"Attempt {attempt + 1} failed: {e}")
@@ -67,7 +67,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 print("Clicking Description tab...")
                 desc_tab.click()
                 page.wait_for_timeout(5000)
-                page.wait_for_load_state("networkidle", timeout=15000)
+                # page.wait_for_load_state("networkidle", timeout=15000)
+                page.wait_for_timeout(5000)
                 desc_container = page.query_selector("#product-description")
                 if desc_container:
                     desc_container.scroll_into_view_if_needed()
