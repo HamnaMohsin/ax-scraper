@@ -85,7 +85,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
         # Try multiple title selectors
         title = ""
         title_selectors = [
-            "h1",
             "[data-pl='product-title']",
             ".product-title",
             ".title--wrap--UUHae_g h1",
