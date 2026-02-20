@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 
 
 def normalize_img_url(src: str) -> str:
-    """Convert relative or protocol-relative image URLs to absolute HTTPS URLs."""
+    """Convert relative or protocol-relative image URLs to absolute URLs."""
     if not src:
         return ""
     src = src.strip()
@@ -27,24 +27,23 @@ def clean_text(text: str) -> str:
 def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
     print("Opening browser...")
 
-    # Ensure URL has https:// prefix and strip any fragment (#)
+    # Normalize URL — add https:// if missing
     base_url = url.split('#')[0].strip()
     if not base_url.startswith("http"):
         base_url = "https://" + base_url
 
     with sync_playwright() as p:
 
-        # Launch Chromium in headless mode, routing traffic through
-        # local Tor SOCKS5 proxy to get a non-datacenter IP.
-        # This prevents AliExpress from blocking GCP's IP range.
+        # Launch Chromium in headless mode, routed through local Tor SOCKS5 proxy
+        # Tor gives us a US exit node (configured in /etc/tor/torrc)
+        # to prevent AliExpress geo-redirecting to regional sites (de, nl, it etc.)
         browser = p.chromium.launch(
             headless=True,
             proxy={"server": "socks5://127.0.0.1:9050"}
         )
 
-        # Create browser context with US locale and language headers.
-        # This tells AliExpress to serve the English US version instead
-        # of redirecting to a regional site (de., nl., it. etc.)
+        # Create browser context with en-US locale and Accept-Language header
+        # This tells AliExpress to serve English content
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             locale="en-US",
@@ -54,33 +53,31 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
         )
         page = context.new_page()
 
-        # Navigate to the product page with retries.
+        # Navigate to product page with retries
         # We only wait for domcontentloaded (not networkidle) because
-        # AliExpress continuously makes background requests that would
-        # cause networkidle to never trigger.
+        # AliExpress never reaches networkidle due to continuous background requests
         for attempt in range(max_retries):
             try:
                 page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
-                # Fixed wait for initial JS framework to hydrate
-                page.wait_for_timeout(8000)
+                page.wait_for_timeout(8000)  # Wait for initial JS to execute
                 break
             except Exception as e:
                 print(f"Attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
                     browser.close()
                     return {"title": "", "description_text": "", "images": []}
-                page.wait_for_timeout(5000)
+                page.wait_for_timeout(5000)  # Wait before retrying
 
-        # Extra wait for React components to fully render after page load
-        page.wait_for_timeout(10000)
+        # Extra wait for React/JS app to fully render product content
+        page.wait_for_timeout(15000)
 
         # Scroll down to trigger lazy-loaded content (images, description)
         for _ in range(10):
             page.mouse.wheel(0, 200)
             page.wait_for_timeout(300)
 
-        # Try clicking the "Description" tab if it exists.
-        # AliExpress loads description content dynamically on tab click.
+        # Try clicking the Description tab to load full product description
+        # AliExpress loads description content only after this tab is clicked
         try:
             desc_tab = (
                 page.query_selector('a:has-text("Description")') or
@@ -91,7 +88,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 desc_tab.click()
                 page.wait_for_timeout(5000)  # Wait for description content to load
 
-                # Scroll inside the description container to load all images
+                # Scroll within the description container to load lazy images
                 desc_container = page.query_selector("#product-description")
                 if desc_container:
                     desc_container.scroll_into_view_if_needed()
@@ -106,10 +103,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             el = page.query_selector(selector)
             return el.text_content().strip() if el else ""
 
-        # Try multiple title selectors in order of specificity.
-        # Skip any result that is just "aliexpress" (the site header h1).
-        # AliExpress frequently changes their CSS class names so we
-        # try several fallbacks.
+        # Try multiple title selectors in order of specificity
+        # Skip "Aliexpress" — that's the site header h1, not the product title
         title = ""
         title_selectors = [
             "[data-pl='product-title']",
@@ -128,7 +123,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
         if not title:
             print("Title not found")
 
-        # Extract description text and images from the description container
+        # Extract description text and images from the product description container
         description_text = ""
         images = []
         try:
@@ -136,16 +131,14 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             if container:
                 print("Found description container...")
 
-                # First try the specific AliExpress description paragraph class
-                text_elements = container.query_selector_all(
-                    "p.detail-desc-decorate-content"
-                )
+                # Try specific AliExpress description paragraph class first
+                text_elements = container.query_selector_all("p.detail-desc-decorate-content")
                 for el in text_elements:
                     text = el.text_content().strip()
                     if text:
                         description_text += text + " "
 
-                # Fallback: grab all paragraph tags inside the container
+                # Fallback: grab all <p> tags inside the container
                 if not description_text:
                     all_p = container.query_selector_all("p")
                     for el in all_p:
@@ -153,8 +146,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                         if text:
                             description_text += text + " "
 
-                # Extract images, filtering to only AliExpress CDN URLs
-                # to avoid picking up tracking pixels or external images
+                # Extract images — filter to alicdn.com URLs (AliExpress CDN only)
                 img_elements = container.query_selector_all("img")
                 for img in img_elements:
                     src = img.get_attribute("src") or img.get_attribute("data-src")
@@ -163,7 +155,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                         if "alicdn" in src:
                             images.append(src)
 
-                # Remove duplicate image URLs while preserving order
+                # Deduplicate images while preserving order
                 images = list(dict.fromkeys(images))
                 print(f"Extracted {len(images)} images, description length: {len(description_text)}")
             else:
