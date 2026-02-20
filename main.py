@@ -130,11 +130,11 @@ async def categorize(request: CategoryRequest):
     + embedding categorization pipeline.
     """
     try:
-        #refined = refine_with_llm(request.title, request.description)
+        refined = refine_with_llm(request.title, request.description)
 
         category = categorize_product(
-            title=request.title,
-            description= request.description or " "
+            title=refined["refined_title"],
+            description=refined["refined_description"] or " "
         )
 
         return CategoryResponse(
@@ -165,4 +165,5 @@ def list_products(db: Session = Depends(get_db)):
         }
         for p in products
        ]
+
 
