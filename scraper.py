@@ -33,7 +33,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
         # Navigate with retries
         for attempt in range(max_retries):
             try:
-                page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
+                page.goto(base_url, timeout=12000, wait_until="domcontentloaded")
                 page.wait_for_load_state("networkidle", timeout=60000)
                 break
             except Exception as e:
@@ -45,8 +45,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
         # Scroll to load dynamic content
         for _ in range(10):
-            page.mouse.wheel(0, 20)
-            page.wait_for_timeout(30)
+            page.mouse.wheel(0, 200)
+            page.wait_for_timeout(300)
 
         # Try to click the "Description" tab to load content
         try:
@@ -55,7 +55,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 print("Clicking Description tab...")
                 desc_tab.click()
                 page.wait_for_timeout(500)  # Increased wait for content to load
-                page.wait_for_load_state("networkidle", timeout=15000)
+                page.wait_for_load_state("networkidle", timeout=1500)
                 # Additional scrolling in the description area
                 desc_container = page.query_selector("#product-description")
                 if desc_container:
