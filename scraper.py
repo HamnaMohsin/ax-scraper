@@ -21,15 +21,10 @@ def clean_text(text: str) -> str:
 
 def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
     print("Opening browser...")
-    base_url = url.split('#')[0].strip()
-    if not base_url.startswith("http"):
-      base_url = "https://" + base_url
+    base_url = url.split('#')[0]
 
     with sync_playwright() as p:
-        #browser = p.chromium.launch(headless=True)
-        browser = p.chromium.launch(
-        headless=True,
-        proxy={"server": "socks5://127.0.0.1:9050"})
+        browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         page.set_extra_http_headers({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -38,20 +33,20 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
         # Navigate with retries
         for attempt in range(max_retries):
             try:
-                page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
-                page.wait_for_load_state("networkidle", timeout=60000)
+                page.goto(base_url, timeout=120, wait_until="domcontentloaded")
+                page.wait_for_load_state("networkidle", timeout=600)
                 break
             except Exception as e:
                 print(f"Attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
                     browser.close()
                     return {"title": "", "description_text": "", "images": []}
-                page.wait_for_timeout(5000)
+                page.wait_for_timeout(500)
 
         # Scroll to load dynamic content
         for _ in range(10):
-            page.mouse.wheel(0, 200)
-            page.wait_for_timeout(300)
+            page.mouse.wheel(0, 20)
+            page.wait_for_timeout(30)
 
         # Try to click the "Description" tab to load content
         try:
@@ -59,8 +54,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             if desc_tab:
                 print("Clicking Description tab...")
                 desc_tab.click()
-                page.wait_for_timeout(5000)  # Increased wait for content to load
-                page.wait_for_load_state("networkidle", timeout=15000)
+                page.wait_for_timeout(500)  # Increased wait for content to load
+                page.wait_for_load_state("networkidle", timeout=1500)
                 # Additional scrolling in the description area
                 desc_container = page.query_selector("#product-description")
                 if desc_container:
