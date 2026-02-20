@@ -26,7 +26,10 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
       base_url = "https://" + base_url
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        #browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+        headless=True,
+        proxy={"server": "socks5://127.0.0.1:9050"})
         page = browser.new_page()
         page.set_extra_http_headers({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
