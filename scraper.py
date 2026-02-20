@@ -67,7 +67,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 print("Clicking Description tab...")
                 desc_tab.click()
                 page.wait_for_timeout(5000)
-                # page.wait_for_load_state("networkidle", timeout=15000)
+                
                 page.wait_for_timeout(5000)
                 desc_container = page.query_selector("#product-description")
                 if desc_container:
