@@ -122,6 +122,31 @@ async def scrape(request: ScrapeRequest, db: Session = Depends(get_db)):
 
 
 
+@app.post("/categorize", response_model=CategoryResponse)
+async def categorize(request: CategoryRequest):
+    """
+    Test endpoint — bypasses the scraper entirely.
+    Pass a title and description directly to run the LLM refiner
+    + embedding categorization pipeline.
+    """
+    try:
+        #refined = refine_with_llm(request.title, request.description)
+
+        category = categorize_product(
+            title=request.title,
+            description= request.description or " "
+        )
+
+        return CategoryResponse(
+            category_id=category["matched_category_id"],
+            category_path=category["matched_category_path"],
+            similarity_score=category["similarity_score"]
+        )
+
+    except Exception as e:
+        print("Unexpected error in /categorize:", e)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 @app.get("/products")
 def list_products(db: Session = Depends(get_db)):
     products = db.query(Product).all()
@@ -140,3 +165,4 @@ def list_products(db: Session = Depends(get_db)):
         }
         for p in products
        ]
+
