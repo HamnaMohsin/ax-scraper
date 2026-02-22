@@ -1,13 +1,13 @@
 import re
 import time
-import requests
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
+
 
 # ─────────────────────────────────────────────
 # Tor circuit rotation via stem
 # Requires: pip install stem
-# Requires: Tor running with ControlPort 9051 enabled in /etc/tor/torrc:
+# /etc/tor/torrc must have:
 #   ControlPort 9051
 #   CookieAuthentication 1
 # ─────────────────────────────────────────────
@@ -20,7 +20,7 @@ def rotate_tor_circuit():
             controller.authenticate()
             controller.signal(Signal.NEWNYM)
             print("Tor circuit rotated — new exit IP assigned.")
-            time.sleep(5)  # Tor needs a moment to establish the new circuit
+            time.sleep(5)
     except Exception as e:
         print(f"Failed to rotate Tor circuit: {e}")
 
@@ -37,8 +37,8 @@ def detect_recaptcha(page) -> bool:
         "iframe[src*='recaptcha']",
         "iframe[src*='google.com/recaptcha']",
         ".g-recaptcha",
-        "#captcha-verify",           # AliExpress custom captcha wrapper
-        ".baxia-punish",             # AliExpress bot-punish page class
+        "#captcha-verify",
+        ".baxia-punish",
         "[id*='captcha']",
     ]
     for selector in indicators:
@@ -49,7 +49,6 @@ def detect_recaptcha(page) -> bool:
         except Exception:
             pass
 
-    # Also check page title and URL for block/verify pages
     page_title = page.title().lower()
     page_url = page.url.lower()
     if any(kw in page_title for kw in ["verify", "captcha", "robot", "blocked", "security"]):
@@ -84,14 +83,12 @@ def solve_recaptcha_2captcha(page) -> bool:
         from twocaptcha import TwoCaptcha
         solver = TwoCaptcha(TWO_CAPTCHA_API_KEY)
 
-        # Find the sitekey from the reCAPTCHA iframe or div
         sitekey = None
         recaptcha_div = page.query_selector(".g-recaptcha")
         if recaptcha_div:
             sitekey = recaptcha_div.get_attribute("data-sitekey")
 
         if not sitekey:
-            # Try extracting from iframe src
             iframe = page.query_selector("iframe[src*='recaptcha']")
             if iframe:
                 src = iframe.get_attribute("src") or ""
@@ -107,7 +104,6 @@ def solve_recaptcha_2captcha(page) -> bool:
         result = solver.recaptcha(sitekey=sitekey, url=page.url)
         token = result["code"]
 
-        # Inject the token into the page
         page.evaluate(f"""
             document.getElementById('g-recaptcha-response').innerHTML = '{token}';
             if (typeof ___grecaptcha_cfg !== 'undefined') {{
@@ -127,7 +123,7 @@ def solve_recaptcha_2captcha(page) -> bool:
 
 
 # ─────────────────────────────────────────────
-# URL helpers
+# URL / text helpers
 # ─────────────────────────────────────────────
 def normalize_img_url(src: str) -> str:
     """Convert relative or protocol-relative image URLs to absolute URLs."""
@@ -159,6 +155,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
     Retry strategy:
       - Each attempt routes through Tor for a different exit IP
+      - Browser launched with anti-detection flags to reduce reCAPTCHA triggers
       - On CAPTCHA detection: attempt 2captcha solve (if key set),
         otherwise rotate Tor circuit and retry
       - No title found = page is blocked = rotate and retry
@@ -179,14 +176,24 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             print("Opening browser...")
             browser = p.chromium.launch(
                 headless=True,
-                proxy={"server": "socks5://127.0.0.1:9050"}  # Route through Tor
+                proxy={"server": "socks5://127.0.0.1:9050"},
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ]
             )
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 locale="en-US",
-                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"}
+                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                java_script_enabled=True,
+                bypass_csp=True,
             )
             page = context.new_page()
+
+            # Mask the webdriver flag — primary trigger for bot detection
+            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
             # ── Navigate ──
             try:
@@ -266,7 +273,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     break
 
             if not title:
-                # No title = page is blocked or wrong page entirely
                 print("Title not found — page likely blocked. Rotating circuit...")
                 browser.close()
                 if attempt < max_retries:
@@ -312,8 +318,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
             browser.close()
 
-            # Return result — description/images may be empty for some products
-            # but a title means we successfully loaded the page
             return {
                 "title": clean_text(title),
                 "description_text": clean_text(description_text),
