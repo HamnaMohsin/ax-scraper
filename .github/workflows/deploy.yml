@@ -20,21 +20,23 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Deploy to VM
+      - name: Pull latest code
         run: |
-          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'ENDSSH'
-            set -e
-            cd /opt/ax-scraper
-            echo "==> Pulling latest code..."
-            git pull origin main
-            echo "==> Activating virtualenv..."
-            source venv/bin/activate
-            echo "==> Installing/updating dependencies..."
-            pip install -r requirements.txt --quiet
-            echo "==> Restarting service..."
-            sudo systemctl restart ax-scraper
-            echo "==> Verifying service is running..."
-            sleep 3
-            sudo systemctl is-active ax-scraper
-            echo "Deploy complete!"
-          ENDSSH
+          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "cd /opt/ax-scraper && git pull origin main"
+
+      - name: Install dependencies
+        run: |
+          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "cd /opt/ax-scraper && source venv/bin/activate && pip install -r requirements.txt --quiet"
+
+      - name: Restart service
+        run: |
+          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "sudo systemctl restart ax-scraper"
+
+      - name: Verify service is running
+        run: |
+          sleep 3
+          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
+            "sudo systemctl is-active ax-scraper"
