@@ -5,27 +5,6 @@ from bs4 import BeautifulSoup
 
 
 # ─────────────────────────────────────────────
-# Tor circuit rotation via stem
-# Requires: pip install stem
-# /etc/tor/torrc must have:
-#   ControlPort 9051
-#   CookieAuthentication 1
-# ─────────────────────────────────────────────
-def rotate_tor_circuit():
-    """Signal Tor to build a new circuit (new exit IP)."""
-    try:
-        from stem import Signal
-        from stem.control import Controller
-        with Controller.from_port(port=9051) as controller:
-            controller.authenticate()
-            controller.signal(Signal.NEWNYM)
-            print("Tor circuit rotated — new exit IP assigned.")
-            time.sleep(5)
-    except Exception as e:
-        print(f"Failed to rotate Tor circuit: {e}")
-
-
-# ─────────────────────────────────────────────
 # CAPTCHA detection
 # ─────────────────────────────────────────────
 def detect_recaptcha(page) -> bool:
@@ -76,7 +55,7 @@ def solve_recaptcha_2captcha(page) -> bool:
     Returns True if solved successfully, False otherwise.
     """
     if not TWO_CAPTCHA_API_KEY:
-        print("2captcha skipped — no API key set. Rotating circuit and retrying instead.")
+        print("2captcha skipped — no API key set.")
         return False
 
     try:
@@ -152,14 +131,7 @@ def clean_text(text: str) -> str:
 def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
     """
     Scrape an AliExpress product page for title, description text, and images.
-
-    Retry strategy:
-      - Each attempt routes through Tor for a different exit IP
-      - Browser launched with anti-detection flags to reduce reCAPTCHA triggers
-      - On CAPTCHA detection: attempt 2captcha solve (if key set),
-        otherwise rotate Tor circuit and retry
-      - No title found = page is blocked = rotate and retry
-      - After max_retries exhausted, return empty result
+    Retries up to max_retries times on failure.
     """
     print("Starting scrape...")
 
@@ -176,7 +148,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             print("Opening browser...")
             browser = p.chromium.launch(
                 headless=True,
-                proxy={"server": "socks5://127.0.0.1:9050"},
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
@@ -202,8 +173,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             except Exception as e:
                 print(f"Navigation failed: {e}")
                 browser.close()
-                if attempt < max_retries:
-                    rotate_tor_circuit()
+                time.sleep(3)
                 continue
 
             # ── CAPTCHA check immediately after load ──
@@ -211,8 +181,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 solved = solve_recaptcha_2captcha(page)
                 if not solved:
                     browser.close()
-                    if attempt < max_retries:
-                        rotate_tor_circuit()
+                    time.sleep(3)
                     continue
 
             # ── Wait for JS/React to render product content ──
@@ -223,13 +192,12 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 page.mouse.wheel(0, 200)
                 page.wait_for_timeout(300)
 
-            # ── CAPTCHA check again after scroll (some blocks trigger late) ──
+            # ── CAPTCHA check again after scroll ──
             if detect_recaptcha(page):
                 solved = solve_recaptcha_2captcha(page)
                 if not solved:
                     browser.close()
-                    if attempt < max_retries:
-                        rotate_tor_circuit()
+                    time.sleep(3)
                     continue
 
             # ── Click Description tab ──
@@ -273,10 +241,9 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     break
 
             if not title:
-                print("Title not found — page likely blocked. Rotating circuit...")
+                print("Title not found — page likely blocked.")
                 browser.close()
-                if attempt < max_retries:
-                    rotate_tor_circuit()
+                time.sleep(3)
                 continue
 
             # ── Extract description + images ──
@@ -287,21 +254,18 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 if container:
                     print("Found description container...")
 
-                    # Try AliExpress-specific paragraph class first
                     text_elements = container.query_selector_all("p.detail-desc-decorate-content")
                     for el in text_elements:
                         text = el.text_content().strip()
                         if text:
                             description_text += text + " "
 
-                    # Fallback: all <p> tags in the container
                     if not description_text:
                         for el in container.query_selector_all("p"):
                             text = el.text_content().strip()
                             if text:
                                 description_text += text + " "
 
-                    # Extract images (alicdn.com CDN only)
                     for img in container.query_selector_all("img"):
                         src = img.get_attribute("src") or img.get_attribute("data-src")
                         if src:
@@ -309,7 +273,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                             if "alicdn" in src:
                                 images.append(src)
 
-                    images = list(dict.fromkeys(images))  # deduplicate, preserve order
+                    images = list(dict.fromkeys(images))
                     print(f"Extracted {len(images)} images, description length: {len(description_text)}")
                 else:
                     print("Description container not found.")
