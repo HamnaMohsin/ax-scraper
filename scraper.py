@@ -1,7 +1,18 @@
 import re
 import time
+import random
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
+
+
+# ─────────────────────────────────────────────
+# Human-like delay helper
+# ─────────────────────────────────────────────
+def random_delay(min_sec: float = 1.0, max_sec: float = 3.0):
+    """Sleep for a random duration to mimic human behaviour."""
+    delay = random.uniform(min_sec, max_sec)
+    print(f"Waiting {delay:.1f}s...")
+    time.sleep(delay)
 
 
 # ─────────────────────────────────────────────
@@ -21,7 +32,7 @@ def rotate_tor_circuit():
             controller.authenticate()
             controller.signal(Signal.NEWNYM)
             print("Tor circuit rotated — new exit IP assigned.")
-            time.sleep(5)
+            time.sleep(5)  # Tor needs time to establish new circuit
     except Exception as e:
         print(f"Failed to rotate Tor circuit: {e}")
 
@@ -142,7 +153,7 @@ def clean_text(text: str) -> str:
 def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
     """
     Scrape an AliExpress product page for title, description text, and images.
-    Routes through Tor SOCKS5 proxy with circuit rotation on each retry.
+    Routes through Tor SOCKS5 proxy with circuit rotation and human-like delays.
     """
     print("Starting scrape...")
 
@@ -154,6 +165,10 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
     for attempt in range(1, max_retries + 1):
         print(f"\n── Attempt {attempt}/{max_retries} ──")
+
+        # Delay between retries to avoid rapid re-blocking
+        if attempt > 1:
+            random_delay(5.0, 12.0)
 
         with sync_playwright() as p:
             print("Opening browser...")
@@ -174,12 +189,14 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 bypass_csp=True,
             )
             page = context.new_page()
+
+            # Mask the webdriver flag — primary trigger for bot detection
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
             # ── Navigate ──
             try:
                 page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
-                page.wait_for_timeout(8000)
+                random_delay(3.0, 6.0)  # Human-like pause after page load
             except Exception as e:
                 print(f"Navigation failed: {e}")
                 browser.close()
@@ -197,12 +214,15 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     continue
 
             # ── Wait for JS/React to render ──
-            page.wait_for_timeout(15000)
+            page.wait_for_timeout(8000)
+            random_delay(2.0, 4.0)
 
-            # ── Scroll to trigger lazy-loaded content ──
+            # ── Scroll gradually to mimic human reading ──
             for _ in range(10):
-                page.mouse.wheel(0, 200)
-                page.wait_for_timeout(300)
+                page.mouse.wheel(0, random.randint(150, 300))  # Vary scroll amount
+                page.wait_for_timeout(random.randint(200, 600))  # Vary scroll speed
+
+            random_delay(1.0, 3.0)
 
             # ── CAPTCHA check again after scroll ──
             if detect_recaptcha(page):
@@ -220,17 +240,20 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     page.query_selector('a:has-text("description")')
                 )
                 if desc_tab:
+                    random_delay(1.0, 2.0)  # Pause before clicking
                     print("Clicking Description tab...")
                     desc_tab.click()
-                    page.wait_for_timeout(5000)
+                    random_delay(3.0, 6.0)  # Wait for content to load after click
                     desc_container = page.query_selector("#product-description")
                     if desc_container:
                         desc_container.scroll_into_view_if_needed()
                         for _ in range(5):
-                            page.mouse.wheel(0, 300)
-                            page.wait_for_timeout(500)
+                            page.mouse.wheel(0, random.randint(200, 400))
+                            page.wait_for_timeout(random.randint(300, 700))
             except Exception as e:
                 print(f"Could not click Description tab: {e}")
+
+            random_delay(1.0, 2.0)
 
             # ── Extract title ──
             def safe_query_text(selector: str) -> str:
