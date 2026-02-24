@@ -5,13 +5,31 @@ from bs4 import BeautifulSoup
 
 
 # ─────────────────────────────────────────────
+# Tor circuit rotation via stem
+# /etc/tor/torrc must have:
+#   ControlPort 9051
+#   CookieAuthentication 1
+#   ExitNodes {us}
+#   StrictNodes 1
+# ─────────────────────────────────────────────
+def rotate_tor_circuit():
+    """Signal Tor to build a new circuit (new exit IP)."""
+    try:
+        from stem import Signal
+        from stem.control import Controller
+        with Controller.from_port(port=9051) as controller:
+            controller.authenticate()
+            controller.signal(Signal.NEWNYM)
+            print("Tor circuit rotated — new exit IP assigned.")
+            time.sleep(5)
+    except Exception as e:
+        print(f"Failed to rotate Tor circuit: {e}")
+
+
+# ─────────────────────────────────────────────
 # CAPTCHA detection
 # ─────────────────────────────────────────────
 def detect_recaptcha(page) -> bool:
-    """
-    Returns True if a reCAPTCHA challenge is present on the page.
-    Checks for the reCAPTCHA iframe and common AliExpress block indicators.
-    """
     indicators = [
         "iframe[src*='recaptcha']",
         "iframe[src*='google.com/recaptcha']",
@@ -45,15 +63,10 @@ def detect_recaptcha(page) -> bool:
 # To enable:
 #   1. pip install 2captcha-python
 #   2. Set TWO_CAPTCHA_API_KEY below
-#   3. That's it — the rest is already wired up
 # ─────────────────────────────────────────────
 TWO_CAPTCHA_API_KEY = ""  # <-- paste your key here when ready
 
 def solve_recaptcha_2captcha(page) -> bool:
-    """
-    Solve a reCAPTCHA using the 2captcha API and inject the token into the page.
-    Returns True if solved successfully, False otherwise.
-    """
     if not TWO_CAPTCHA_API_KEY:
         print("2captcha skipped — no API key set.")
         return False
@@ -105,7 +118,6 @@ def solve_recaptcha_2captcha(page) -> bool:
 # URL / text helpers
 # ─────────────────────────────────────────────
 def normalize_img_url(src: str) -> str:
-    """Convert relative or protocol-relative image URLs to absolute URLs."""
     if not src:
         return ""
     src = src.strip()
@@ -117,7 +129,6 @@ def normalize_img_url(src: str) -> str:
 
 
 def clean_text(text: str) -> str:
-    """Strip HTML tags and normalize whitespace from extracted text."""
     if not text:
         return ""
     text = BeautifulSoup(text, "html.parser").get_text(" ")
@@ -131,7 +142,7 @@ def clean_text(text: str) -> str:
 def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
     """
     Scrape an AliExpress product page for title, description text, and images.
-    Retries up to max_retries times on failure.
+    Routes through Tor SOCKS5 proxy with circuit rotation on each retry.
     """
     print("Starting scrape...")
 
@@ -148,6 +159,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             print("Opening browser...")
             browser = p.chromium.launch(
                 headless=True,
+                proxy={"server": "socks5://127.0.0.1:9050"},
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
@@ -162,8 +174,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 bypass_csp=True,
             )
             page = context.new_page()
-
-            # Mask the webdriver flag — primary trigger for bot detection
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
             # ── Navigate ──
@@ -173,7 +183,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             except Exception as e:
                 print(f"Navigation failed: {e}")
                 browser.close()
-                time.sleep(3)
+                if attempt < max_retries:
+                    rotate_tor_circuit()
                 continue
 
             # ── CAPTCHA check immediately after load ──
@@ -181,10 +192,11 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 solved = solve_recaptcha_2captcha(page)
                 if not solved:
                     browser.close()
-                    time.sleep(3)
+                    if attempt < max_retries:
+                        rotate_tor_circuit()
                     continue
 
-            # ── Wait for JS/React to render product content ──
+            # ── Wait for JS/React to render ──
             page.wait_for_timeout(15000)
 
             # ── Scroll to trigger lazy-loaded content ──
@@ -197,7 +209,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 solved = solve_recaptcha_2captcha(page)
                 if not solved:
                     browser.close()
-                    time.sleep(3)
+                    if attempt < max_retries:
+                        rotate_tor_circuit()
                     continue
 
             # ── Click Description tab ──
@@ -241,9 +254,10 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     break
 
             if not title:
-                print("Title not found — page likely blocked.")
+                print("Title not found — page likely blocked. Rotating circuit...")
                 browser.close()
-                time.sleep(3)
+                if attempt < max_retries:
+                    rotate_tor_circuit()
                 continue
 
             # ── Extract description + images ──
