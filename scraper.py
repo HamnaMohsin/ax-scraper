@@ -75,54 +75,54 @@ def detect_recaptcha(page) -> bool:
 #   1. pip install 2captcha-python
 #   2. Set TWO_CAPTCHA_API_KEY below
 # ─────────────────────────────────────────────
-TWO_CAPTCHA_API_KEY = ""  # <-- paste your key here when ready
+# TWO_CAPTCHA_API_KEY = ""  # <-- paste your key here when ready
 
-def solve_recaptcha_2captcha(page) -> bool:
-    if not TWO_CAPTCHA_API_KEY:
-        print("2captcha skipped — no API key set.")
-        return False
+# def solve_recaptcha_2captcha(page) -> bool:
+#     if not TWO_CAPTCHA_API_KEY:
+#         print("2captcha skipped — no API key set.")
+#         return False
 
-    try:
-        from twocaptcha import TwoCaptcha
-        solver = TwoCaptcha(TWO_CAPTCHA_API_KEY)
+#     try:
+#         from twocaptcha import TwoCaptcha
+#         solver = TwoCaptcha(TWO_CAPTCHA_API_KEY)
 
-        sitekey = None
-        recaptcha_div = page.query_selector(".g-recaptcha")
-        if recaptcha_div:
-            sitekey = recaptcha_div.get_attribute("data-sitekey")
+#         sitekey = None
+#         recaptcha_div = page.query_selector(".g-recaptcha")
+#         if recaptcha_div:
+#             sitekey = recaptcha_div.get_attribute("data-sitekey")
 
-        if not sitekey:
-            iframe = page.query_selector("iframe[src*='recaptcha']")
-            if iframe:
-                src = iframe.get_attribute("src") or ""
-                match = re.search(r"k=([A-Za-z0-9_-]+)", src)
-                if match:
-                    sitekey = match.group(1)
+#         if not sitekey:
+#             iframe = page.query_selector("iframe[src*='recaptcha']")
+#             if iframe:
+#                 src = iframe.get_attribute("src") or ""
+#                 match = re.search(r"k=([A-Za-z0-9_-]+)", src)
+#                 if match:
+#                     sitekey = match.group(1)
 
-        if not sitekey:
-            print("2captcha: could not find reCAPTCHA sitekey on page.")
-            return False
+#         if not sitekey:
+#             print("2captcha: could not find reCAPTCHA sitekey on page.")
+#             return False
 
-        print(f"2captcha: solving reCAPTCHA with sitekey {sitekey[:20]}...")
-        result = solver.recaptcha(sitekey=sitekey, url=page.url)
-        token = result["code"]
+#         print(f"2captcha: solving reCAPTCHA with sitekey {sitekey[:20]}...")
+#         result = solver.recaptcha(sitekey=sitekey, url=page.url)
+#         token = result["code"]
 
-        page.evaluate(f"""
-            document.getElementById('g-recaptcha-response').innerHTML = '{token}';
-            if (typeof ___grecaptcha_cfg !== 'undefined') {{
-                Object.values(___grecaptcha_cfg.clients).forEach(client => {{
-                    const cb = client?.l?.['']?.callback;
-                    if (typeof cb === 'function') cb('{token}');
-                }});
-            }}
-        """)
-        page.wait_for_timeout(3000)
-        print("2captcha: token injected successfully.")
-        return True
+#         page.evaluate(f"""
+#             document.getElementById('g-recaptcha-response').innerHTML = '{token}';
+#             if (typeof ___grecaptcha_cfg !== 'undefined') {{
+#                 Object.values(___grecaptcha_cfg.clients).forEach(client => {{
+#                     const cb = client?.l?.['']?.callback;
+#                     if (typeof cb === 'function') cb('{token}');
+#                 }});
+#             }}
+#         """)
+#         page.wait_for_timeout(3000)
+#         print("2captcha: token injected successfully.")
+#         return True
 
-    except Exception as e:
-        print(f"2captcha solving failed: {e}")
-        return False
+#     except Exception as e:
+#         print(f"2captcha solving failed: {e}")
+#         return False
 
 
 # ─────────────────────────────────────────────
@@ -174,7 +174,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             print("Opening browser...")
             browser = p.chromium.launch(
                 headless=True,
-                proxy={"server": "socks5://127.0.0.1:9050"},
+                proxy={"server": "socks5h://127.0.0.1:9050"},
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
