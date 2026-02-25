@@ -3,8 +3,8 @@ import pickle
 import numpy as np
 import os
 client = OpenAI()
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-embeddings_path = os.path.join(BASE_DIR, "google_product_categories_embeddings.pkl")
+#BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+#embeddings_path = os.path.join(BASE_DIR, "google_product_categories_embeddings.pkl")
 
 # Load the embeddings file directly from VM
 
@@ -44,7 +44,7 @@ def get_embedding(text: str):
 
 def load_category_embeddings():
     # Load the embeddings file directly from VM
-    with open("/opt/ax-scraper/data/google_product_categories_embeddings.pkl", "rb") as f:
+    with open("/google_product_categories_embeddings.pkl", "rb") as f:
            return pickle.load(f)
     #with open(embeddings_path, "rb") as f:
      #    return pickle.load(f)
@@ -96,3 +96,4 @@ def categorize_product(title, description):
         "matched_category_path": result["category_path"],
         "similarity_score": result["similarity_score"]
     }
+
