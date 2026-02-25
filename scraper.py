@@ -5,9 +5,6 @@ from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 
 
-# ─────────────────────────────────────────────
-# Human-like delay helper
-# ─────────────────────────────────────────────
 def random_delay(min_sec: float = 1.0, max_sec: float = 3.0):
     """Sleep for a random duration to mimic human behaviour."""
     delay = random.uniform(min_sec, max_sec)
@@ -15,14 +12,6 @@ def random_delay(min_sec: float = 1.0, max_sec: float = 3.0):
     time.sleep(delay)
 
 
-# ─────────────────────────────────────────────
-# Tor circuit rotation via stem
-# /etc/tor/torrc must have:
-#   ControlPort 9051
-#   CookieAuthentication 1
-#   ExitNodes {us}
-#   StrictNodes 1
-# ─────────────────────────────────────────────
 def rotate_tor_circuit():
     """Signal Tor to build a new circuit (new exit IP)."""
     try:
@@ -32,14 +21,11 @@ def rotate_tor_circuit():
             controller.authenticate()
             controller.signal(Signal.NEWNYM)
             print("Tor circuit rotated — new exit IP assigned.")
-            time.sleep(5)  # Tor needs time to establish new circuit
+            time.sleep(5)
     except Exception as e:
         print(f"Failed to rotate Tor circuit: {e}")
 
 
-# ─────────────────────────────────────────────
-# CAPTCHA detection
-# ─────────────────────────────────────────────
 def detect_recaptcha(page) -> bool:
     indicators = [
         "iframe[src*='recaptcha']",
@@ -69,65 +55,13 @@ def detect_recaptcha(page) -> bool:
     return False
 
 
-# ─────────────────────────────────────────────
-# 2captcha solver (STUBBED — add API key to enable)
-# To enable:
-#   1. pip install 2captcha-python
-#   2. Set TWO_CAPTCHA_API_KEY below
-# ─────────────────────────────────────────────
-# TWO_CAPTCHA_API_KEY = ""  # <-- paste your key here when ready
-
-# def solve_recaptcha_2captcha(page) -> bool:
-#     if not TWO_CAPTCHA_API_KEY:
-#         print("2captcha skipped — no API key set.")
-#         return False
-
-#     try:
-#         from twocaptcha import TwoCaptcha
-#         solver = TwoCaptcha(TWO_CAPTCHA_API_KEY)
-
-#         sitekey = None
-#         recaptcha_div = page.query_selector(".g-recaptcha")
-#         if recaptcha_div:
-#             sitekey = recaptcha_div.get_attribute("data-sitekey")
-
-#         if not sitekey:
-#             iframe = page.query_selector("iframe[src*='recaptcha']")
-#             if iframe:
-#                 src = iframe.get_attribute("src") or ""
-#                 match = re.search(r"k=([A-Za-z0-9_-]+)", src)
-#                 if match:
-#                     sitekey = match.group(1)
-
-#         if not sitekey:
-#             print("2captcha: could not find reCAPTCHA sitekey on page.")
-#             return False
-
-#         print(f"2captcha: solving reCAPTCHA with sitekey {sitekey[:20]}...")
-#         result = solver.recaptcha(sitekey=sitekey, url=page.url)
-#         token = result["code"]
-
-#         page.evaluate(f"""
-#             document.getElementById('g-recaptcha-response').innerHTML = '{token}';
-#             if (typeof ___grecaptcha_cfg !== 'undefined') {{
-#                 Object.values(___grecaptcha_cfg.clients).forEach(client => {{
-#                     const cb = client?.l?.['']?.callback;
-#                     if (typeof cb === 'function') cb('{token}');
-#                 }});
-#             }}
-#         """)
-#         page.wait_for_timeout(3000)
-#         print("2captcha: token injected successfully.")
-#         return True
-
-#     except Exception as e:
-#         print(f"2captcha solving failed: {e}")
-#         return False
+def random_viewport():
+    return {
+        "width": random.choice([1280, 1366, 1440, 1536, 1600]),
+        "height": random.choice([720, 768, 864, 900]),
+    }
 
 
-# ─────────────────────────────────────────────
-# URL / text helpers
-# ─────────────────────────────────────────────
 def normalize_img_url(src: str) -> str:
     if not src:
         return ""
@@ -147,9 +81,6 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-# ─────────────────────────────────────────────
-# Main scraper
-# ─────────────────────────────────────────────
 def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
     """
     Scrape an AliExpress product page for title, description text, and images.
@@ -166,9 +97,10 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
     for attempt in range(1, max_retries + 1):
         print(f"\n── Attempt {attempt}/{max_retries} ──")
 
-        # Delay between retries to avoid rapid re-blocking
         if attempt > 1:
-            random_delay(5.0, 12.0)
+            print("Rotating Tor circuit before new attempt...")
+            rotate_tor_circuit()
+            random_delay(8.0, 15.0)
 
         with sync_playwright() as p:
             print("Opening browser...")
@@ -182,8 +114,17 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 ]
             )
             context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                user_agent=random.choice([
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                ]),
+                viewport=random_viewport(),
                 locale="en-US",
+                timezone_id=random.choice([
+                    "America/New_York",
+                    "America/Chicago",
+                    "America/Los_Angeles",
+                ]),
                 extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
                 java_script_enabled=True,
                 bypass_csp=True,
@@ -193,10 +134,18 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             # Mask the webdriver flag — primary trigger for bot detection
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
+            # Verify Tor is routing correctly
+            try:
+                page.goto("https://check.torproject.org/api/ip", timeout=60000)
+                print("Tor check:", page.text_content("body"))
+                random_delay(2.0, 4.0)
+            except Exception as e:
+                print(f"Tor check failed: {e}")
+
             # ── Navigate ──
             try:
                 page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
-                random_delay(3.0, 6.0)  # Human-like pause after page load
+                random_delay(3.0, 6.0)
             except Exception as e:
                 print(f"Navigation failed: {e}")
                 browser.close()
@@ -206,12 +155,11 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
             # ── CAPTCHA check immediately after load ──
             if detect_recaptcha(page):
-                solved = solve_recaptcha_2captcha(page)
-                if not solved:
-                    browser.close()
-                    if attempt < max_retries:
-                        rotate_tor_circuit()
-                    continue
+                print("CAPTCHA detected — rotating circuit and retrying.")
+                browser.close()
+                if attempt < max_retries:
+                    rotate_tor_circuit()
+                continue
 
             # ── Wait for JS/React to render ──
             page.wait_for_timeout(8000)
@@ -219,19 +167,18 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
             # ── Scroll gradually to mimic human reading ──
             for _ in range(10):
-                page.mouse.wheel(0, random.randint(150, 300))  # Vary scroll amount
-                page.wait_for_timeout(random.randint(200, 600))  # Vary scroll speed
+                page.mouse.wheel(0, random.randint(150, 300))
+                page.wait_for_timeout(random.randint(200, 600))
 
             random_delay(1.0, 3.0)
 
             # ── CAPTCHA check again after scroll ──
             if detect_recaptcha(page):
-                solved = solve_recaptcha_2captcha(page)
-                if not solved:
-                    browser.close()
-                    if attempt < max_retries:
-                        rotate_tor_circuit()
-                    continue
+                print("CAPTCHA detected after scroll — rotating circuit and retrying.")
+                browser.close()
+                if attempt < max_retries:
+                    rotate_tor_circuit()
+                continue
 
             # ── Click Description tab ──
             try:
@@ -240,10 +187,10 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     page.query_selector('a:has-text("description")')
                 )
                 if desc_tab:
-                    random_delay(1.0, 2.0)  # Pause before clicking
+                    random_delay(1.0, 2.0)
                     print("Clicking Description tab...")
                     desc_tab.click()
-                    random_delay(3.0, 6.0)  # Wait for content to load after click
+                    random_delay(3.0, 6.0)
                     desc_container = page.query_selector("#product-description")
                     if desc_container:
                         desc_container.scroll_into_view_if_needed()
