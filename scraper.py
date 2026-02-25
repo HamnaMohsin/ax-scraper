@@ -106,7 +106,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             print("Opening browser...")
             browser = p.chromium.launch(
                 headless=True,
-                proxy={"server": "socks5h://127.0.0.1:9050"},
+                proxy={"server": "socks5://127.0.0.1:9050"},
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
@@ -136,7 +136,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
             # Verify Tor is routing correctly
             try:
-                page.goto("https://check.torproject.org/api/ip", timeout=60000)
+                page.goto("http://example.com")
+                #page.goto("https://check.torproject.org/api/ip", timeout=60000)
                 print("Tor check:", page.text_content("body"))
                 random_delay(2.0, 4.0)
             except Exception as e:
