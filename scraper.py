@@ -27,6 +27,11 @@ def rotate_tor_circuit():
 
 
 def detect_recaptcha(page) -> bool:
+    """
+    Returns True only if a real CAPTCHA/block page is detected.
+    Checks DOM selectors and URL — avoids false positives on product titles.
+    """
+    # DOM-based checks (reliable — these only exist on block pages)
     indicators = [
         "iframe[src*='recaptcha']",
         "iframe[src*='google.com/recaptcha']",
@@ -43,14 +48,23 @@ def detect_recaptcha(page) -> bool:
         except Exception:
             pass
 
-    page_title = page.title().lower()
+    # URL-based check (reliable — AliExpress block pages have these in the URL)
     page_url = page.url.lower()
-    if any(kw in page_title for kw in ["verify", "captcha", "robot", "blocked", "security"]):
-        print(f"reCAPTCHA/block detected via page title: '{page.title()}'")
-        return True
     if any(kw in page_url for kw in ["baxia", "punish", "captcha", "verify"]):
-        print(f"reCAPTCHA/block detected via URL: '{page.url}'")
+        print(f"Block detected via URL: '{page.url}'")
         return True
+
+    # Title check — only match if the page title looks like a block page,
+    # NOT a product page. AliExpress product titles end with "- AliExpress"
+    # followed by optional numbers. Block pages have short generic titles.
+    page_title = page.title()
+    page_title_lower = page_title.lower()
+    is_product_page = "aliexpress" in page_title_lower and len(page_title) > 40
+    if not is_product_page:
+        block_titles = ["verify", "captcha", "robot", "access denied", "blocked"]
+        if any(kw in page_title_lower for kw in block_titles):
+            print(f"Block detected via page title: '{page_title}'")
+            return True
 
     return False
 
@@ -133,15 +147,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
             # Mask the webdriver flag — primary trigger for bot detection
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
-            # Verify Tor is routing correctly
-            try:
-                page.goto("http://example.com")
-                #page.goto("https://check.torproject.org/api/ip", timeout=60000)
-                print("Tor check:", page.text_content("body"))
-                random_delay(2.0, 4.0)
-            except Exception as e:
-                print(f"Tor check failed: {e}")
 
             # ── Navigate ──
             try:
