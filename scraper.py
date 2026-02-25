@@ -195,7 +195,13 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 if desc_tab:
                     random_delay(1.0, 2.0)
                     print("Clicking Description tab...")
-                    desc_tab.click()
+                    # Try closing any open overlay first
+                    try:
+                        page.keyboard.press("Escape")
+                        page.wait_for_timeout(1000)
+                    except Exception:
+                        pass
+                    desc_tab.click(force=True)
                     random_delay(3.0, 6.0)
                     desc_container = page.query_selector("#product-description")
                     if desc_container:
