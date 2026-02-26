@@ -186,16 +186,12 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     rotate_tor_circuit()
                 continue
 
-            # ── Click Description tab ──
+            # ── Click Description tab — use stable ID selector ──
             try:
-                desc_tab = (
-                    page.query_selector('a:has-text("Description")') or
-                    page.query_selector('a:has-text("description")')
-                )
+                desc_tab = page.query_selector('#nav-description')
                 if desc_tab:
                     random_delay(1.0, 2.0)
                     print("Clicking Description tab...")
-                    # Try closing any open overlay first
                     try:
                         page.keyboard.press("Escape")
                         page.wait_for_timeout(1000)
@@ -209,6 +205,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                         for _ in range(5):
                             page.mouse.wheel(0, random.randint(200, 400))
                             page.wait_for_timeout(random.randint(300, 700))
+                else:
+                    print("Description tab not found via #nav-description.")
             except Exception as e:
                 print(f"Could not click Description tab: {e}")
 
@@ -222,6 +220,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             title = ""
             title_selectors = [
                 "[data-pl='product-title']",
+                ".title--wrap--NWOaiSp h1",   # updated class
                 ".product-title-text",
                 ".title--wrap--UUHae_g h1",
                 "h1.pdp-title",
@@ -250,19 +249,22 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 if container:
                     print("Found description container...")
 
-                    text_elements = container.query_selector_all("p.detail-desc-decorate-content")
+                    # Updated: target span inside p elements (new DOM structure)
+                    text_elements = container.query_selector_all("p span")
                     for el in text_elements:
                         text = el.text_content().strip()
                         if text:
                             description_text += text + " "
 
+                    # Fallback: bare p elements
                     if not description_text:
                         for el in container.query_selector_all("p"):
                             text = el.text_content().strip()
                             if text:
                                 description_text += text + " "
 
-                    for img in container.query_selector_all("img"):
+                    # Updated: images are now inside p > img or div > img
+                    for img in container.query_selector_all("p img, div img"):
                         src = img.get_attribute("src") or img.get_attribute("data-src")
                         if src:
                             src = normalize_img_url(src)
