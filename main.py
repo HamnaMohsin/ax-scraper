@@ -130,6 +130,9 @@ def list_products(db: Session = Depends(get_db)):
             "id": p.id,
             "url": p.url,
             "title": p.title,
+            "description":p.description,
+            "refined_title":p.refined_title,
+            "refined_description":p.refined_description,
             "category_id": p.category_id,
             "category_path": p.category_path,
             "llm_predicted_path": p.llm_predicted_path,
@@ -139,6 +142,7 @@ def list_products(db: Session = Depends(get_db)):
         }
         for p in products
        ]
+
 
 
 
