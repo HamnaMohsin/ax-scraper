@@ -21,8 +21,10 @@ for p in products:
     print(f"ID: {p.id}")
     print(f"URL: {p.url}")
     print(f"Title: {p.title}")
+    print(f"Description: {p.description}")
     print(f"Category ID: {p.category_id}")
     print(f"Category Path: {p.category_path}")
     print(f"LLM Predicted Path: {p.llm_predicted_path}")
     print(f"Similarity Score: {p.similarity_score}")
     print(f"Description length: {len(p.description or '')}")
+
