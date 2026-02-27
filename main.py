@@ -1,5 +1,6 @@
 import re
 from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException, Depends, Query
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session
 from database import Base, engine, get_db
 from models import ProductFetched, ProductRefined, CategoryAssignment
 from schemas import (
-    ScrapeRequest, ScrapeResponse,
+    ScrapeRequest, ScrapeResponse, ScrapeResult,
     CategoryRequest, CategoryResponse,
     ProductFetchedOut, ProductRefinedOut,
     CategoryAssignmentOut, ProductFullOut,
@@ -119,24 +120,19 @@ app = FastAPI(title="AliExpress Scraper API", lifespan=lifespan)
 
 # ─── POST /scrape ─────────────────────────────────────────────────────────────
 
-@app.post("/scrape", response_model=ScrapeResponse)
-async def scrape(request: ScrapeRequest, db: Session = Depends(get_db)):
+def _scrape_single(url: str) -> ScrapeResult:
+    """Full scrape pipeline for one URL. Runs inside a thread."""
+    url = url.strip()
     try:
-        print("Starting scrape...")
+        product_id = extract_product_id(url)
+    except ValueError as e:
+        return ScrapeResult(url=url, success=False, error=str(e))
 
-        # Extract product ID from URL before scraping
-        try:
-            product_id = extract_product_id(request.url)
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
-
-        data = await run_in_threadpool(extract_aliexpress_product, request.url)
+    try:
+        data = extract_aliexpress_product(url)
 
         if not data["title"] and not data["description_text"]:
-            raise HTTPException(
-                status_code=422,
-                detail="Failed to extract product content. Page may be blocked or dynamic.",
-            )
+            return ScrapeResult(url=url, success=False, error="No content extracted — page blocked or invalid")
 
         refined = refine_with_llm(data["title"], data["description_text"])
         if not data["description_text"]:
@@ -146,13 +142,20 @@ async def scrape(request: ScrapeRequest, db: Session = Depends(get_db)):
             title=refined["refined_title"],
             description=refined["refined_description"],
         )
-        print(category)
 
-        product = _upsert(db, request.url, product_id, data, refined, category)
-        print(f"Product saved with ID {product.product_id}")
+        # Each thread gets its own DB session to avoid conflicts
+        from database import SessionLocal
+        db = SessionLocal()
+        try:
+            _upsert(db, url, product_id, data, refined, category)
+        finally:
+            db.close()
 
-        return ScrapeResponse(
-            product_id=product.product_id,
+        print(f"✅ Saved product {product_id}")
+        return ScrapeResult(
+            url=url,
+            success=True,
+            product_id=product_id,
             original_title=data["title"],
             original_description=data["description_text"],
             enhanced_title=refined["refined_title"],
@@ -164,11 +167,38 @@ async def scrape(request: ScrapeRequest, db: Session = Depends(get_db)):
             images=data["images"],
         )
 
-    except HTTPException:
-        raise
     except Exception as e:
-        print("Unexpected server error:", e)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        print(f"❌ Error scraping {url}: {e}")
+        return ScrapeResult(url=url, success=False, error=str(e))
+
+
+@app.post("/scrape", response_model=ScrapeResponse)
+async def scrape(request: ScrapeRequest):
+    """
+    Accept comma-separated AliExpress URLs and scrape them all concurrently.
+    Example: { "urls": "https://.../item/123.html, https://.../item/456.html" }
+    """
+    urls = [u.strip() for u in request.urls.split(",") if u.strip()]
+    if not urls:
+        raise HTTPException(status_code=422, detail="No valid URLs provided")
+
+    results: List[ScrapeResult] = []
+
+    # Run all URLs in parallel threads (max 5 at a time to avoid overloading Tor)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(_scrape_single, url): url for url in urls}
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    succeeded = [r for r in results if r.success]
+    failed    = [r for r in results if not r.success]
+
+    return ScrapeResponse(
+        total=len(results),
+        success=len(succeeded),
+        failed=len(failed),
+        results=results,
+    )
 
 
 # ─── POST /categorize ────────────────────────────────────────────────────────
@@ -195,7 +225,7 @@ async def categorize(request: CategoryRequest):
 
 @app.get("/products", response_model=List[ProductFullOut])
 def list_products(
-    limit: int = Query(1, ge=1, le=100),
+    limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
@@ -324,4 +354,3 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
-
