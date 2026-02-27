@@ -3,24 +3,34 @@ from typing import Optional, List
 
 
 class ScrapeRequest(BaseModel):
-    url: str
+    urls: str  # comma-separated AliExpress URLs, e.g. "https://.../item/123.html, https://.../item/456.html"
 
 class CategoryRequest(BaseModel):
     title: str
     description: str
 
 
-class ScrapeResponse(BaseModel):
-    product_id:              int
-    original_title:          str
-    original_description:    Optional[str] = ""
-    enhanced_title:          str
-    enhanced_description:    Optional[str] = ""
-    llm_predicted_category:  str
-    assigned_category:       str
-    category_id:             int
-    similarity_score:        float
+class ScrapeResult(BaseModel):
+    url:                     str
+    success:                 bool
+    error:                   Optional[str] = None
+    product_id:              Optional[int] = None
+    original_title:          Optional[str] = None
+    original_description:    Optional[str] = None
+    enhanced_title:          Optional[str] = None
+    enhanced_description:    Optional[str] = None
+    llm_predicted_category:  Optional[str] = None
+    assigned_category:       Optional[str] = None
+    category_id:             Optional[int] = None
+    similarity_score:        Optional[float] = None
     images:                  Optional[List[str]] = []
+
+
+class ScrapeResponse(BaseModel):
+    total:   int
+    success: int
+    failed:  int
+    results: List[ScrapeResult]
 
 
 class CategoryResponse(BaseModel):
