@@ -195,7 +195,7 @@ async def categorize(request: CategoryRequest):
 
 @app.get("/products", response_model=List[ProductFullOut])
 def list_products(
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(1, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
@@ -324,3 +324,4 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
+
