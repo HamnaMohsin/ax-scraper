@@ -171,12 +171,12 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             page.wait_for_timeout(8000)
             random_delay(2.0, 4.0)
 
-            # ── Scroll gradually to mimic human reading ──
-            for _ in range(10):
-                page.mouse.wheel(0, random.randint(150, 300))
-                page.wait_for_timeout(random.randint(200, 600))
+            # # ── Scroll gradually to mimic human reading ──
+            # for _ in range(10):
+            #     page.mouse.wheel(0, random.randint(150, 300))
+            #     page.wait_for_timeout(random.randint(200, 600))
 
-            random_delay(1.0, 3.0)
+            # random_delay(1.0, 3.0)
 
             # ── CAPTCHA check again after scroll ──
             if detect_recaptcha(page):
@@ -186,31 +186,31 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     rotate_tor_circuit()
                 continue
 
-            # ── Click Description tab — use stable ID selector ──
-            try:
-                desc_tab = page.query_selector('#nav-description')
-                if desc_tab:
-                    random_delay(1.0, 2.0)
-                    print("Clicking Description tab...")
-                    try:
-                        page.keyboard.press("Escape")
-                        page.wait_for_timeout(1000)
-                    except Exception:
-                        pass
-                    desc_tab.click(force=True)
-                    random_delay(3.0, 6.0)
-                    desc_container = page.query_selector("#product-description")
-                    if desc_container:
-                        desc_container.scroll_into_view_if_needed()
-                        for _ in range(5):
-                            page.mouse.wheel(0, random.randint(200, 400))
-                            page.wait_for_timeout(random.randint(300, 700))
-                else:
-                    print("Description tab not found via #nav-description.")
-            except Exception as e:
-                print(f"Could not click Description tab: {e}")
+            # # ── Click Description tab — use stable ID selector ──
+            # try:
+            #     desc_tab = page.query_selector('#nav-description')
+            #     if desc_tab:
+            #         random_delay(1.0, 2.0)
+            #         print("Clicking Description tab...")
+            #         try:
+            #             page.keyboard.press("Escape")
+            #             page.wait_for_timeout(1000)
+            #         except Exception:
+            #             pass
+            #         desc_tab.click(force=True)
+            #         random_delay(3.0, 6.0)
+            #         desc_container = page.query_selector("#product-description")
+            #         if desc_container:
+            #             desc_container.scroll_into_view_if_needed()
+            #             for _ in range(5):
+            #                 page.mouse.wheel(0, random.randint(200, 400))
+            #                 page.wait_for_timeout(random.randint(300, 700))
+            #     else:
+            #         print("Description tab not found via #nav-description.")
+            # except Exception as e:
+            #     print(f"Could not click Description tab: {e}")
 
-            random_delay(1.0, 2.0)
+            # random_delay(1.0, 2.0)
 
             # ── Extract title ──
             def safe_query_text(selector: str) -> str:
@@ -222,10 +222,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 "[data-pl='product-title']",
                 ".title--wrap--NWOaiSp h1",   # updated class
                 ".product-title-text",
-                ".title--wrap--UUHae_g h1",
-                "h1.pdp-title",
-                "#root h1",
-                "h1",
             ]
             for sel in title_selectors:
                 candidate = safe_query_text(sel)
