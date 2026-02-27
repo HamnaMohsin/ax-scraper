@@ -203,22 +203,22 @@ async def scrape(request: ScrapeRequest):
 
 # ─── POST /categorize ────────────────────────────────────────────────────────
 
-@app.post("/categorize", response_model=CategoryResponse)
-async def categorize(request: CategoryRequest):
-    try:
-        category = await run_in_threadpool(
-            categorize_product,
-            title=request.title,
-            description=request.description,
-        )
-        return CategoryResponse(
-            category_id=category["matched_category_id"],
-            category_path=category["matched_category_path"],
-            similarity_score=float(category["similarity_score"]),
-        )
-    except Exception as e:
-        print("Categorize error:", e)
-        raise HTTPException(status_code=500, detail="Internal server error")
+# @app.post("/categorize", response_model=CategoryResponse)
+# async def categorize(request: CategoryRequest):
+#     try:
+#         category = await run_in_threadpool(
+#             categorize_product,
+#             title=request.title,
+#             description=request.description,
+#         )
+#         return CategoryResponse(
+#             category_id=category["matched_category_id"],
+#             category_path=category["matched_category_path"],
+#             similarity_score=float(category["similarity_score"]),
+#         )
+#     except Exception as e:
+#         print("Categorize error:", e)
+#         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ─── GET /products ────────────────────────────────────────────────────────────
@@ -354,3 +354,4 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
+
