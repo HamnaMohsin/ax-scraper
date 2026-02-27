@@ -204,7 +204,9 @@ def list_products(
     return [_build_full_out(p) for p in products]
 
 
-# ─── GET /products/fetched ────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# TABLE 1 — product_fetched
+# ══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/products/fetched", response_model=List[ProductFetchedOut])
 def list_fetched(
@@ -212,11 +214,33 @@ def list_fetched(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Raw scraped data only. Supports pagination."""
+    """List all raw scraped products. Supports pagination."""
     return db.query(ProductFetched).offset(offset).limit(limit).all()
 
 
-# ─── GET /products/refined ────────────────────────────────────────────────────
+@app.get("/products/fetched/{product_id}", response_model=ProductFetchedOut)
+def get_fetched(product_id: int, db: Session = Depends(get_db)):
+    """Get raw scraped data for a single product."""
+    row = db.query(ProductFetched).filter(ProductFetched.product_id == product_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Product not found in product_fetched")
+    return row
+
+
+@app.delete("/products/fetched/{product_id}")
+def delete_fetched(product_id: int, db: Session = Depends(get_db)):
+    """Delete a product and cascade to refined + category tables."""
+    row = db.query(ProductFetched).filter(ProductFetched.product_id == product_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Product not found in product_fetched")
+    db.delete(row)
+    db.commit()
+    return {"message": f"Product {product_id} deleted (cascaded to all tables)"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TABLE 2 — product_refined
+# ══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/products/refined", response_model=List[ProductRefinedOut])
 def list_refined(
@@ -224,11 +248,33 @@ def list_refined(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """LLM-enhanced content only. Supports pagination."""
+    """List all LLM-enhanced products. Supports pagination."""
     return db.query(ProductRefined).offset(offset).limit(limit).all()
 
 
-# ─── GET /products/categories ─────────────────────────────────────────────────
+@app.get("/products/refined/{product_id}", response_model=ProductRefinedOut)
+def get_refined(product_id: int, db: Session = Depends(get_db)):
+    """Get LLM-enhanced title and description for a single product."""
+    row = db.query(ProductRefined).filter(ProductRefined.product_id == product_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Product not found in product_refined")
+    return row
+
+
+@app.delete("/products/refined/{product_id}")
+def delete_refined(product_id: int, db: Session = Depends(get_db)):
+    """Delete only the refined row for a product (keeps fetched + category)."""
+    row = db.query(ProductRefined).filter(ProductRefined.product_id == product_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Product not found in product_refined")
+    db.delete(row)
+    db.commit()
+    return {"message": f"Refined data for product {product_id} deleted"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TABLE 3 — category_assignment
+# ══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/products/categories", response_model=List[CategoryAssignmentOut])
 def list_categories(
@@ -238,7 +284,7 @@ def list_categories(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Category assignments. Filter by category_id or min_score. Supports pagination."""
+    """List category assignments. Filter by category_id or min_score. Supports pagination."""
     q = db.query(CategoryAssignment)
     if category_id is not None:
         q = q.filter(CategoryAssignment.category_id == category_id)
@@ -247,25 +293,34 @@ def list_categories(
     return q.offset(offset).limit(limit).all()
 
 
-# ─── GET /products/{product_id} ───────────────────────────────────────────────
+@app.get("/products/categories/{product_id}", response_model=CategoryAssignmentOut)
+def get_category(product_id: int, db: Session = Depends(get_db)):
+    """Get category assignment for a single product."""
+    row = db.query(CategoryAssignment).filter(CategoryAssignment.product_id == product_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Product not found in category_assignment")
+    return row
+
+
+@app.delete("/products/categories/{product_id}")
+def delete_category(product_id: int, db: Session = Depends(get_db)):
+    """Delete only the category row for a product (keeps fetched + refined)."""
+    row = db.query(CategoryAssignment).filter(CategoryAssignment.product_id == product_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Product not found in category_assignment")
+    db.delete(row)
+    db.commit()
+    return {"message": f"Category assignment for product {product_id} deleted"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JOINED VIEW — all three tables
+# ══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/products/{product_id}", response_model=ProductFullOut)
 def get_product(product_id: int, db: Session = Depends(get_db)):
-    """Full detail for a single product by its AliExpress product ID."""
+    """Full joined detail for a single product across all three tables."""
     p = db.query(ProductFetched).filter(ProductFetched.product_id == product_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
-
-
-# ─── DELETE /products/{product_id} ───────────────────────────────────────────
-
-@app.delete("/products/{product_id}")
-def delete_product(product_id: int, db: Session = Depends(get_db)):
-    """Delete a product and cascade to refined + category tables."""
-    p = db.query(ProductFetched).filter(ProductFetched.product_id == product_id).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Product not found")
-    db.delete(p)
-    db.commit()
-    return {"message": f"Product {product_id} deleted successfully"}
