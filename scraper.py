@@ -160,8 +160,23 @@ def extract_from_plain_dom(page) -> tuple:
 
     print("Falling back to plain DOM extraction...")
 
-    all_els = container.query_selector_all("p, span, li, h3, h4")
-    for el in all_els:
+    # Priority: target the known AliExpress rich-text description wrapper directly
+    richtext = container.query_selector(".detail-desc-decorate-richtext") or \
+               container.query_selector(".detailmodule_html") or \
+               container
+
+    # Extract images first — works even for image-only descriptions
+    for img in richtext.query_selector_all("img"):
+        src = img.get_attribute("src") or img.get_attribute("data-src") or ""
+        src = normalize_img_url(src)
+        if "alicdn" in src and src not in images:
+            images.append(src)
+
+    if images:
+        print(f"Plain DOM: found {len(images)} description images")
+
+    # Extract text — leaf nodes only to avoid duplicating parent/child text
+    for el in richtext.query_selector_all("p, span, li, h3, h4"):
         try:
             child_count = el.evaluate("e => e.children.length")
             text = el.text_content().strip()
@@ -170,16 +185,11 @@ def extract_from_plain_dom(page) -> tuple:
         except Exception:
             pass
 
-    for img in container.query_selector_all("img"):
-        src = img.get_attribute("src") or img.get_attribute("data-src") or ""
-        src = normalize_img_url(src)
-        if "alicdn" in src:
-            images.append(src)
-
+    # Sanity check: discard if mostly price data
     if description_text:
         dollar_ratio = description_text.count("$") / max(len(description_text), 1)
         if dollar_ratio > 0.02:
-            print(f"Plain DOM text looks like price data — discarding.")
+            print("Plain DOM text looks like price data — discarding.")
             description_text = ""
 
     return description_text.strip(), list(dict.fromkeys(images))
