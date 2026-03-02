@@ -8,14 +8,12 @@ from bs4 import BeautifulSoup
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def random_delay(min_sec: float = 1.0, max_sec: float = 3.0):
-    """Sleep for a random duration to mimic human behaviour."""
     delay = random.uniform(min_sec, max_sec)
     print(f"Waiting {delay:.1f}s...")
     time.sleep(delay)
 
 
 def rotate_tor_circuit():
-    """Signal Tor to build a new circuit (new exit IP)."""
     try:
         from stem import Signal
         from stem.control import Controller
@@ -29,10 +27,6 @@ def rotate_tor_circuit():
 
 
 def detect_recaptcha(page) -> bool:
-    """
-    Returns True only if a real CAPTCHA/block page is detected.
-    Checks DOM selectors and URL — avoids false positives on product titles.
-    """
     indicators = [
         "iframe[src*='recaptcha']",
         "iframe[src*='google.com/recaptcha']",
@@ -58,7 +52,7 @@ def detect_recaptcha(page) -> bool:
     page_title_lower = page_title.lower()
     is_product_page = "aliexpress" in page_title_lower and len(page_title) > 40
     if not is_product_page:
-        block_titles = ["verify", "captcha", "robot", "access denied", "blocked"]
+        block_titles = ["verify", "captcha", "robot", "access denied", "blocked", "aanmelden", "sign in"]
         if any(kw in page_title_lower for kw in block_titles):
             print(f"Block detected via page title: '{page_title}'")
             return True
@@ -96,16 +90,12 @@ def clean_text(text: str) -> str:
 
 SHADOW_DOM_EXTRACT_JS = """
 () => {
-    // AliExpress wraps description content in a Declarative Shadow DOM
-    // (<template shadowrootmode="open">). Standard query_selector cannot
-    // pierce this boundary — we must access .shadowRoot via JS.
     const host = document.querySelector('#product-description [data-spm-anchor-id]');
     if (!host || !host.shadowRoot) return null;
 
     const root = host.shadowRoot;
 
-    // Remove the comparison/price table — it generates garbage text
-    // (repeated prices, ratings, materials) that pollutes the description.
+    // Remove comparison/price table noise
     const junkSelectors = [
         '.comparison-table',
         '.premium-aplus-module-5',
@@ -115,17 +105,16 @@ SHADOW_DOM_EXTRACT_JS = """
         root.querySelectorAll(sel).forEach(el => el.remove());
     });
 
-    // Extract meaningful text from known AliExpress A+ content classes.
-    // Using a Set to deduplicate repeated strings (carousels repeat headings).
     const textSelectors = [
-        '.aplus-p1',           // Main description paragraphs
-        '.aplus-p3',           // Two-column feature descriptions
-        '.aplus-description',  // Alternative description wrapper
-        'h3',                  // Section headings
-        'h4.aplus-h1',         // Feature headings inside carousels
-        'h1.aplus-h3',         // Column headings (module-4 layout)
-        '.card-description p', // Card-style description paragraphs
+        '.aplus-p1',
+        '.aplus-p3',
+        '.aplus-description',
+        'h3',
+        'h4.aplus-h1',
+        'h1.aplus-h3',
+        '.card-description p',
         '.column-description p',
+        'p',
     ];
 
     const seen = new Set();
@@ -140,7 +129,6 @@ SHADOW_DOM_EXTRACT_JS = """
         });
     }
 
-    // Extract images — alicdn only, deduplicated
     const images = [];
     const seenSrc = new Set();
     root.querySelectorAll('img').forEach(img => {
@@ -159,13 +147,9 @@ SHADOW_DOM_EXTRACT_JS = """
 """
 
 
-# ── Fallback: plain DOM extraction (for non-shadow products) ──────────────────
+# ── Fallback: plain DOM extraction ────────────────────────────────────────────
 
-def extract_from_plain_dom(page) -> tuple[str, list]:
-    """
-    Fallback extraction for products that don't use Shadow DOM.
-    Targets leaf-level text nodes only to avoid duplicating parent/child text.
-    """
+def extract_from_plain_dom(page) -> tuple:
     description_text = ""
     images = []
 
@@ -176,7 +160,6 @@ def extract_from_plain_dom(page) -> tuple[str, list]:
 
     print("Falling back to plain DOM extraction...")
 
-    # Leaf-node-only text (children.length === 0 prevents double-counting)
     all_els = container.query_selector_all("p, span, li, h3, h4")
     for el in all_els:
         try:
@@ -187,19 +170,16 @@ def extract_from_plain_dom(page) -> tuple[str, list]:
         except Exception:
             pass
 
-    # Images
     for img in container.query_selector_all("img"):
         src = img.get_attribute("src") or img.get_attribute("data-src") or ""
         src = normalize_img_url(src)
         if "alicdn" in src:
             images.append(src)
 
-    # Sanity check: if text is mostly price data, discard it
     if description_text:
         dollar_ratio = description_text.count("$") / max(len(description_text), 1)
         if dollar_ratio > 0.02:
-            print(f"WARNING: Plain DOM text looks like price data "
-                  f"(${dollar_ratio:.1%} dollar ratio) — discarding.")
+            print(f"Plain DOM text looks like price data — discarding.")
             description_text = ""
 
     return description_text.strip(), list(dict.fromkeys(images))
@@ -208,19 +188,6 @@ def extract_from_plain_dom(page) -> tuple[str, list]:
 # ── Main scraper ───────────────────────────────────────────────────────────────
 
 def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
-    """
-    Scrape an AliExpress product page for title, description text, and images.
-
-    Handles:
-      - Declarative Shadow DOM (most products after 2024)
-      - Plain DOM fallback (older/simpler product pages)
-      - Tor SOCKS5 proxy with circuit rotation
-      - Human-like delays and scroll behaviour
-      - CAPTCHA / block page detection
-
-    Returns:
-        dict with keys: title, description_text, images
-    """
     print("Starting scrape...")
 
     base_url = url.split('#')[0].strip()
@@ -246,6 +213,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--single-process",
                 ]
             )
             context = browser.new_context(
@@ -267,8 +236,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 bypass_csp=True,
             )
             page = context.new_page()
-
-            # Mask the webdriver flag — primary bot detection trigger
             page.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
@@ -282,30 +249,27 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 browser.close()
                 continue
 
-            # ── CAPTCHA check immediately after load ──────────────────────────
             if detect_recaptcha(page):
                 print("CAPTCHA detected — rotating circuit and retrying.")
                 browser.close()
                 continue
 
-            # ── Wait for JS/React to render ───────────────────────────────────
             page.wait_for_timeout(8000)
             random_delay(2.0, 4.0)
 
-            # ── Scroll to trigger lazy loading of description section ─────────
+            # ── Scroll gradually to trigger lazy loading ───────────────────────
             for _ in range(10):
                 page.mouse.wheel(0, random.randint(150, 300))
                 page.wait_for_timeout(random.randint(200, 500))
 
             random_delay(1.0, 3.0)
 
-            # ── CAPTCHA check again after scroll ─────────────────────────────
             if detect_recaptcha(page):
                 print("CAPTCHA detected after scroll — rotating circuit and retrying.")
                 browser.close()
                 continue
 
-            # ── Scroll description into view to ensure shadow root attaches ───
+            # ── Scroll description into view ───────────────────────────────────
             try:
                 page.evaluate(
                     "document.querySelector('#product-description')?.scrollIntoView()"
@@ -314,12 +278,32 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             except Exception:
                 pass
 
+            # ── KEY FIX: wait for shadow root to be populated ─────────────────
+            # AliExpress loads description content via XHR after the element
+            # enters the viewport. The shadow root exists but is empty until
+            # the XHR completes — we poll until it has real content.
+            try:
+                page.wait_for_function(
+                    """() => {
+                        const host = document.querySelector(
+                            '#product-description [data-spm-anchor-id]'
+                        );
+                        if (!host || !host.shadowRoot) return false;
+                        return (host.shadowRoot.textContent || '').trim().length > 50;
+                    }""",
+                    timeout=12000,
+                )
+                print("Shadow root populated — proceeding with extraction.")
+            except Exception:
+                print("Shadow root did not populate in 12s — will try fallbacks.")
+
             # ── Extract title ─────────────────────────────────────────────────
             def safe_query_text(selector: str) -> str:
                 el = page.query_selector(selector)
                 return el.text_content().strip() if el else ""
 
             title = ""
+            BLOCKED_TITLES = {"aliexpress", "", "aanmelden", "sign in", "log in", "login", "verify", "robot"}
             title_selectors = [
                 "[data-pl='product-title']",
                 ".title--wrap--NWOaiSp h1",
@@ -331,7 +315,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             ]
             for sel in title_selectors:
                 candidate = safe_query_text(sel)
-                if candidate and candidate.lower().strip() not in ("aliexpress", ""):
+                if candidate and candidate.lower().strip() not in BLOCKED_TITLES:
                     title = candidate
                     print(f"Title found via '{sel}': {title[:60]}")
                     break
@@ -345,26 +329,23 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             description_text = ""
             images = []
 
-            # Strategy 1: Shadow DOM (Declarative Shadow Root — most products)
+            # Strategy 1: Shadow DOM
             try:
                 result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
                 if result:
                     description_text = result.get("text", "").strip()
                     images = result.get("images", [])
                     if description_text or images:
-                        print(
-                            f"Shadow DOM extraction successful: "
-                            f"{len(description_text)} chars, {len(images)} images"
-                        )
+                        print(f"Shadow DOM: {len(description_text)} chars, {len(images)} images")
             except Exception as e:
                 print(f"Shadow DOM extraction error: {e}")
 
-            # Strategy 2: Plain DOM fallback (older product pages)
+            # Strategy 2: Plain DOM fallback
             if not description_text and not images:
                 print("Shadow DOM returned nothing — trying plain DOM fallback...")
                 description_text, images = extract_from_plain_dom(page)
 
-            # Strategy 3: iframe fallback (rare, some sellers embed an iframe)
+            # Strategy 3: iframe fallback
             if not description_text and not images:
                 print("Trying iframe fallback...")
                 try:
@@ -395,13 +376,12 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                                 images.append(src)
 
                         if description_text or images:
-                            print(f"iframe extraction successful: "
-                                  f"{len(description_text)} chars, {len(images)} images")
+                            print(f"iframe: {len(description_text)} chars, {len(images)} images")
                             break
                 except Exception as e:
                     print(f"iframe fallback error: {e}")
 
-            images = list(dict.fromkeys(images))  # deduplicate, preserve order
+            images = list(dict.fromkeys(images))
 
             if not description_text:
                 print("No description text extracted (seller may use image-only description).")
