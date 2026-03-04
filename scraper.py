@@ -86,8 +86,62 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
+# ── Strategy 1: Shadow DOM (JS) ───────────────────────────────────────────────
+# Some AliExpress products (A+ content) wrap descriptions inside a Declarative
+# Shadow DOM that Playwright cannot pierce with normal selectors.
+# This JS runs inside the browser and reads the shadow root directly.
 
-# ── Fallback: plain DOM extraction ────────────────────────────────────────────
+SHADOW_DOM_EXTRACT_JS = """
+() => {
+    const host = document.querySelector('#product-description [data-spm-anchor-id]');
+    if (!host || !host.shadowRoot) return null;
+
+    const root = host.shadowRoot;
+
+    // Remove comparison/price table noise before extracting
+    ['.comparison-table', '.premium-aplus-module-5', '.apm-brand-story-carousel-container']
+        .forEach(sel => root.querySelectorAll(sel).forEach(el => el.remove()));
+
+    const textSelectors = [
+        '.aplus-p1', '.aplus-p3', '.aplus-description',
+        'h3', 'h4.aplus-h1', 'h1.aplus-h3',
+        '.card-description p', '.column-description p', 'p',
+    ];
+
+    const seen = new Set();
+    let text = '';
+    for (const sel of textSelectors) {
+        root.querySelectorAll(sel).forEach(el => {
+            const t = (el.innerText || el.textContent || '').trim();
+            if (t && t.length > 5 && !seen.has(t)) {
+                seen.add(t);
+                text += t + ' ';
+            }
+        });
+    }
+
+    const images = [];
+    const seenSrc = new Set();
+    root.querySelectorAll('img').forEach(img => {
+        let src = img.getAttribute('src') || img.getAttribute('data-src') || '';
+        if (!src) return;
+        src = src.trim();
+        if (src.startsWith('//')) src = 'https:' + src;
+        if (src.includes('alicdn') && !seenSrc.has(src)) {
+            seenSrc.add(src);
+            images.push(src);
+        }
+    });
+
+    return { text: text.trim(), images };
+}
+"""
+
+
+# ── Strategy 2: Plain DOM extraction ─────────────────────────────────────────
+# For standard products that don't use Shadow DOM.
+# AliExpress interleaves text and image modules in arbitrary order so we walk
+# ALL known module containers and extract from each one encountered.
 
 def extract_from_plain_dom(page) -> tuple:
     description_text = ""
@@ -95,45 +149,37 @@ def extract_from_plain_dom(page) -> tuple:
 
     container = page.query_selector("#product-description")
     if not container:
-        print("Description container not found in plain DOM either.")
+        print("Description container not found.")
         return "", []
 
-    print("Falling back to plain DOM extraction...")
+    print("Trying plain DOM extraction...")
 
-    # Walk every direct child module of #product-description in order.
-    # AliExpress interleaves text and image modules arbitrarily — e.g:
-    #   div.detailmodule_image → imgs
-    #   div.detailmodule_text  → paragraphs
-    #   div.richTextContainer  → mixed rich text
-    #   div.detailmodule_image → more imgs
-    # We extract from each module as we encounter it to preserve order.
-
+    # All known AliExpress description module class names.
+    # Text and images can be in any order across these sibling divs.
     modules = container.query_selector_all(
         "div.detailmodule_image, "
         "div.detailmodule_text, "
         "div.detailmodule_html, "
         "div.detail-desc-decorate-richtext, "
-        "div.richTextContainer"
+        "div.richTextContainer, "
+        "div.styleIsolation"
     )
 
-    if not modules:
-        # No known module classes — fall back to scanning the whole container
-        modules = [container]
+    # If no known modules found, treat the whole container as one block
+    targets = list(modules) if modules else [container]
 
-    for module in modules:
-        # ── Images ──
+    for module in targets:
+        # Images
         for img in module.query_selector_all("img"):
             src = img.get_attribute("src") or img.get_attribute("data-src") or ""
             src = normalize_img_url(src)
             if "alicdn" in src and src not in images:
                 images.append(src)
 
-        # ── Text ──
-        # Try the specific AliExpress paragraph class first
+        # Text — try exact AliExpress paragraph class first
         text_els = module.query_selector_all("p.detail-desc-decorate-content")
         if not text_els:
-            # Fall back to any leaf-level text nodes
-            text_els = module.query_selector_all("p, span, li, h3, h4")
+            text_els = module.query_selector_all("p, li, h3, h4")
 
         for el in text_els:
             try:
@@ -144,17 +190,15 @@ def extract_from_plain_dom(page) -> tuple:
             except Exception:
                 pass
 
-    # Sanity check: discard text if it's mostly price comparison data
+    # Discard text if it looks like price comparison table data
     if description_text:
         dollar_ratio = description_text.count("$") / max(len(description_text), 1)
         if dollar_ratio > 0.02:
-            print("Plain DOM text looks like price data — discarding.")
+            print("Plain DOM: text looks like price data — discarding.")
             description_text = ""
 
-    if images:
-        print(f"Plain DOM: found {len(images)} images")
-    if description_text:
-        print(f"Plain DOM: found {len(description_text)} chars of text")
+    if description_text or images:
+        print(f"Plain DOM: {len(description_text)} chars, {len(images)} images")
 
     return description_text.strip(), list(dict.fromkeys(images))
 
@@ -243,6 +287,33 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 browser.close()
                 continue
 
+            # ── Scroll description into view and wait for content ─────────────
+            try:
+                page.evaluate(
+                    "document.querySelector('#product-description')?.scrollIntoView()"
+                )
+                page.wait_for_timeout(3000)
+            except Exception:
+                pass
+
+            # Poll until description has content — works for both shadow DOM
+            # (XHR-loaded A+ content) and plain DOM (lazy-loaded standard content)
+            try:
+                page.wait_for_function(
+                    """() => {
+                        const c = document.querySelector('#product-description');
+                        if (!c) return false;
+                        const host = c.querySelector('[data-spm-anchor-id]');
+                        if (host && host.shadowRoot)
+                            return (host.shadowRoot.textContent || '').trim().length > 50;
+                        return c.textContent.trim().length > 50;
+                    }""",
+                    timeout=12000,
+                )
+                print("Description content loaded.")
+            except Exception:
+                print("Description did not load in 12s — attempting extraction anyway.")
+
             # ── Extract title ─────────────────────────────────────────────────
             def safe_query_text(selector: str) -> str:
                 el = page.query_selector(selector)
@@ -275,10 +346,22 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             description_text = ""
             images = []
 
-            # Strategy 1: Plain DOM
-            description_text, images = extract_from_plain_dom(page)
+            # Strategy 1: Shadow DOM (A+ content)
+            try:
+                result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
+                if result:
+                    description_text = result.get("text", "").strip()
+                    images = result.get("images", [])
+                    if description_text or images:
+                        print(f"Shadow DOM: {len(description_text)} chars, {len(images)} images")
+            except Exception as e:
+                print(f"Shadow DOM error: {e}")
 
-            # Strategy 2: iframe fallback
+            # Strategy 2: Plain DOM (standard products)
+            if not description_text and not images:
+                description_text, images = extract_from_plain_dom(page)
+
+            # Strategy 3: iframe fallback (rare sellers)
             if not description_text and not images:
                 print("Trying iframe fallback...")
                 try:
@@ -292,7 +375,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                             continue
                         frame.wait_for_load_state("domcontentloaded")
                         frame.wait_for_timeout(2000)
-
                         for el in frame.query_selector_all("p, span, div"):
                             try:
                                 child_count = el.evaluate("e => e.children.length")
@@ -301,13 +383,11 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                                     description_text += text + " "
                             except Exception:
                                 pass
-
                         for img in frame.query_selector_all("img"):
                             src = img.get_attribute("src") or img.get_attribute("data-src") or ""
                             src = normalize_img_url(src)
                             if "alicdn" in src:
                                 images.append(src)
-
                         if description_text or images:
                             print(f"iframe: {len(description_text)} chars, {len(images)} images")
                             break
