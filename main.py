@@ -469,56 +469,56 @@ def get_refined(product_id: int, db: Session = Depends(get_db)):
     return row
 
 
-@app.delete("/products/refined/{product_id}")
-def delete_refined(product_id: int, db: Session = Depends(get_db)):
-    """Delete only the refined row for a product (keeps fetched + category)."""
-    row = db.query(ProductRefined).filter(ProductRefined.product_id == product_id).first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Product not found in product_refined")
-    db.delete(row)
-    db.commit()
-    return {"message": f"Refined data for product {product_id} deleted"}
+# @app.delete("/products/refined/{product_id}")
+# def delete_refined(product_id: int, db: Session = Depends(get_db)):
+#     """Delete only the refined row for a product (keeps fetched + category)."""
+#     row = db.query(ProductRefined).filter(ProductRefined.product_id == product_id).first()
+#     if not row:
+#         raise HTTPException(status_code=404, detail="Product not found in product_refined")
+#     db.delete(row)
+#     db.commit()
+#     return {"message": f"Refined data for product {product_id} deleted"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TABLE 3 — category_assignment
 # ══════════════════════════════════════════════════════════════════════════════
 
-@app.get("/products/categories", response_model=List[CategoryAssignmentOut])
-def list_categories(
-    category_id: Optional[int] = Query(None, description="Filter by assigned category ID"),
-    min_score: Optional[float] = Query(None, description="Minimum similarity score"),
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
-):
-    """List category assignments. Filter by category_id or min_score. Supports pagination."""
-    q = db.query(CategoryAssignment)
-    if category_id is not None:
-        q = q.filter(CategoryAssignment.category_id == category_id)
-    if min_score is not None:
-        q = q.filter(CategoryAssignment.similarity_score >= min_score)
-    return q.offset(offset).limit(limit).all()
+# @app.get("/products/categories", response_model=List[CategoryAssignmentOut])
+# def list_categories(
+#     category_id: Optional[int] = Query(None, description="Filter by assigned category ID"),
+#     min_score: Optional[float] = Query(None, description="Minimum similarity score"),
+#     limit: int = Query(20, ge=1, le=100),
+#     offset: int = Query(0, ge=0),
+#     db: Session = Depends(get_db),
+# ):
+#     """List category assignments. Filter by category_id or min_score. Supports pagination."""
+#     q = db.query(CategoryAssignment)
+#     if category_id is not None:
+#         q = q.filter(CategoryAssignment.category_id == category_id)
+#     if min_score is not None:
+#         q = q.filter(CategoryAssignment.similarity_score >= min_score)
+#     return q.offset(offset).limit(limit).all()
 
 
-@app.get("/products/categories/{product_id}", response_model=CategoryAssignmentOut)
-def get_category(product_id: int, db: Session = Depends(get_db)):
-    """Get category assignment for a single product."""
-    row = db.query(CategoryAssignment).filter(CategoryAssignment.product_id == product_id).first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Product not found in category_assignment")
-    return row
+# @app.get("/products/categories/{product_id}", response_model=CategoryAssignmentOut)
+# def get_category(product_id: int, db: Session = Depends(get_db)):
+#     """Get category assignment for a single product."""
+#     row = db.query(CategoryAssignment).filter(CategoryAssignment.product_id == product_id).first()
+#     if not row:
+#         raise HTTPException(status_code=404, detail="Product not found in category_assignment")
+#     return row
 
 
-@app.delete("/products/categories/{product_id}")
-def delete_category(product_id: int, db: Session = Depends(get_db)):
-    """Delete only the category row for a product (keeps fetched + refined)."""
-    row = db.query(CategoryAssignment).filter(CategoryAssignment.product_id == product_id).first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Product not found in category_assignment")
-    db.delete(row)
-    db.commit()
-    return {"message": f"Category assignment for product {product_id} deleted"}
+# @app.delete("/products/categories/{product_id}")
+# def delete_category(product_id: int, db: Session = Depends(get_db)):
+#     """Delete only the category row for a product (keeps fetched + refined)."""
+#     row = db.query(CategoryAssignment).filter(CategoryAssignment.product_id == product_id).first()
+#     if not row:
+#         raise HTTPException(status_code=404, detail="Product not found in category_assignment")
+#     db.delete(row)
+#     db.commit()
+#     return {"message": f"Category assignment for product {product_id} deleted"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -532,3 +532,4 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
+
