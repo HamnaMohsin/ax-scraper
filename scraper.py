@@ -160,30 +160,52 @@ def extract_from_plain_dom(page) -> tuple:
 
     print("Falling back to plain DOM extraction...")
 
-    # Priority: target the known AliExpress rich-text description wrapper directly
+    # Text container — targets known AliExpress description wrappers
     richtext = container.query_selector(".detail-desc-decorate-richtext") or \
+               container.query_selector(".detailmodule_text") or \
                container.query_selector(".detailmodule_html") or \
                container
 
-    # Extract images first — works even for image-only descriptions
-    for img in richtext.query_selector_all("img"):
+    # Extract images — search ALL detailmodule_* divs inside #product-description
+    # because AliExpress splits text and images into separate sibling containers:
+    #   div.detailmodule_text  → text paragraphs
+    #   div.detailmodule_image → images
+    for img in container.query_selector_all("div.detailmodule_image img, div.detailmodule_html img, div.detail-desc-decorate-richtext img"):
         src = img.get_attribute("src") or img.get_attribute("data-src") or ""
         src = normalize_img_url(src)
         if "alicdn" in src and src not in images:
             images.append(src)
 
+    # Fallback: if none found via specific containers, grab all alicdn imgs in description
+    if not images:
+        for img in container.query_selector_all("img"):
+            src = img.get_attribute("src") or img.get_attribute("data-src") or ""
+            src = normalize_img_url(src)
+            if "alicdn" in src and src not in images:
+                images.append(src)
+
     if images:
         print(f"Plain DOM: found {len(images)} description images")
 
-    # Extract text — leaf nodes only to avoid duplicating parent/child text
-    for el in richtext.query_selector_all("p, span, li, h3, h4"):
-        try:
-            child_count = el.evaluate("e => e.children.length")
+    # Extract text — for detailmodule_text also try p.detail-desc-decorate-content directly
+    specific_text_els = richtext.query_selector_all("p.detail-desc-decorate-content")
+    if specific_text_els:
+        for el in specific_text_els:
             text = el.text_content().strip()
-            if child_count == 0 and text and len(text) > 5:
+            if text and len(text) > 5:
                 description_text += text + " "
-        except Exception:
-            pass
+        print(f"Plain DOM: found text via p.detail-desc-decorate-content")
+
+    # Fallback to leaf node extraction if specific selector found nothing
+    if not description_text:
+        for el in richtext.query_selector_all("p, span, li, h3, h4"):
+            try:
+                child_count = el.evaluate("e => e.children.length")
+                text = el.text_content().strip()
+                if child_count == 0 and text and len(text) > 5:
+                    description_text += text + " "
+            except Exception:
+                pass
 
     # Sanity check: discard if mostly price data
     if description_text:
@@ -318,10 +340,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 "[data-pl='product-title']",
                 ".title--wrap--NWOaiSp h1",
                 ".product-title-text",
-                ".title--wrap--UUHae_g h1",
-                "h1.pdp-title",
-                "#root h1",
-                "h1",
             ]
             for sel in title_selectors:
                 candidate = safe_query_text(sel)
