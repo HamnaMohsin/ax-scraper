@@ -203,22 +203,22 @@ async def scrape(request: ScrapeRequest):
 
 # ─── POST /categorize ────────────────────────────────────────────────────────
 
-# @app.post("/categorize", response_model=CategoryResponse)
-# async def categorize(request: CategoryRequest):
-#     try:
-#         category = await run_in_threadpool(
-#             categorize_product,
-#             title=request.title,
-#             description=request.description,
-#         )
-#         return CategoryResponse(
-#             category_id=category["matched_category_id"],
-#             category_path=category["matched_category_path"],
-#             similarity_score=float(category["similarity_score"]),
-#         )
-#     except Exception as e:
-#         print("Categorize error:", e)
-#         raise HTTPException(status_code=500, detail="Internal server error")
+@app.post("/categorize", response_model=CategoryResponse)
+async def categorize(request: CategoryRequest):
+    try:
+        category = await run_in_threadpool(
+            categorize_product,
+            title=request.title,
+            description=request.description,
+        )
+        return CategoryResponse(
+            category_id=category["matched_category_id"],
+            category_path=category["matched_category_path"],
+            similarity_score=float(category["similarity_score"]),
+        )
+    except Exception as e:
+        print("Categorize error:", e)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ─── GET /products ────────────────────────────────────────────────────────────
@@ -234,8 +234,186 @@ def list_products(
     return [_build_full_out(p) for p in products]
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TABLE 1 — product_fetched
+
+
+# ─── POST /scrape-only ────────────────────────────────────────────────────────
+# Step 1: Scrape URL and save raw data to product_fetched only
+
+@app.post("/scrape-only")
+async def scrape_only(request: ScrapeRequest):
+    """
+    Scrape one or more URLs and save raw title, description, images
+    to product_fetched table only. No LLM refinement or categorization.
+    """
+    urls = [u.strip() for u in request.urls.split(",") if u.strip()]
+    if not urls:
+        raise HTTPException(status_code=422, detail="No valid URLs provided")
+
+    results = []
+
+    def _scrape_and_save(url: str):
+        try:
+            product_id = extract_product_id(url)
+        except ValueError as e:
+            return {"url": url, "success": False, "error": str(e)}
+
+        try:
+            data = extract_aliexpress_product(url)
+            if not data["title"]:
+                return {"url": url, "success": False, "error": "No title extracted — page blocked or invalid"}
+
+            from database import SessionLocal
+            db = SessionLocal()
+            try:
+                product = db.query(ProductFetched).filter(ProductFetched.product_id == product_id).first()
+                if product:
+                    product.title       = data["title"]
+                    product.description = data["description_text"]
+                    product.images      = data["images"]
+                else:
+                    product = ProductFetched(
+                        product_id=product_id,
+                        url=url,
+                        title=data["title"],
+                        description=data["description_text"],
+                        images=data["images"],
+                    )
+                    db.add(product)
+                db.commit()
+                db.refresh(product)
+            finally:
+                db.close()
+
+            return {
+                "url": url,
+                "success": True,
+                "product_id": product_id,
+                "title": data["title"],
+                "description": data["description_text"],
+                "images": data["images"],
+            }
+        except Exception as e:
+            return {"url": url, "success": False, "error": str(e)}
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {executor.submit(_scrape_and_save, url): url for url in urls}
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    return {
+        "total":   len(results),
+        "success": sum(1 for r in results if r["success"]),
+        "failed":  sum(1 for r in results if not r["success"]),
+        "results": results,
+    }
+
+
+# ─── POST /refine/{product_id} ────────────────────────────────────────────────
+# Step 2: Take raw title+description from product_fetched, refine with LLM,
+#         save to product_refined
+
+@app.post("/refine/{product_id}")
+async def refine(product_id: int, db: Session = Depends(get_db)):
+    """
+    Read title and description from product_fetched for the given product_id,
+    send to LLM for refinement, and save enhanced_title + enhanced_description
+    to product_refined table.
+    """
+    product = db.query(ProductFetched).filter(ProductFetched.product_id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found in product_fetched")
+
+    if not product.title:
+        raise HTTPException(status_code=422, detail="Product has no title to refine")
+
+    try:
+        refined = await run_in_threadpool(
+            refine_with_llm,
+            product.title,
+            product.description or "",
+        )
+
+        refined_row = db.query(ProductRefined).filter(ProductRefined.product_id == product_id).first()
+        if refined_row:
+            refined_row.enhanced_title       = refined["refined_title"]
+            refined_row.enhanced_description = refined["refined_description"]
+        else:
+            refined_row = ProductRefined(
+                product_id=product_id,
+                enhanced_title=refined["refined_title"],
+                enhanced_description=refined["refined_description"],
+            )
+            db.add(refined_row)
+
+        db.commit()
+        db.refresh(refined_row)
+
+        return {
+            "product_id":           product_id,
+            "enhanced_title":       refined_row.enhanced_title,
+            "enhanced_description": refined_row.enhanced_description,
+        }
+
+    except Exception as e:
+        print(f"Refine error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── POST /assign-category/{product_id} ──────────────────────────────────────
+# Step 3: Take enhanced_title+enhanced_description from product_refined,
+#         assign category, save to category_assignment
+
+@app.post("/assign-category/{product_id}")
+async def assign_category(product_id: int, db: Session = Depends(get_db)):
+    """
+    Read enhanced_title and enhanced_description from product_refined
+    for the given product_id, run embedding-based categorization,
+    and save result to category_assignment table.
+    """
+    refined_row = db.query(ProductRefined).filter(ProductRefined.product_id == product_id).first()
+    if not refined_row:
+        raise HTTPException(status_code=404, detail="Product not found in product_refined — run /refine first")
+
+    if not refined_row.enhanced_title:
+        raise HTTPException(status_code=422, detail="No enhanced title found — run /refine first")
+
+    try:
+        category = await run_in_threadpool(
+            categorize_product,
+            title=refined_row.enhanced_title,
+            description=refined_row.enhanced_description or "",
+        )
+
+        cat_row = db.query(CategoryAssignment).filter(CategoryAssignment.product_id == product_id).first()
+        if cat_row:
+            cat_row.llm_predicted_category = category["llm_predicted_category"]
+            cat_row.assigned_category      = category["matched_category_path"]
+            cat_row.category_id            = category["matched_category_id"]
+            cat_row.similarity_score       = float(category["similarity_score"])
+        else:
+            cat_row = CategoryAssignment(
+                product_id=product_id,
+                llm_predicted_category=category["llm_predicted_category"],
+                assigned_category=category["matched_category_path"],
+                category_id=category["matched_category_id"],
+                similarity_score=float(category["similarity_score"]),
+            )
+            db.add(cat_row)
+
+        db.commit()
+        db.refresh(cat_row)
+
+        return {
+            "product_id":             product_id,
+            "llm_predicted_category": cat_row.llm_predicted_category,
+            "assigned_category":      cat_row.assigned_category,
+            "category_id":            cat_row.category_id,
+            "similarity_score":       cat_row.similarity_score,
+        }
+
+    except Exception as e:
+        print(f"Assign category error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/products/fetched", response_model=List[ProductFetchedOut])
@@ -354,4 +532,3 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
-
