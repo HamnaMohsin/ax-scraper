@@ -100,45 +100,42 @@ def extract_from_plain_dom(page) -> tuple:
 
     print("Falling back to plain DOM extraction...")
 
-    # Text container — targets known AliExpress description wrappers
-    richtext = container.query_selector(".detail-desc-decorate-richtext") or \
-               container.query_selector(".detailmodule_text") or \
-               container.query_selector(".detailmodule_html") or \
-               container
+    # Walk every direct child module of #product-description in order.
+    # AliExpress interleaves text and image modules arbitrarily — e.g:
+    #   div.detailmodule_image → imgs
+    #   div.detailmodule_text  → paragraphs
+    #   div.richTextContainer  → mixed rich text
+    #   div.detailmodule_image → more imgs
+    # We extract from each module as we encounter it to preserve order.
 
-    # Extract images — search ALL detailmodule_* divs inside #product-description
-    # because AliExpress splits text and images into separate sibling containers:
-    #   div.detailmodule_text  → text paragraphs
-    #   div.detailmodule_image → images
-    for img in container.query_selector_all("div.detailmodule_image img, div.detailmodule_html img, div.detail-desc-decorate-richtext img"):
-        src = img.get_attribute("src") or img.get_attribute("data-src") or ""
-        src = normalize_img_url(src)
-        if "alicdn" in src and src not in images:
-            images.append(src)
+    modules = container.query_selector_all(
+        "div.detailmodule_image, "
+        "div.detailmodule_text, "
+        "div.detailmodule_html, "
+        "div.detail-desc-decorate-richtext, "
+        "div.richTextContainer"
+    )
 
-    # Fallback: if none found via specific containers, grab all alicdn imgs in description
-    if not images:
-        for img in container.query_selector_all("img"):
+    if not modules:
+        # No known module classes — fall back to scanning the whole container
+        modules = [container]
+
+    for module in modules:
+        # ── Images ──
+        for img in module.query_selector_all("img"):
             src = img.get_attribute("src") or img.get_attribute("data-src") or ""
             src = normalize_img_url(src)
             if "alicdn" in src and src not in images:
                 images.append(src)
 
-    if images:
-        print(f"Plain DOM: found {len(images)} description images")
+        # ── Text ──
+        # Try the specific AliExpress paragraph class first
+        text_els = module.query_selector_all("p.detail-desc-decorate-content")
+        if not text_els:
+            # Fall back to any leaf-level text nodes
+            text_els = module.query_selector_all("p, span, li, h3, h4")
 
-    # Extract text — for detailmodule_text also try p.detail-desc-decorate-content directly
-    specific_text_els = richtext.query_selector_all("p.detail-desc-decorate-content")
-    if specific_text_els:
-        for el in specific_text_els:
-            text = el.text_content().strip()
-            if text and len(text) > 5:
-                description_text += text + " "
-        print(f"Plain DOM: found text via p.detail-desc-decorate-content")
-
-    # Fallback to leaf node extraction if specific selector found nothing
-    if not description_text:
-        for el in richtext.query_selector_all("p, span, li, h3, h4"):
+        for el in text_els:
             try:
                 child_count = el.evaluate("e => e.children.length")
                 text = el.text_content().strip()
@@ -147,12 +144,17 @@ def extract_from_plain_dom(page) -> tuple:
             except Exception:
                 pass
 
-    # Sanity check: discard if mostly price data
+    # Sanity check: discard text if it's mostly price comparison data
     if description_text:
         dollar_ratio = description_text.count("$") / max(len(description_text), 1)
         if dollar_ratio > 0.02:
             print("Plain DOM text looks like price data — discarding.")
             description_text = ""
+
+    if images:
+        print(f"Plain DOM: found {len(images)} images")
+    if description_text:
+        print(f"Plain DOM: found {len(description_text)} chars of text")
 
     return description_text.strip(), list(dict.fromkeys(images))
 
