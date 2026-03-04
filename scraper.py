@@ -86,66 +86,6 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-# ── Shadow DOM extraction (JS) ─────────────────────────────────────────────────
-
-SHADOW_DOM_EXTRACT_JS = """
-() => {
-    const host = document.querySelector('#product-description [data-spm-anchor-id]');
-    if (!host || !host.shadowRoot) return null;
-
-    const root = host.shadowRoot;
-
-    // Remove comparison/price table noise
-    const junkSelectors = [
-        '.comparison-table',
-        '.premium-aplus-module-5',
-        '.apm-brand-story-carousel-container',
-    ];
-    junkSelectors.forEach(sel => {
-        root.querySelectorAll(sel).forEach(el => el.remove());
-    });
-
-    const textSelectors = [
-        '.aplus-p1',
-        '.aplus-p3',
-        '.aplus-description',
-        'h3',
-        'h4.aplus-h1',
-        'h1.aplus-h3',
-        '.card-description p',
-        '.column-description p',
-        'p',
-    ];
-
-    const seen = new Set();
-    let text = '';
-    for (const sel of textSelectors) {
-        root.querySelectorAll(sel).forEach(el => {
-            const t = (el.innerText || el.textContent || '').trim();
-            if (t && t.length > 5 && !seen.has(t)) {
-                seen.add(t);
-                text += t + ' ';
-            }
-        });
-    }
-
-    const images = [];
-    const seenSrc = new Set();
-    root.querySelectorAll('img').forEach(img => {
-        let src = img.getAttribute('src') || img.getAttribute('data-src') || '';
-        if (!src) return;
-        src = src.trim();
-        if (src.startsWith('//')) src = 'https:' + src;
-        if (src.includes('alicdn') && !seenSrc.has(src)) {
-            seenSrc.add(src);
-            images.push(src);
-        }
-    });
-
-    return { text: text.trim(), images };
-}
-"""
-
 
 # ── Fallback: plain DOM extraction ────────────────────────────────────────────
 
@@ -301,34 +241,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 browser.close()
                 continue
 
-            # ── Scroll description into view ───────────────────────────────────
-            try:
-                page.evaluate(
-                    "document.querySelector('#product-description')?.scrollIntoView()"
-                )
-                page.wait_for_timeout(3000)
-            except Exception:
-                pass
-
-            # ── KEY FIX: wait for shadow root to be populated ─────────────────
-            # AliExpress loads description content via XHR after the element
-            # enters the viewport. The shadow root exists but is empty until
-            # the XHR completes — we poll until it has real content.
-            try:
-                page.wait_for_function(
-                    """() => {
-                        const host = document.querySelector(
-                            '#product-description [data-spm-anchor-id]'
-                        );
-                        if (!host || !host.shadowRoot) return false;
-                        return (host.shadowRoot.textContent || '').trim().length > 50;
-                    }""",
-                    timeout=12000,
-                )
-                print("Shadow root populated — proceeding with extraction.")
-            except Exception:
-                print("Shadow root did not populate in 12s — will try fallbacks.")
-
             # ── Extract title ─────────────────────────────────────────────────
             def safe_query_text(selector: str) -> str:
                 el = page.query_selector(selector)
@@ -340,6 +252,10 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 "[data-pl='product-title']",
                 ".title--wrap--NWOaiSp h1",
                 ".product-title-text",
+                ".title--wrap--UUHae_g h1",
+                "h1.pdp-title",
+                "#root h1",
+                "h1",
             ]
             for sel in title_selectors:
                 candidate = safe_query_text(sel)
@@ -357,23 +273,10 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             description_text = ""
             images = []
 
-            # Strategy 1: Shadow DOM
-            try:
-                result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
-                if result:
-                    description_text = result.get("text", "").strip()
-                    images = result.get("images", [])
-                    if description_text or images:
-                        print(f"Shadow DOM: {len(description_text)} chars, {len(images)} images")
-            except Exception as e:
-                print(f"Shadow DOM extraction error: {e}")
+            # Strategy 1: Plain DOM
+            description_text, images = extract_from_plain_dom(page)
 
-            # Strategy 2: Plain DOM fallback
-            if not description_text and not images:
-                print("Shadow DOM returned nothing — trying plain DOM fallback...")
-                description_text, images = extract_from_plain_dom(page)
-
-            # Strategy 3: iframe fallback
+            # Strategy 2: iframe fallback
             if not description_text and not images:
                 print("Trying iframe fallback...")
                 try:
