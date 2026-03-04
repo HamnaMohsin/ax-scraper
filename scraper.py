@@ -167,8 +167,9 @@ def extract_from_plain_dom(page) -> tuple:
         "div.detailmodule_image img, "
         "div.detailmodule_html img, "
         "div.detail-desc-decorate-richtext img, "
-        "div.richTextContainer img, "       # newer layout
-        "div.styleIsolation img"            # used alongside richTextContainer
+        "div.richTextContainer img, "
+        "div.styleIsolation img, "
+        "[data-rich-text-render] img"
     )
     for img in container.query_selector_all(IMAGE_SELECTORS):
         src = img.get_attribute("src") or img.get_attribute("data-src") or ""
@@ -208,19 +209,19 @@ def extract_from_plain_dom(page) -> tuple:
                 description_text += text + " "
         print("Plain DOM: text via p.detail-desc-decorate-content")
 
-    # Priority 2: all richTextContainer / styleIsolation paragraphs
+    # Priority 2: richTextContainer / styleIsolation — text is raw HTML with <br>
+    # tags, not wrapped in <p> elements, so read innerText directly
     if not description_text:
-        for sel in ("div.richTextContainer p", "div.styleIsolation p"):
+        for sel in ("div.richTextContainer", "div.styleIsolation"):
             for el in container.query_selector_all(sel):
                 try:
-                    child_count = el.evaluate("e => e.children.length")
-                    text = el.text_content().strip()
-                    if child_count == 0 and text and len(text) > 5:
+                    text = el.evaluate("e => e.innerText").strip()
+                    if text and len(text) > 5:
                         description_text += text + " "
                 except Exception:
                     pass
         if description_text:
-            print("Plain DOM: text via richTextContainer/styleIsolation p")
+            print("Plain DOM: text via richTextContainer/styleIsolation innerText")
 
     # Priority 3: leaf-node fallback across all known text containers
     if not description_text:
