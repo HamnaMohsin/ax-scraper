@@ -16,8 +16,8 @@ from schemas import (
     CategoryAssignmentOut, ProductFullOut,
 )
 from scraper import extract_aliexpress_product
-from llm_refiner import refine_with_llm
-from assign_embeddings import categorize_product
+from llm_refiner2 import refine_with_llm
+from assign_embeddings2 import categorize_product
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -532,4 +532,5 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
+
 
