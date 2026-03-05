@@ -6,3 +6,4 @@ __pycache__/
 *.pyo
 *.log
 data/products.db
+octopia_categories_embeddings.pkl
