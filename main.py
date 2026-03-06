@@ -510,15 +510,15 @@ def get_refined(product_id: int, db: Session = Depends(get_db)):
 #     return row
 
 
-# @app.delete("/products/categories/{product_id}")
-# def delete_category(product_id: int, db: Session = Depends(get_db)):
-#     """Delete only the category row for a product (keeps fetched + refined)."""
-#     row = db.query(CategoryAssignment).filter(CategoryAssignment.product_id == product_id).first()
-#     if not row:
-#         raise HTTPException(status_code=404, detail="Product not found in category_assignment")
-#     db.delete(row)
-#     db.commit()
-#     return {"message": f"Category assignment for product {product_id} deleted"}
+@app.delete("/products/categories/{product_id}")
+def delete_category(product_id: int, db: Session = Depends(get_db)):
+    """Delete only the category row for a product (keeps fetched + refined)."""
+    row = db.query(CategoryAssignment).filter(CategoryAssignment.product_id == product_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Product not found in category_assignment")
+    db.delete(row)
+    db.commit()
+    return {"message": f"Category assignment for product {product_id} deleted"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -532,5 +532,6 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
+
 
 
