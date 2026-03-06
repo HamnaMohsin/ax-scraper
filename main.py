@@ -19,6 +19,13 @@ from scraper import extract_aliexpress_product
 from llm_refiner2 import refine_with_llm
 from assign_embeddings2 import categorize_product
 
+from export_to_template import load_products, write_category_file
+
+BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE_PATH = os.path.join(BASE_DIR, "data", "pdt_template_fr-FR_20260305_090255.xlsm")
+DB_PATH       = os.path.join(BASE_DIR, "data","products.db")
+OUT_DIR       = os.path.join(BASE_DIR, "data", "output_templates")
+
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -533,6 +540,101 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
+
+
+@app.post("/export-templates")
+async def export_templates():
+    """
+    Reads all categorized products from products.db, groups by Octopia
+    category, and writes one .xlsm file per category to data/output_templates/.
+
+    Returns a summary of every file written including per-product details.
+    """
+    if not os.path.exists(TEMPLATE_PATH):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Template not found at {TEMPLATE_PATH} — upload pdt_template_fr-FR_20260305_090255.xlsm to /opt/ax-scraper/data/"
+        )
+    if not os.path.exists(DB_PATH):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database not found at {DB_PATH}"
+        )
+
+    def _run_export():
+        os.makedirs(OUT_DIR, exist_ok=True)
+
+        df = load_products(DB_PATH)
+        if df.empty:
+            return {
+                "total_products":   0,
+                "total_categories": 0,
+                "output_dir":       OUT_DIR,
+                "message":          "No categorized products found. Run /scrape first.",
+                "files":            []
+            }
+
+        results = []
+        for category_id, group in df.groupby("category_id"):
+            category_name = group.iloc[0]["assigned_category"] or str(category_id)
+            safe_filename = str(category_id).replace("/", "_").replace(" ", "_")
+            out_path      = os.path.join(OUT_DIR, f"{safe_filename}.xlsm")
+
+            print(f"Exporting [{category_id}] {category_name} — {len(group)} product(s)")
+
+            write_category_file(
+                template_path=TEMPLATE_PATH,
+                out_path=out_path,
+                category_code=str(category_id),
+                category_name=str(category_name),
+                products=group,
+            )
+
+            # Build per-product summary for the response
+            product_summaries = []
+            for _, row in group.iterrows():
+                raw_images = row.get("images")
+                if isinstance(raw_images, str) and raw_images:
+                    try:
+                        image_list = json.loads(raw_images)
+                    except Exception:
+                        image_list = []
+                elif isinstance(raw_images, list):
+                    image_list = raw_images
+                else:
+                    image_list = []
+
+                product_summaries.append({
+                    "product_id":  str(row["product_id"]),
+                    "title":       row.get("enhanced_title") or row.get("original_title") or "",
+                    "image_count": len(image_list),
+                    "has_description": bool(row.get("enhanced_description") or row.get("original_description")),
+                })
+
+            results.append({
+                "category_id":   str(category_id),
+                "category_name": category_name,
+                "product_count": len(group),
+                "file":          out_path,
+                "products":      product_summaries,
+            })
+
+            print(f"  ✅ Written → {out_path}")
+
+        return {
+            "total_products":   int(df["product_id"].nunique()),
+            "total_categories": len(results),
+            "output_dir":       OUT_DIR,
+            "files":            results,
+        }
+
+    try:
+        result = await run_in_threadpool(_run_export)
+        print(f"Export complete — {result['total_categories']} file(s) written to {OUT_DIR}")
+        return result
+    except Exception as e:
+        print(f"Export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 
