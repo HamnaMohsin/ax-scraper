@@ -155,7 +155,10 @@ SHADOW_DOM_EXTRACT_JS = """
     const seen  = new Set();
 
     for (const el of root.querySelectorAll('p,h1,h2,h3,h4,h5,li,span,td,div')) {
-        if (el.children.length > 0) continue;
+        function isCollectable(el) {
+        if (el.children.length === 0) return true;
+        return Array.from(el.children).every(c => c.tagName === 'BR');}
+        if (!isCollectable(el)) continue;
 
         const t = (el.innerText || el.textContent || '').trim();
         if (!t || t.length < 6) continue;
