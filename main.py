@@ -543,6 +543,7 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     return _build_full_out(p)
 
 
+
 @app.post("/export-templates")
 async def export_templates():
     """
@@ -575,6 +576,10 @@ async def export_templates():
                 "files":            []
             }
 
+        # Debug: show what images field looks like from DB
+        sample = df.iloc[0]
+        print(f"DEBUG images field type: {type(sample.get('images'))} | value[:100]: {str(sample.get('images'))[:100]}")
+
         results = []
         for category_id, group in df.groupby("category_id"):
             category_name = group.iloc[0]["assigned_category"] or str(category_id)
@@ -595,21 +600,22 @@ async def export_templates():
             product_summaries = []
             for _, row in group.iterrows():
                 raw_images = row.get("images")
-                if isinstance(raw_images, str) and raw_images:
-                    try:
-                        image_list = json.loads(raw_images)
-                    except Exception:
-                        image_list = []
-                elif isinstance(raw_images, list):
-                    image_list = raw_images
-                else:
-                    image_list = []
+                image_count = 0
+                if raw_images:
+                    if isinstance(raw_images, list):
+                        image_count = len(raw_images)
+                    elif isinstance(raw_images, str):
+                        try:
+                            parsed = json.loads(raw_images)
+                            image_count = len(parsed) if isinstance(parsed, list) else 0
+                        except Exception:
+                            image_count = 0
 
                 product_summaries.append({
-                    "product_id":  str(row["product_id"]),
-                    "title":       row.get("enhanced_title") or row.get("original_title") or "",
-                    "image_count": len(image_list),
-                    "has_description": bool(row.get("enhanced_description") or row.get("original_description")),
+                    "product_id":       str(row["product_id"]),
+                    "title":            row.get("enhanced_title") or row.get("original_title") or "",
+                    "image_count":      image_count,
+                    "has_description":  bool(row.get("enhanced_description") or row.get("original_description")),
                 })
 
             results.append({
@@ -636,7 +642,6 @@ async def export_templates():
     except Exception as e:
         print(f"Export error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 
