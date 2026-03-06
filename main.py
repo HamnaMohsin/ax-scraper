@@ -19,7 +19,7 @@ from scraper import extract_aliexpress_product
 from llm_refiner2 import refine_with_llm
 from assign_embeddings2 import categorize_product
 
-from data/export_to_template import load_products, write_category_file
+from data.export_to_template import load_products, write_category_file
 
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_PATH = os.path.join(BASE_DIR, "data", "pdt_template_fr-FR_20260305_090255.xlsm")
@@ -635,6 +635,7 @@ async def export_templates():
     except Exception as e:
         print(f"Export error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
