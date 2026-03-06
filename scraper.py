@@ -27,7 +27,6 @@ def rotate_tor_circuit():
 
 
 def is_aliexpress_url(url: str) -> bool:
-    """Accept any regional AliExpress domain: .com, .us, .co.uk, .it, etc."""
     return "aliexpress." in url.lower()
 
 
@@ -67,7 +66,7 @@ def detect_recaptcha(page) -> bool:
 
 def safe_scroll(page, steps: int = 12) -> bool:
     """
-    Scroll gradually. Returns False if the page closed mid-scroll
+    Scroll gradually. Returns False if page closed mid-scroll
     (happens when AliExpress fires a mid-page redirect).
     """
     for _ in range(steps):
@@ -111,26 +110,38 @@ def clean_text(text: str) -> str:
 
 # ── Shadow DOM extraction ──────────────────────────────────────────────────────
 #
-# CONFIRMED FROM DEBUG OUTPUT:
-#   - Shadow host = `#product-description > div`  (anonymous div, no id/attrs)
-#   - Before #nav-description click: shadow root = CSS only (~3634 chars)
-#   - After click: XHR fires, real content appears, text.length > 4500
-#   - Leaf nodes confirmed: product description paragraphs + feature headings
-#   - Junk confirmed: hero-video, Add to Cart (x4), Find More MoKo Cases,
-#     comparison table prices, brand carousel duplicates
+# TWO CONFIRMED PRODUCT LAYOUTS:
+#
+# Layout A (Amazon A+ content — e.g. tablet case):
+#   Shadow host = `#product-description > div`  (NO data-spm-anchor-id)
+#   Content: carousel cards, two-column modules, comparison table
+#   Text in: .aplus-p1, .aplus-p3, h3, h4.aplus-h1 — these ARE pure leaves
+#
+# Layout B (plain seller description — e.g. dental chair cover):
+#   Shadow host = `#product-description > div`  (HAS data-spm-anchor-id)
+#   Content: div.detailmodule_html > div.detail-desc-decorate-richtext > div > <p>
+#   Text in: <p style="..."> elements that contain TEXT NODES + <br> children
+#   ← THIS IS THE BUG: p.children.length > 0 because <br> counts as a child
+#      so pure leaf-node check skips these <p> tags entirely
+#
+# FIX: a "leaf-or-br-only" check:
+#   An element is collectable if ALL its children are <br> tags.
+#   Such elements use innerText which handles <br> as newlines automatically.
 
 SHADOW_DOM_EXTRACT_JS = """
 () => {
     const container = document.querySelector('#product-description');
     if (!container) return { error: 'no #product-description' };
 
+    // Host is always the first child div of #product-description.
+    // Some products have data-spm-anchor-id on it, some don't — :scope > div handles both.
     const host = container.querySelector(':scope > div');
-    if (!host)       return { error: 'no child div in #product-description' };
+    if (!host)            return { error: 'no child div in #product-description' };
     if (!host.shadowRoot) return { error: 'no shadowRoot on child div' };
 
     const root = host.shadowRoot;
 
-    // Strip junk before traversal so their text never reaches the collector
+    // ── Strip junk nodes before traversal ────────────────────────────────────
     [
         'style', 'script',
         '.a-price', '.a-offscreen', '.a-icon-alt',
@@ -143,7 +154,17 @@ SHADOW_DOM_EXTRACT_JS = """
         '.aplus-review-right-padding',
     ].forEach(sel => root.querySelectorAll(sel).forEach(el => el.remove()));
 
-    // Leaf-node text collection — only elements with zero child elements
+    // ── Helper: is this element a "collectable leaf"? ─────────────────────────
+    // True if the element has zero children, OR if every child is a <br> tag.
+    // <br> children are layout-only and do not carry text themselves — the
+    // real text sits as sibling text nodes inside the parent element.
+    // Using innerText on such elements correctly converts <br> → space/newline.
+    function isCollectable(el) {
+        if (el.children.length === 0) return true;
+        return Array.from(el.children).every(c => c.tagName === 'BR');
+    }
+
+    // ── Junk strings to skip even if they pass the leaf check ────────────────
     const JUNK = new Set([
         'hero-video', 'product description', 'add to cart',
         'find more moko cases', 'customer reviews', 'price',
@@ -151,18 +172,21 @@ SHADOW_DOM_EXTRACT_JS = """
         'multi-color options', 'viewing & typing angles',
     ]);
 
-    const texts = [];
-    const seen  = new Set();
+    const texts  = [];
+    const seen   = new Set();
 
     for (const el of root.querySelectorAll('p,h1,h2,h3,h4,h5,li,span,td,div')) {
-        function isCollectable(el) {
-        if (el.children.length === 0) return true;
-        return Array.from(el.children).every(c => c.tagName === 'BR');}
         if (!isCollectable(el)) continue;
 
-        const t = (el.innerText || el.textContent || '').trim();
+        // innerText handles <br> → newline; replace newlines with spaces for clean output
+        const raw = (el.innerText || el.textContent || '');
+        const t   = raw.replace(/\n+/g, ' ').trim();
+
         if (!t || t.length < 6) continue;
-        if (/^[\d\s\.\,\$\€\£\¥\%\+\-\&nbsp;]+$/.test(t)) continue;
+
+        // Skip pure number / currency fragments (price decimals, ratings)
+        if (/^[\d\s\.\,\$\€\£\¥\%\+\-]+$/.test(t)) continue;
+
         if (JUNK.has(t.toLowerCase())) continue;
         if (seen.has(t)) continue;
 
@@ -170,7 +194,7 @@ SHADOW_DOM_EXTRACT_JS = """
         texts.push(t);
     }
 
-    // alicdn images — deduplicated
+    // ── alicdn images — from entire shadow root, deduplicated ─────────────────
     const images  = [];
     const seenSrc = new Set();
     root.querySelectorAll('img').forEach(img => {
@@ -252,9 +276,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
             print(f"Landed on: {page.url}")
 
-            # Reject if we ended up off AliExpress entirely
             if not is_aliexpress_url(page.url):
-                print(f"Redirected off AliExpress to {page.url} — skipping.")
+                print(f"Redirected off AliExpress — skipping.")
                 browser.close()
                 continue
 
@@ -265,16 +288,12 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 browser.close()
                 continue
 
-            # Wait for initial JS render
             page.wait_for_timeout(8000)
             random_delay(1.0, 3.0)
 
-            # ── Scroll — wrapped so a mid-redirect crash is handled cleanly ──
-            scroll_ok = safe_scroll(page, steps=12)
-            if not scroll_ok:
-                # Page was closed by a redirect; re-open on the new URL
-                # (browser is still alive, just that page closed)
-                print("Scroll failed — page likely redirected. Retrying attempt...")
+            # ── Scroll ────────────────────────────────────────────────────────
+            if not safe_scroll(page, steps=12):
+                print("Scroll failed — retrying.")
                 try:
                     browser.close()
                 except Exception:
@@ -284,7 +303,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             random_delay(1.0, 2.0)
 
             if page.is_closed():
-                print("Page closed unexpectedly after scroll.")
+                print("Page closed after scroll.")
                 browser.close()
                 continue
 
@@ -324,7 +343,9 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 browser.close()
                 continue
 
-            # ── Click #nav-description to trigger description XHR ────────────
+            # ── Click #nav-description to fire description XHR ────────────────
+            # Without this click the shadow root contains only CSS (~3634 chars).
+            # The XHR that fetches real description content only fires after click.
             description_text = ""
             images = []
 
@@ -336,7 +357,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     nav_desc.click(force=True)
                     print("Clicked #nav-description — waiting for XHR...")
 
-                    # Poll until shadow root text exceeds CSS-only length (~3634)
+                    # Wait until shadow root has more than CSS-only content.
+                    # CSS-only = ~3634 chars; real content pushes well past 4500.
                     try:
                         page.wait_for_function(
                             """() => {
@@ -348,17 +370,17 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                             }""",
                             timeout=15000,
                         )
-                        print("Description content loaded.")
+                        print("Description XHR loaded.")
                     except Exception:
-                        print("XHR wait timed out — attempting extraction anyway...")
+                        print("XHR wait timed out — extracting anyway...")
 
                     random_delay(1.0, 2.0)
                 else:
-                    print("#nav-description not found — description XHR won't fire.")
+                    print("#nav-description not found.")
             except Exception as e:
                 print(f"Could not click #nav-description: {e}")
 
-            # ── Extract via Shadow DOM JS ─────────────────────────────────────
+            # ── Shadow DOM extraction ─────────────────────────────────────────
             try:
                 result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
                 if result and "error" not in result:
@@ -366,21 +388,25 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     images = result.get("images", [])
                     print(f"Shadow DOM: {len(description_text)} chars, {len(images)} images")
                 elif result and "error" in result:
-                    print(f"Shadow DOM JS returned: {result['error']}")
+                    print(f"Shadow DOM JS error: {result['error']}")
             except Exception as e:
                 print(f"Shadow DOM evaluate error: {e}")
 
             # ── Fallback: plain DOM (older pages without shadow root) ─────────
             if not description_text and not images:
-                print("Shadow DOM empty — trying plain DOM fallback...")
+                print("Shadow DOM empty — plain DOM fallback...")
                 try:
                     container = page.query_selector("#product-description")
                     if container:
                         for el in container.query_selector_all("p, span, li, h3, h4, div"):
                             try:
-                                child_count = el.evaluate("e => e.children.length")
+                                # Allow elements whose only children are <br> tags
+                                only_br = el.evaluate(
+                                    "e => e.children.length === 0 || "
+                                    "Array.from(e.children).every(c => c.tagName === 'BR')"
+                                )
                                 text = el.text_content().strip()
-                                if child_count == 0 and text and len(text) >= 6:
+                                if only_br and text and len(text) >= 6:
                                     if not re.match(r'^[\d\s\.\,\$\€\£\¥\%\+\-]+$', text):
                                         description_text += text + " "
                             except Exception:
