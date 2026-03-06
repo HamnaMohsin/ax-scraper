@@ -21,7 +21,7 @@ class ScrapeResult(BaseModel):
     enhanced_description:    Optional[str] = None
     llm_predicted_category:  Optional[str] = None
     assigned_category:       Optional[str] = None
-    category_id:             Optional[string] = None
+    category_id:             Optional[str] = None
     similarity_score:        Optional[float] = None
     images:                  Optional[List[str]] = []
 
@@ -34,7 +34,7 @@ class ScrapeResponse(BaseModel):
 
 
 class CategoryResponse(BaseModel):
-    category_id:      int
+    category_id:      str
     category_path:    str
     similarity_score: float
 
@@ -65,7 +65,7 @@ class CategoryAssignmentOut(BaseModel):
     product_id:             int
     llm_predicted_category: Optional[str]
     assigned_category:      Optional[str]
-    category_id:            Optional[int]
+    category_id:            Optional[str]
     similarity_score:       Optional[float]
 
     class Config:
@@ -82,6 +82,7 @@ class ProductFullOut(BaseModel):
     enhanced_description:    Optional[str]
     llm_predicted_category:  Optional[str]
     assigned_category:       Optional[str]
-    category_id:             Optional[int]
+    category_id:             Optional[str]
     similarity_score:        Optional[float]
+
 
