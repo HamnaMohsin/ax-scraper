@@ -44,7 +44,8 @@ def _build_full_out(p: ProductFetched) -> ProductFullOut:
         enhanced_description=p.refined.enhanced_description if p.refined else None,
         llm_predicted_category=p.category.llm_predicted_category if p.category else None,
         assigned_category=p.category.assigned_category if p.category else None,
-        category_id=p.category.category_id if p.category else None,
+        #category_id=p.category.category_id if p.category else None,
+        category_id = str(p.category.category_id) if p.category and p.category.category_id is not None else None,
         similarity_score=p.category.similarity_score if p.category else None,
     )
 
@@ -532,6 +533,7 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
+
 
 
 
