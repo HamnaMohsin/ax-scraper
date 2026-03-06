@@ -121,7 +121,12 @@ def clean_text(text: str) -> str:
 
 SHADOW_DOM_EXTRACT_JS = """
 () => {
-    const container = document.querySelector('#product-description');
+    const children = Array.from(container.querySelectorAll(':scope > div'));
+    for (const child of children) {
+    if (child.shadowRoot)                        → shadow DOM extraction (Layout A/B)
+    if (child.classList.contains('richTextContainer')) → plain DOM extraction (Layout C)
+    else if child has content                    → unknown layout fallback
+    }
     if (!container) return { error: 'no #product-description' };
 
     const host = container.querySelector(':scope > div');
