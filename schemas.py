@@ -21,7 +21,7 @@ class ScrapeResult(BaseModel):
     enhanced_description:    Optional[str] = None
     llm_predicted_category:  Optional[str] = None
     assigned_category:       Optional[str] = None
-    category_id:             Optional[int] = None
+    category_id:             Optional[string] = None
     similarity_score:        Optional[float] = None
     images:                  Optional[List[str]] = []
 
@@ -84,3 +84,4 @@ class ProductFullOut(BaseModel):
     assigned_category:       Optional[str]
     category_id:             Optional[int]
     similarity_score:        Optional[float]
+
