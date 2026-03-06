@@ -78,7 +78,8 @@ Return JSON in this EXACT format:
 
     refined_title = result.get("refined_title", title) or title
     refined_description = result.get("refined_description", description) or ""
-
+    if description < 1:
+        refined_description= ""
     if len(refined_title) > TITLE_MAX_CHARS:
         print(f"WARNING: LLM title exceeded {TITLE_MAX_CHARS} chars "
               f"({len(refined_title)}) — truncating.")
@@ -92,4 +93,5 @@ Return JSON in this EXACT format:
     return {
         "refined_title":       refined_title,
         "refined_description": refined_description,
+
     }
