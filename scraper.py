@@ -26,6 +26,11 @@ def rotate_tor_circuit():
         print(f"Failed to rotate Tor circuit: {e}")
 
 
+def is_aliexpress_url(url: str) -> bool:
+    """Accept any regional AliExpress domain: .com, .us, .co.uk, .it, etc."""
+    return "aliexpress." in url.lower()
+
+
 def detect_recaptcha(page) -> bool:
     indicators = [
         "iframe[src*='recaptcha']",
@@ -50,7 +55,7 @@ def detect_recaptcha(page) -> bool:
 
     page_title = page.title()
     page_title_lower = page_title.lower()
-    is_product_page = "aliexpress" in page_title_lower and len(page_title) > 40
+    is_product_page = is_aliexpress_url(page.url) and len(page_title) > 40
     if not is_product_page:
         block_titles = ["verify", "captcha", "robot", "access denied", "blocked", "aanmelden", "sign in"]
         if any(kw in page_title_lower for kw in block_titles):
@@ -58,6 +63,24 @@ def detect_recaptcha(page) -> bool:
             return True
 
     return False
+
+
+def safe_scroll(page, steps: int = 12) -> bool:
+    """
+    Scroll gradually. Returns False if the page closed mid-scroll
+    (happens when AliExpress fires a mid-page redirect).
+    """
+    for _ in range(steps):
+        try:
+            if page.is_closed():
+                print("Page closed during scroll — likely a redirect.")
+                return False
+            page.mouse.wheel(0, random.randint(200, 400))
+            page.wait_for_timeout(random.randint(200, 400))
+        except Exception as e:
+            print(f"Scroll interrupted: {e}")
+            return False
+    return True
 
 
 def random_viewport():
@@ -86,50 +109,69 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-# ── Strategy 1: Shadow DOM (JS) ───────────────────────────────────────────────
+# ── Shadow DOM extraction ──────────────────────────────────────────────────────
+#
+# CONFIRMED FROM DEBUG OUTPUT:
+#   - Shadow host = `#product-description > div`  (anonymous div, no id/attrs)
+#   - Before #nav-description click: shadow root = CSS only (~3634 chars)
+#   - After click: XHR fires, real content appears, text.length > 4500
+#   - Leaf nodes confirmed: product description paragraphs + feature headings
+#   - Junk confirmed: hero-video, Add to Cart (x4), Find More MoKo Cases,
+#     comparison table prices, brand carousel duplicates
 
 SHADOW_DOM_EXTRACT_JS = """
 () => {
-    const host = document.querySelector('#product-description [data-spm-anchor-id]');
-    if (!host || !host.shadowRoot) return null;
+    const container = document.querySelector('#product-description');
+    if (!container) return { error: 'no #product-description' };
+
+    const host = container.querySelector(':scope > div');
+    if (!host)       return { error: 'no child div in #product-description' };
+    if (!host.shadowRoot) return { error: 'no shadowRoot on child div' };
 
     const root = host.shadowRoot;
 
-    // Remove comparison/price table noise
-    const junkSelectors = [
-        '.comparison-table',
-        '.premium-aplus-module-5',
+    // Strip junk before traversal so their text never reaches the collector
+    [
+        'style', 'script',
+        '.a-price', '.a-offscreen', '.a-icon-alt',
+        '.comparison-table', '.premium-aplus-module-5',
         '.apm-brand-story-carousel-container',
-    ];
-    junkSelectors.forEach(sel => {
-        root.querySelectorAll(sel).forEach(el => el.remove());
-    });
+        '.vse-player-container',
+        '.add-to-cart',
+        '.aplus-carousel-actions',
+        '.aplus-carousel-index',
+        '.aplus-review-right-padding',
+    ].forEach(sel => root.querySelectorAll(sel).forEach(el => el.remove()));
 
-    const textSelectors = [
-        '.aplus-p1',
-        '.aplus-p3',
-        '.aplus-description',
-        'h3',
-        'h4.aplus-h1',
-        'h1.aplus-h3',
-        '.card-description p',
-        '.column-description p',
-        'p',
-    ];
+    // Leaf-node text collection — only elements with zero child elements
+    const JUNK = new Set([
+        'hero-video', 'product description', 'add to cart',
+        'find more moko cases', 'customer reviews', 'price',
+        'compatibility', 'material', 'features',
+        'multi-color options', 'viewing & typing angles',
+    ]);
 
-    const seen = new Set();
-    let text = '';
-    for (const sel of textSelectors) {
-        root.querySelectorAll(sel).forEach(el => {
-            const t = (el.innerText || el.textContent || '').trim();
-            if (t && t.length > 5 && !seen.has(t)) {
-                seen.add(t);
-                text += t + ' ';
-            }
-        });
+    const texts = [];
+    const seen  = new Set();
+
+    for (const el of root.querySelectorAll('p,h1,h2,h3,h4,h5,li,span,td,div')) {
+        function isCollectable(el) {
+        if (el.children.length === 0) return true;
+        return Array.from(el.children).every(c => c.tagName === 'BR');}
+        if (!isCollectable(el)) continue;
+
+        const t = (el.innerText || el.textContent || '').trim();
+        if (!t || t.length < 6) continue;
+        if (/^[\d\s\.\,\$\€\£\¥\%\+\-\&nbsp;]+$/.test(t)) continue;
+        if (JUNK.has(t.toLowerCase())) continue;
+        if (seen.has(t)) continue;
+
+        seen.add(t);
+        texts.push(t);
     }
 
-    const images = [];
+    // alicdn images — deduplicated
+    const images  = [];
     const seenSrc = new Set();
     root.querySelectorAll('img').forEach(img => {
         let src = img.getAttribute('src') || img.getAttribute('data-src') || '';
@@ -142,109 +184,9 @@ SHADOW_DOM_EXTRACT_JS = """
         }
     });
 
-    return { text: text.trim(), images };
+    return { text: texts.join(' '), images };
 }
 """
-
-
-# ── Strategy 2: Plain DOM extraction ─────────────────────────────────────────
-
-def extract_from_plain_dom(page) -> tuple:
-    description_text = ""
-    images = []
-
-    container = page.query_selector("#product-description")
-    if not container:
-        print("Description container not found in plain DOM either.")
-        return "", []
-
-    print("Falling back to plain DOM extraction...")
-
-    # ── Images ────────────────────────────────────────────────────────────────
-    # Search all known image-bearing module containers.
-    # These are sibling divs — images are NOT always inside the text container.
-    IMAGE_SELECTORS = (
-        "div.detailmodule_image img, "
-        "div.detailmodule_html img, "
-        "div.detail-desc-decorate-richtext img, "
-        "div.richTextContainer img, "
-        "div.styleIsolation img, "
-        "[data-rich-text-render] img"
-    )
-    for img in container.query_selector_all(IMAGE_SELECTORS):
-        src = img.get_attribute("src") or img.get_attribute("data-src") or ""
-        src = normalize_img_url(src)
-        if "alicdn" in src and src not in images:
-            images.append(src)
-
-    # Fallback: grab all alicdn images anywhere in the container
-    if not images:
-        for img in container.query_selector_all("img"):
-            src = img.get_attribute("src") or img.get_attribute("data-src") or ""
-            src = normalize_img_url(src)
-            if "alicdn" in src and src not in images:
-                images.append(src)
-
-    if images:
-        print(f"Plain DOM: found {len(images)} images")
-
-    # ── Text ──────────────────────────────────────────────────────────────────
-    # Try most specific selector first, then progressively broader fallbacks.
-
-    # Priority 1: exact AliExpress paragraph class
-    text_container = (
-        container.query_selector(".detailmodule_text") or
-        container.query_selector(".detail-desc-decorate-richtext") or
-        container.query_selector(".detailmodule_html") or
-        container.query_selector(".richTextContainer") or
-        container.query_selector(".styleIsolation") or
-        container
-    )
-
-    specific_els = text_container.query_selector_all("p.detail-desc-decorate-content")
-    if specific_els:
-        for el in specific_els:
-            text = el.text_content().strip()
-            if text and len(text) > 5:
-                description_text += text + " "
-        print("Plain DOM: text via p.detail-desc-decorate-content")
-
-    # Priority 2: richTextContainer / styleIsolation — text is raw HTML with <br>
-    # tags, not wrapped in <p> elements, so read innerText directly
-    if not description_text:
-        for sel in ("div.richTextContainer", "div.styleIsolation"):
-            for el in container.query_selector_all(sel):
-                try:
-                    text = el.evaluate("e => e.innerText").strip()
-                    if text and len(text) > 5:
-                        description_text += text + " "
-                except Exception:
-                    pass
-        if description_text:
-            print("Plain DOM: text via richTextContainer/styleIsolation innerText")
-
-    # Priority 3: leaf-node fallback across all known text containers
-    if not description_text:
-        for el in text_container.query_selector_all("p, li, h3, h4"):
-            try:
-                child_count = el.evaluate("e => e.children.length")
-                text = el.text_content().strip()
-                if child_count == 0 and text and len(text) > 5:
-                    description_text += text + " "
-            except Exception:
-                pass
-
-    # Discard if mostly price comparison data
-    if description_text:
-        dollar_ratio = description_text.count("$") / max(len(description_text), 1)
-        if dollar_ratio > 0.02:
-            print("Plain DOM: text looks like price data — discarding.")
-            description_text = ""
-
-    if description_text:
-        print(f"Plain DOM: found {len(description_text)} chars of text")
-
-    return description_text.strip(), list(dict.fromkeys(images))
 
 
 # ── Main scraper ───────────────────────────────────────────────────────────────
@@ -262,12 +204,10 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
         print(f"\n── Attempt {attempt}/{max_retries} ──")
 
         if attempt > 1:
-            print("Rotating Tor circuit before new attempt...")
             rotate_tor_circuit()
             random_delay(8.0, 15.0)
 
         with sync_playwright() as p:
-            print("Opening browser...")
             browser = p.chromium.launch(
                 headless=True,
                 proxy={"server": "socks5://127.0.0.1:9050"},
@@ -305,98 +245,78 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             # ── Navigate ──────────────────────────────────────────────────────
             try:
                 page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
-                random_delay(3.0, 6.0)
             except Exception as e:
                 print(f"Navigation failed: {e}")
                 browser.close()
                 continue
 
-            if detect_recaptcha(page):
-                print("CAPTCHA detected — rotating circuit and retrying.")
+            print(f"Landed on: {page.url}")
+
+            # Reject if we ended up off AliExpress entirely
+            if not is_aliexpress_url(page.url):
+                print(f"Redirected off AliExpress to {page.url} — skipping.")
                 browser.close()
                 continue
 
+            random_delay(3.0, 6.0)
+
+            if detect_recaptcha(page):
+                print("CAPTCHA detected — retrying.")
+                browser.close()
+                continue
+
+            # Wait for initial JS render
             page.wait_for_timeout(8000)
-            random_delay(2.0, 4.0)
-
-            # ── Scroll gradually to trigger lazy loading ───────────────────────
-            for _ in range(10):
-                page.mouse.wheel(0, random.randint(150, 300))
-                page.wait_for_timeout(random.randint(200, 500))
-
             random_delay(1.0, 3.0)
 
-            if detect_recaptcha(page):
-                print("CAPTCHA detected after scroll — rotating circuit and retrying.")
+            # ── Scroll — wrapped so a mid-redirect crash is handled cleanly ──
+            scroll_ok = safe_scroll(page, steps=12)
+            if not scroll_ok:
+                # Page was closed by a redirect; re-open on the new URL
+                # (browser is still alive, just that page closed)
+                print("Scroll failed — page likely redirected. Retrying attempt...")
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+                continue
+
+            random_delay(1.0, 2.0)
+
+            if page.is_closed():
+                print("Page closed unexpectedly after scroll.")
                 browser.close()
                 continue
 
-            # ── Scroll description into view ───────────────────────────────────
-            try:
-                page.evaluate(
-                    "document.querySelector('#product-description')?.scrollIntoView()"
-                )
-                page.wait_for_timeout(3000)
-            except Exception:
-                pass
-
-            # ── Wait for description content to load ──────────────────────────
-            # Checks BOTH shadow DOM and plain DOM so it works for all product types.
-            # Without this, extraction runs before AliExpress has injected the content.
-            try:
-                page.wait_for_function(
-                    """() => {
-                        const container = document.querySelector('#product-description');
-                        if (!container) return false;
-
-                        // Shadow DOM products (A+ content)
-                        const host = container.querySelector('[data-spm-anchor-id]');
-                        if (host && host.shadowRoot) {
-                            return (host.shadowRoot.textContent || '').trim().length > 50;
-                        }
-
-                        // Plain DOM products — check all known content containers
-                        const plainSelectors = [
-                            '.detailmodule_text',
-                            '.detailmodule_image',
-                            '.detailmodule_html',
-                            '.detail-desc-decorate-richtext',
-                            '.richTextContainer',
-                            '.styleIsolation',
-                        ];
-                        for (const sel of plainSelectors) {
-                            const el = container.querySelector(sel);
-                            if (el && el.textContent.trim().length > 20) return true;
-                        }
-                        return false;
-                    }""",
-                    timeout=12000,
-                )
-                print("Description content loaded — proceeding with extraction.")
-            except Exception:
-                print("Description did not load in 12s — attempting extraction anyway.")
+            if detect_recaptcha(page):
+                print("CAPTCHA detected after scroll — retrying.")
+                browser.close()
+                continue
 
             # ── Extract title ─────────────────────────────────────────────────
-            def safe_query_text(selector: str) -> str:
-                el = page.query_selector(selector)
-                return el.text_content().strip() if el else ""
+            def safe_text(sel: str) -> str:
+                try:
+                    el = page.query_selector(sel)
+                    return el.text_content().strip() if el else ""
+                except Exception:
+                    return ""
 
+            BLOCKED = {
+                "aliexpress", "", "aanmelden", "sign in",
+                "log in", "login", "verify", "robot",
+            }
             title = ""
-            BLOCKED_TITLES = {"aliexpress", "", "aanmelden", "sign in", "log in", "login", "verify", "robot"}
-            title_selectors = [
+            for sel in [
                 "[data-pl='product-title']",
+                ".title--wrap--UUHae_g h1",
                 ".title--wrap--NWOaiSp h1",
                 ".product-title-text",
-                ".title--wrap--UUHae_g h1",
-                "h1.pdp-title",
                 "#root h1",
-                "h1",
-            ]
-            for sel in title_selectors:
-                candidate = safe_query_text(sel)
-                if candidate and candidate.lower().strip() not in BLOCKED_TITLES:
+            ]:
+                candidate = safe_text(sel)
+                if candidate and candidate.lower().strip() not in BLOCKED:
                     title = candidate
-                    print(f"Title found via '{sel}': {title[:60]}")
+                    print(f"Title via '{sel}': {title[:70]}")
                     break
 
             if not title:
@@ -404,66 +324,86 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 browser.close()
                 continue
 
-            # ── Extract description + images ──────────────────────────────────
+            # ── Click #nav-description to trigger description XHR ────────────
             description_text = ""
             images = []
 
-            # Strategy 1: Shadow DOM (A+ content products)
+            try:
+                nav_desc = page.query_selector('#nav-description')
+                if nav_desc:
+                    nav_desc.scroll_into_view_if_needed()
+                    random_delay(1.0, 2.0)
+                    nav_desc.click(force=True)
+                    print("Clicked #nav-description — waiting for XHR...")
+
+                    # Poll until shadow root text exceeds CSS-only length (~3634)
+                    try:
+                        page.wait_for_function(
+                            """() => {
+                                const host = document.querySelector(
+                                    '#product-description > div'
+                                );
+                                if (!host || !host.shadowRoot) return false;
+                                return (host.shadowRoot.textContent || '').trim().length > 4500;
+                            }""",
+                            timeout=15000,
+                        )
+                        print("Description content loaded.")
+                    except Exception:
+                        print("XHR wait timed out — attempting extraction anyway...")
+
+                    random_delay(1.0, 2.0)
+                else:
+                    print("#nav-description not found — description XHR won't fire.")
+            except Exception as e:
+                print(f"Could not click #nav-description: {e}")
+
+            # ── Extract via Shadow DOM JS ─────────────────────────────────────
             try:
                 result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
-                if result:
+                if result and "error" not in result:
                     description_text = result.get("text", "").strip()
                     images = result.get("images", [])
-                    if description_text or images:
-                        print(f"Shadow DOM: {len(description_text)} chars, {len(images)} images")
+                    print(f"Shadow DOM: {len(description_text)} chars, {len(images)} images")
+                elif result and "error" in result:
+                    print(f"Shadow DOM JS returned: {result['error']}")
             except Exception as e:
-                print(f"Shadow DOM extraction error: {e}")
+                print(f"Shadow DOM evaluate error: {e}")
 
-            # Strategy 2: Plain DOM fallback (standard products)
+            # ── Fallback: plain DOM (older pages without shadow root) ─────────
             if not description_text and not images:
-                print("Shadow DOM returned nothing — trying plain DOM fallback...")
-                description_text, images = extract_from_plain_dom(page)
-
-            # Strategy 3: iframe fallback (rare sellers)
-            if not description_text and not images:
-                print("Trying iframe fallback...")
+                print("Shadow DOM empty — trying plain DOM fallback...")
                 try:
-                    iframes = page.query_selector_all(
-                        "#product-description iframe, "
-                        "iframe[id*='desc'], iframe[name*='desc']"
-                    )
-                    for iframe_el in iframes:
-                        frame = iframe_el.content_frame()
-                        if not frame:
-                            continue
-                        frame.wait_for_load_state("domcontentloaded")
-                        frame.wait_for_timeout(2000)
-
-                        for el in frame.query_selector_all("p, span, div"):
+                    container = page.query_selector("#product-description")
+                    if container:
+                        for el in container.query_selector_all("p, span, li, h3, h4, div"):
                             try:
                                 child_count = el.evaluate("e => e.children.length")
                                 text = el.text_content().strip()
-                                if child_count == 0 and text and len(text) > 5:
-                                    description_text += text + " "
+                                if child_count == 0 and text and len(text) >= 6:
+                                    if not re.match(r'^[\d\s\.\,\$\€\£\¥\%\+\-]+$', text):
+                                        description_text += text + " "
                             except Exception:
                                 pass
 
-                        for img in frame.query_selector_all("img"):
+                        for img in container.query_selector_all("img"):
                             src = img.get_attribute("src") or img.get_attribute("data-src") or ""
                             src = normalize_img_url(src)
                             if "alicdn" in src:
                                 images.append(src)
 
-                        if description_text or images:
-                            print(f"iframe: {len(description_text)} chars, {len(images)} images")
-                            break
+                        if description_text:
+                            dollar_ratio = description_text.count("$") / max(len(description_text), 1)
+                            if dollar_ratio > 0.02:
+                                print("Plain DOM text looks like price data — discarding.")
+                                description_text = ""
                 except Exception as e:
-                    print(f"iframe fallback error: {e}")
+                    print(f"Plain DOM fallback error: {e}")
 
             images = list(dict.fromkeys(images))
 
             if not description_text:
-                print("No description text extracted (seller may use image-only description).")
+                print("No description text (seller may use image-only description).")
             if not images:
                 print("No description images extracted.")
 
@@ -475,5 +415,5 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 "images": images,
             }
 
-    print(f"All {max_retries} attempts exhausted. Returning empty result.")
+    print(f"All {max_retries} attempts exhausted.")
     return empty_result
