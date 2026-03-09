@@ -8,7 +8,10 @@ from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
-from database import Base, engine, get_db
+from datetime import datetime, timezone
+from database import Base, engine, get_db, run_migrations
+
+
 from models import ProductFetched, ProductRefined, CategoryAssignment
 from schemas import (
     ScrapeRequest, ScrapeResponse, ScrapeResult,
@@ -642,6 +645,7 @@ async def export_templates():
     except Exception as e:
         print(f"Export error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
