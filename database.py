@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # -----------------------------
@@ -44,3 +44,16 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# add this entire function at the bottom of database.py:
+def run_migrations():
+    with engine.connect() as conn:
+        result = conn.execute(text("PRAGMA table_info(products)"))
+        existing_cols = {row[1] for row in result.fetchall()}
+
+        if "exported_at" not in existing_cols:
+            conn.execute(text("ALTER TABLE products ADD COLUMN exported_at DATETIME"))
+            conn.commit()
+            print("Migration: added 'exported_at' column to products ✅")
+        else:
+            print("Migration: 'exported_at' already exists, skipping ✅")
