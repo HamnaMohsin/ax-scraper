@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, Integer, String, Float, Text, JSON, ForeignKey
+from sqlalchemy import Column, BigInteger, Integer, String, Float, Text, JSON, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -15,7 +15,7 @@ class ProductFetched(Base):
 
     refined  = relationship("ProductRefined",     back_populates="product", uselist=False, cascade="all, delete-orphan")
     category = relationship("CategoryAssignment", back_populates="product", uselist=False, cascade="all, delete-orphan")
-
+    exported_at = Column(DateTime, nullable=True)   # NULL = not yet exported
 
 class ProductRefined(Base):
     """LLM-enhanced title and description."""
@@ -41,3 +41,4 @@ class CategoryAssignment(Base):
     similarity_score       = Column(Float, nullable=True)
 
     product = relationship("ProductFetched", back_populates="category")
+
