@@ -221,7 +221,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
-                    "--single-process",
                 ]
             )
             context = browser.new_context(
