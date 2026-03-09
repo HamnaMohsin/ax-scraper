@@ -275,7 +275,36 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 browser.close()
                 continue
 
-            page.wait_for_timeout(5000)
+            if detect_recaptcha(page):
+                print("CAPTCHA detected — retrying.")
+                browser.close()
+                continue
+
+            # ── Wait for title element — replaces fixed timeout ───────────────
+            # Regional domains (.it, .de, .us) render at different speeds.
+            # Waiting for the actual element is reliable; a flat 5s timeout is not.
+            # Try each known title selector and stop at the first that appears.
+            TITLE_SELECTORS = [
+                "[data-pl='product-title']",
+                ".title--wrap--UUHae_g h1",
+                ".title--wrap--NWOaiSp h1",
+                ".product-title-text",
+                "#root h1",
+            ]
+            title_found = False
+            for sel in TITLE_SELECTORS:
+                try:
+                    page.wait_for_selector(sel, timeout=15000, state="visible")
+                    title_found = True
+                    print(f"Title element visible via '{sel}'")
+                    break
+                except Exception:
+                    continue
+
+            if not title_found:
+                print("Title element never appeared — page blocked or too slow.")
+                browser.close()
+                continue
 
             if detect_recaptcha(page):
                 print("CAPTCHA detected — retrying.")
@@ -312,13 +341,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 "log in", "login", "verify", "robot",
             }
             title = ""
-            for sel in [
-                "[data-pl='product-title']",
-                ".title--wrap--UUHae_g h1",
-                ".title--wrap--NWOaiSp h1",
-                ".product-title-text",
-                "#root h1",
-            ]:
+            for sel in TITLE_SELECTORS:
                 candidate = safe_text(sel)
                 if candidate and candidate.lower().strip() not in BLOCKED:
                     title = candidate
