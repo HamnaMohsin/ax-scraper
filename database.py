@@ -48,7 +48,7 @@ def get_db():
 # add this entire function at the bottom of database.py:
 def run_migrations():
     with engine.connect() as conn:
-        result = conn.execute(text("PRAGMA table_info(products)"))
+        result = conn.execute(text("PRAGMA table_info(product_fetched)"))
         existing_cols = {row[1] for row in result.fetchall()}
 
         if "exported_at" not in existing_cols:
@@ -57,3 +57,4 @@ def run_migrations():
             print("Migration: added 'exported_at' column to products ✅")
         else:
             print("Migration: 'exported_at' already exists, skipping ✅")
+
