@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, List
 import os
 import sys
+import json
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
@@ -71,6 +72,7 @@ def _upsert(db: Session, url: str, product_id: int, data: dict, refined: dict, c
         product.title       = data["title"]
         product.description = data["description_text"]
         product.images      = data["images"]
+        product.exported_at = None
     else:
         print("New product → inserting")
         product = ProductFetched(
@@ -79,6 +81,7 @@ def _upsert(db: Session, url: str, product_id: int, data: dict, refined: dict, c
             title=data["title"],
             description=data["description_text"],
             images=data["images"],
+            exported_at=None,
         )
         db.add(product)
 
@@ -123,6 +126,7 @@ def _upsert(db: Session, url: str, product_id: int, data: dict, refined: dict, c
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     print("Database tables created ✅")
+    run_migrations()
     yield
     print("App shutting down...")
 
@@ -548,77 +552,68 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/export-templates")
-async def export_templates():
-    """
-    Reads all categorized products from products.db, groups by Octopia
-    category, and writes one .xlsm file per category to data/output_templates/.
-
-    Returns a summary of every file written including per-product details.
-    """
+async def export_templates(
+    only_new: bool = Query(
+        default=False,
+        description="False = full rebuild. True = only export products where exported_at IS NULL, append to existing files."
+    ),
+    db: Session = Depends(get_db),
+):
     if not os.path.exists(TEMPLATE_PATH):
-        raise HTTPException(
-            status_code=500,
-            detail=f"Template not found at {TEMPLATE_PATH} — upload pdt_template_fr-FR_20260305_090255.xlsm to /opt/ax-scraper/data/"
-        )
+        raise HTTPException(status_code=500, detail=f"Template not found: {TEMPLATE_PATH}")
     if not os.path.exists(DB_PATH):
-        raise HTTPException(
-            status_code=500,
-            detail=f"Database not found at {DB_PATH}"
-        )
+        raise HTTPException(status_code=500, detail=f"Database not found: {DB_PATH}")
 
     def _run_export():
         os.makedirs(OUT_DIR, exist_ok=True)
 
-        df = load_products(DB_PATH)
+        df = load_products(DB_PATH, only_new=only_new)
         if df.empty:
-            return {
-                "total_products":   0,
-                "total_categories": 0,
-                "output_dir":       OUT_DIR,
-                "message":          "No categorized products found. Run /scrape first.",
-                "files":            []
-            }
+            msg = "No new products to export." if only_new else "No categorized products found. Run /scrape first."
+            return {"mode": "incremental" if only_new else "full", "total_products": 0, "total_categories": 0, "output_dir": OUT_DIR, "message": msg, "files": [], "_written_ids": []}
 
-        # Debug: show what images field looks like from DB
-        sample = df.iloc[0]
-        print(f"DEBUG images field type: {type(sample.get('images'))} | value[:100]: {str(sample.get('images'))[:100]}")
+        sample_images = df.iloc[0].get("images")
+        print(f"DEBUG images type={type(sample_images).__name__} | sample={str(sample_images)[:80]}")
 
+        all_written_ids = []
         results = []
+
         for category_id, group in df.groupby("category_id"):
             category_name = group.iloc[0]["assigned_category"] or str(category_id)
             safe_filename = str(category_id).replace("/", "_").replace(" ", "_")
             out_path      = os.path.join(OUT_DIR, f"{safe_filename}.xlsm")
 
-            print(f"Exporting [{category_id}] {category_name} — {len(group)} product(s)")
+            print(f"Category [{category_id}] {category_name} — {len(group)} product(s)")
 
-            write_category_file(
+            written_ids = write_category_file(
                 template_path=TEMPLATE_PATH,
                 out_path=out_path,
                 category_code=str(category_id),
                 category_name=str(category_name),
                 products=group,
+                append=only_new,
             )
+            all_written_ids.extend(written_ids)
 
-            # Build per-product summary for the response
             product_summaries = []
             for _, row in group.iterrows():
                 raw_images = row.get("images")
                 image_count = 0
-                if raw_images:
+                if raw_images is not None:
                     if isinstance(raw_images, list):
                         image_count = len(raw_images)
-                    elif isinstance(raw_images, str):
+                    elif isinstance(raw_images, str) and raw_images.strip() not in ("", "null", "[]"):
                         try:
-                            parsed = json.loads(raw_images)
-                            image_count = len(parsed) if isinstance(parsed, list) else 0
+                            image_count = len(json.loads(raw_images))
                         except Exception:
                             image_count = 0
+                print(f"  product {row['product_id']} | images type={type(raw_images).__name__} | count={image_count}")
 
                 product_summaries.append({
-                    "product_id":       str(row["product_id"]),
-                    "title":            row.get("enhanced_title") or row.get("original_title") or "",
-                    "image_count":      image_count,
-                    "has_description":  bool(row.get("enhanced_description") or row.get("original_description")),
+                    "product_id":      str(row["product_id"]),
+                    "title":           row.get("enhanced_title") or row.get("original_title") or "",
+                    "image_count":     image_count,
+                    "has_description": bool(row.get("enhanced_description") or row.get("original_description")),
                 })
 
             results.append({
@@ -629,24 +624,33 @@ async def export_templates():
                 "products":      product_summaries,
             })
 
-            print(f"  ✅ Written → {out_path}")
-
         return {
-            "total_products":   int(df["product_id"].nunique()),
+            "mode":             "incremental" if only_new else "full",
+            "total_products":   len(all_written_ids),
             "total_categories": len(results),
             "output_dir":       OUT_DIR,
             "files":            results,
+            "_written_ids":     all_written_ids,
         }
 
     try:
         result = await run_in_threadpool(_run_export)
-        print(f"Export complete — {result['total_categories']} file(s) written to {OUT_DIR}")
+
+        written_ids = result.pop("_written_ids", [])
+        if written_ids:
+            now = datetime.now(timezone.utc)
+            db.query(ProductFetched).filter(ProductFetched.product_id.in_(written_ids)).update(
+                {"exported_at": now}, synchronize_session=False
+            )
+            db.commit()
+            print(f"Marked {len(written_ids)} product(s) as exported at {now.isoformat()}")
+
+        print(f"Export complete [{result['mode']}] — {result['total_products']} product(s) across {result['total_categories']} file(s)")
         return result
+
     except Exception as e:
         print(f"Export error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
 
 
 
