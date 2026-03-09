@@ -262,7 +262,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
             # ── Navigate ──────────────────────────────────────────────────────
             try:
-                page.goto(base_url, timeout=90000, wait_until="domcontentloaded")
+                page.goto(base_url, timeout=90000, wait_until="commit")
             except Exception as e:
                 print(f"Navigation failed: {e}")
                 browser.close()
@@ -294,7 +294,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             title_found = False
             for sel in TITLE_SELECTORS:
                 try:
-                    page.wait_for_selector(sel, timeout=15000, state="visible")
+                    page.wait_for_selector(sel, timeout=8000, state="visible")
                     title_found = True
                     print(f"Title element visible via '{sel}'")
                     break
@@ -384,7 +384,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
                                 return false;
                             }""",
-                            timeout=12000,
+                            timeout=8000,
                         )
                         print("Description content detected.")
                     except Exception:
