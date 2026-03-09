@@ -16,7 +16,7 @@ from schemas import (
     ProductFetchedOut, ProductRefinedOut,
     CategoryAssignmentOut, ProductFullOut,
 )
-from scraper import extract_aliexpress_product
+from scraper2 import extract_aliexpress_product
 from llm_refiner2 import refine_with_llm
 from assign_embeddings2 import categorize_product
 
@@ -642,6 +642,7 @@ async def export_templates():
     except Exception as e:
         print(f"Export error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
