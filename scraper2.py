@@ -7,8 +7,10 @@ from bs4 import BeautifulSoup
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def random_delay(min_sec: float = 0.5, max_sec: float = 1.5):
-    time.sleep(random.uniform(min_sec, max_sec))
+def random_delay(min_sec: float = 1.0, max_sec: float = 3.0):
+    delay = random.uniform(min_sec, max_sec)
+    print(f"Waiting {delay:.1f}s...")
+    time.sleep(delay)
 
 
 def rotate_tor_circuit():
@@ -18,19 +20,15 @@ def rotate_tor_circuit():
         with Controller.from_port(port=9051) as controller:
             controller.authenticate()
             controller.signal(Signal.NEWNYM)
-            print("Tor circuit rotated.")
+            print("Tor circuit rotated — new exit IP assigned.")
             time.sleep(5)
     except Exception as e:
         print(f"Failed to rotate Tor circuit: {e}")
 
 
 def is_aliexpress_url(url: str) -> bool:
+    """Accept any regional AliExpress domain: .com, .us, .co.uk, .it, etc."""
     return "aliexpress." in url.lower()
-
-
-def is_description_image(src: str) -> bool:
-    s = src.lower()
-    return "alicdn.com" in s or "aliexpress-media.com" in s
 
 
 def detect_recaptcha(page) -> bool:
@@ -45,7 +43,7 @@ def detect_recaptcha(page) -> bool:
     for selector in indicators:
         try:
             if page.query_selector(selector):
-                print(f"Block detected: {selector}")
+                print(f"reCAPTCHA/block detected via selector: {selector}")
                 return True
         except Exception:
             pass
@@ -56,23 +54,29 @@ def detect_recaptcha(page) -> bool:
         return True
 
     page_title = page.title()
+    page_title_lower = page_title.lower()
     is_product_page = is_aliexpress_url(page.url) and len(page_title) > 40
     if not is_product_page:
         block_titles = ["verify", "captcha", "robot", "access denied", "blocked", "aanmelden", "sign in"]
-        if any(kw in page_title.lower() for kw in block_titles):
-            print(f"Block detected via title: '{page_title}'")
+        if any(kw in page_title_lower for kw in block_titles):
+            print(f"Block detected via page title: '{page_title}'")
             return True
 
     return False
 
 
-def safe_scroll(page, steps: int = 8) -> bool:
+def safe_scroll(page, steps: int = 12) -> bool:
+    """
+    Scroll gradually. Returns False if the page closed mid-scroll
+    (happens when AliExpress fires a mid-page redirect).
+    """
     for _ in range(steps):
         try:
             if page.is_closed():
+                print("Page closed during scroll — likely a redirect.")
                 return False
-            page.mouse.wheel(0, random.randint(250, 450))
-            page.wait_for_timeout(150)
+            page.mouse.wheel(0, random.randint(200, 400))
+            page.wait_for_timeout(random.randint(200, 400))
         except Exception as e:
             print(f"Scroll interrupted: {e}")
             return False
@@ -81,8 +85,8 @@ def safe_scroll(page, steps: int = 8) -> bool:
 
 def random_viewport():
     return {
-        "width": random.choice([1280, 1366, 1440, 1536]),
-        "height": random.choice([720, 768, 900]),
+        "width": random.choice([1280, 1366, 1440, 1536, 1600]),
+        "height": random.choice([720, 768, 864, 900]),
     }
 
 
@@ -97,6 +101,11 @@ def normalize_img_url(src: str) -> str:
     return src
 
 
+def is_description_image(src: str) -> bool:
+    s = src.lower()
+    return "alicdn.com" in s or "aliexpress-media.com" in s
+
+
 def clean_text(text: str) -> str:
     if not text:
         return ""
@@ -105,64 +114,31 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-# ── Stealth init script ────────────────────────────────────────────────────────
-
-STEALTH_INIT_SCRIPT = """
-() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    Object.defineProperty(navigator, 'plugins', {
-        get: () => [
-            { name: 'Chrome PDF Plugin',  filename: 'internal-pdf-viewer',             description: 'Portable Document Format' },
-            { name: 'Chrome PDF Viewer',  filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-            { name: 'Native Client',      filename: 'internal-nacl-plugin',             description: '' },
-        ],
-    });
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => (
-        parameters.name === 'notifications'
-            ? Promise.resolve({ state: Notification.permission })
-            : originalQuery(parameters)
-    );
-    const getParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-        if (parameter === 37445) return 'Intel Inc.';
-        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-        return getParameter.call(this, parameter);
-    };
-    Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
-    Object.defineProperty(screen, 'pixelDepth',  { get: () => 24 });
-    Object.defineProperty(navigator, 'userAgent', {
-        get: () => navigator.userAgent.replace('HeadlessChrome', 'Chrome'),
-    });
-}
-"""
-
-
 # ── Description extraction ─────────────────────────────────────────────────────
 #
-# WHY inner_text() INSTEAD OF JS TRAVERSAL:
+# WHY THE OLD CODE SKIPPED CONTENT:
+#   The previous extraction used `child_count == 0` to only collect leaf nodes.
+#   This skipped ANY element that had children — including <p> tags with <br>
+#   children, <div> wrappers with nested <span>s, and all structured seller
+#   descriptions. The result was empty description_text for most products.
 #
-#   AliExpress has 3+ different description HTML layouts depending on seller:
-#     A) Amazon A+ content  → shadow root with carousel modules
-#     B) Plain richtext     → shadow root with detailmodule_html > p+br
-#     C) richTextContainer  → plain DOM second child div
-#     D) detailmodule_html  → plain DOM, no shadow root at all (this bug)
+# FIX — inner_text() + evaluate_all():
+#   inner_text() is a browser-native method that walks the entire subtree,
+#   handles <br> as line breaks, pierces shadow roots, and skips hidden
+#   elements. It returns all visible text regardless of nesting depth or
+#   class names — no selector assumptions needed.
 #
-#   Trying to enumerate every layout with JS selectors is fragile —
-#   every new product can break the scraper. Playwright's inner_text()
-#   pierces shadow DOM automatically and returns all visible text from
-#   the entire subtree regardless of nesting depth or class names.
-#
-#   For images: evaluate_all() on the img locator collects every <img>
-#   inside the container, including those nested inside shadow roots,
-#   plain divs, or any other structure — no selector guessing needed.
+#   evaluate_all() collects every <img> src in one JS call, also works
+#   across shadow roots and nested structures.
 
-def extract_description(page) -> tuple[str, list[str]]:
+def extract_description(page) -> tuple:
     """
     Extract description text and image URLs from #product-description.
-    Works across all known AliExpress layout variants.
+    Works across all AliExpress layout variants:
+      - Shadow DOM (Amazon A+ content)
+      - detailmodule_html with nested p/span/br
+      - richTextContainer plain DOM
+      - Any future layout
     Returns (description_text, images).
     """
     description_text = ""
@@ -171,15 +147,14 @@ def extract_description(page) -> tuple[str, list[str]]:
     try:
         desc_container = page.locator("#product-description")
 
-        # Confirm the container exists and is visible
         if desc_container.count() == 0:
             print("  #product-description not found.")
             return "", []
 
         # ── Text ─────────────────────────────────────────────────────────────
-        # inner_text() traverses the full subtree including shadow roots,
-        # respects <br> as line breaks, and skips hidden elements.
-        # No class names, no children.length checks, no layout assumptions.
+        # inner_text() traverses the full subtree including shadow roots.
+        # Handles <br> as newlines, skips hidden/script/style content.
+        # No class names, no children.length filtering, no layout assumptions.
         try:
             raw_text = desc_container.inner_text(timeout=5000)
             description_text = re.sub(r"\s+", " ", raw_text).strip()
@@ -187,8 +162,8 @@ def extract_description(page) -> tuple[str, list[str]]:
             print(f"  inner_text() failed: {e}")
 
         # ── Images ───────────────────────────────────────────────────────────
-        # evaluate_all() runs one JS call over all matched elements —
-        # faster than iterating in Python and handles shadow DOM naturally.
+        # evaluate_all() runs one JS call across all matched <img> elements.
+        # Collects from both alicdn.com and aliexpress-media.com CDN domains.
         try:
             raw_srcs = desc_container.locator("img").evaluate_all(
                 "imgs => imgs.map(img => img.src || img.getAttribute('data-src') || '')"
@@ -224,7 +199,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
         if attempt > 1:
             rotate_tor_circuit()
-            random_delay(5.0, 8.0)
+            random_delay(8.0, 15.0)
 
         with sync_playwright() as p:
             browser = p.chromium.launch(
@@ -235,6 +210,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
+                    "--single-process",
                 ]
             )
             context = browser.new_context(
@@ -242,8 +218,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 ]),
                 viewport=random_viewport(),
@@ -258,11 +232,13 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 bypass_csp=True,
             )
             page = context.new_page()
-            page.add_init_script(f"({STEALTH_INIT_SCRIPT})()")
+            page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
 
             # ── Navigate ──────────────────────────────────────────────────────
             try:
-                page.goto(base_url, timeout=90000, wait_until="commit")
+                page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
             except Exception as e:
                 print(f"Navigation failed: {e}")
                 browser.close()
@@ -271,19 +247,44 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             print(f"Landed on: {page.url}")
 
             if not is_aliexpress_url(page.url):
-                print("Redirected off AliExpress — skipping.")
+                print(f"Redirected off AliExpress to {page.url} — skipping.")
                 browser.close()
                 continue
+
+            random_delay(3.0, 6.0)
 
             if detect_recaptcha(page):
                 print("CAPTCHA detected — retrying.")
                 browser.close()
                 continue
 
-            # ── Wait for title element — replaces fixed timeout ───────────────
-            # Regional domains (.it, .de, .us) render at different speeds.
-            # Waiting for the actual element is reliable; a flat 5s timeout is not.
-            # Try each known title selector and stop at the first that appears.
+            # Wait for initial JS render
+            page.wait_for_timeout(8000)
+            random_delay(1.0, 3.0)
+
+            # ── Scroll to trigger lazy loads ───────────────────────────────────
+            scroll_ok = safe_scroll(page, steps=12)
+            if not scroll_ok:
+                print("Scroll failed — page likely redirected. Retrying attempt...")
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+                continue
+
+            random_delay(1.0, 2.0)
+
+            if page.is_closed():
+                print("Page closed unexpectedly after scroll.")
+                browser.close()
+                continue
+
+            if detect_recaptcha(page):
+                print("CAPTCHA detected after scroll — retrying.")
+                browser.close()
+                continue
+
+            # ── Wait for title (replaces blind timeout) ───────────────────────
             TITLE_SELECTORS = [
                 "[data-pl='product-title']",
                 ".title--wrap--UUHae_g h1",
@@ -291,40 +292,17 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 ".product-title-text",
                 "#root h1",
             ]
-            title_found = False
+            title_appeared = False
             for sel in TITLE_SELECTORS:
                 try:
                     page.wait_for_selector(sel, timeout=8000, state="visible")
-                    title_found = True
-                    print(f"Title element visible via '{sel}'")
+                    title_appeared = True
                     break
                 except Exception:
                     continue
 
-            if not title_found:
+            if not title_appeared:
                 print("Title element never appeared — page blocked or too slow.")
-                browser.close()
-                continue
-
-            if detect_recaptcha(page):
-                print("CAPTCHA detected — retrying.")
-                browser.close()
-                continue
-
-            if not safe_scroll(page, steps=8):
-                print("Scroll failed — retrying.")
-                try:
-                    browser.close()
-                except Exception:
-                    pass
-                continue
-
-            if page.is_closed():
-                browser.close()
-                continue
-
-            if detect_recaptcha(page):
-                print("CAPTCHA after scroll — retrying.")
                 browser.close()
                 continue
 
@@ -345,7 +323,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 candidate = safe_text(sel)
                 if candidate and candidate.lower().strip() not in BLOCKED:
                     title = candidate
-                    print(f"Title: {title[:70]}")
+                    print(f"Title via '{sel}': {title[:70]}")
                     break
 
             if not title:
@@ -353,46 +331,42 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 browser.close()
                 continue
 
-            # ── Click #nav-description to fire the description XHR ───────────
-            # Without this click, #product-description is empty on most products.
+            # ── Click #nav-description to trigger description XHR ─────────────
+            # Without this click #product-description stays empty on most products.
             try:
                 nav_desc = page.query_selector('#nav-description')
                 if nav_desc:
                     nav_desc.scroll_into_view_if_needed()
-                    random_delay(0.5, 1.0)
+                    random_delay(1.0, 2.0)
                     nav_desc.click(force=True)
                     print("Clicked #nav-description — waiting for content...")
 
-                    # Wait until the container has real content.
-                    # Covers all layouts: shadow root (A/B) and plain DOM (C/D).
+                    # Wait for content to appear in the container (any layout).
                     try:
                         page.wait_for_function(
                             """() => {
                                 const c = document.querySelector('#product-description');
                                 if (!c) return false;
-
-                                // Layout A/B: shadow root populated
+                                // Layout A/B: shadow root populated past CSS-only size
                                 const host = c.querySelector(':scope > div');
                                 if (host && host.shadowRoot) {
                                     if ((host.shadowRoot.textContent || '').trim().length > 4500)
                                         return true;
                                 }
-
                                 // Layout C/D: plain DOM has content
                                 if ((c.textContent || '').trim().length > 50)
                                     return true;
-
                                 return false;
                             }""",
                             timeout=8000,
                         )
-                        print("Description content detected.")
+                        print("Description content loaded.")
                     except Exception:
-                        print("Wait timed out — extracting anyway...")
+                        print("XHR wait timed out — attempting extraction anyway...")
 
-                    random_delay(0.5, 1.0)
+                    random_delay(1.0, 2.0)
                 else:
-                    print("#nav-description not found.")
+                    print("#nav-description not found — description XHR won't fire.")
             except Exception as e:
                 print(f"Could not click #nav-description: {e}")
 
@@ -402,9 +376,9 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             images = list(dict.fromkeys(images))  # deduplicate, preserve order
 
             if not description_text:
-                print("No description text.")
+                print("No description text (seller may use image-only description).")
             if not images:
-                print("No description images.")
+                print("No description images extracted.")
 
             browser.close()
 
