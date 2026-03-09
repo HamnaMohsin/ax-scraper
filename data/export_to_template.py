@@ -1,12 +1,27 @@
 """
 export_to_template.py
 ----------------------
-Reads all products from the database, groups them by assigned Octopia category,
-and writes one .xlsm file per category using the official Octopia template.
+Reads categorized products from the database and writes one .xlsm per category
+using the official Octopia template.
 
-Usage:
-    python3 export_to_template.py
-    python3 export_to_template.py --template pdt_template_fr-FR_20260305_090255.xlsm --db data/products.db --out output_templates/
+Two modes (controlled by caller):
+  only_new=False  → Full rebuild: copy template fresh, write ALL products from row 11.
+                    Overwrites any existing file.
+  only_new=True   → Incremental: if file already exists, APPEND new products after
+                    the last used row. If file does not exist yet, behaves like full mode.
+
+Column mapping (1-based, confirmed from Octopia template):
+  Col 2  (B)  sellerProductReference  max 50 chars
+  Col 3  (C)  title                   max 132 chars
+  Col 4  (D)  description             max 2000 chars
+  Col 5  (E)  sellerPictureUrls_1     image 1 (required)
+  Col 10 (J)  sellerPictureUrls_2     image 2
+  Col 11 (K)  sellerPictureUrls_3     image 3
+  Col 12 (L)  sellerPictureUrls_4     image 4
+  Col 13 (M)  sellerPictureUrls_5     image 5
+  Col 14 (N)  sellerPictureUrls_6     image 6
+
+NOTE: Template only supports 6 image slots. Extras are dropped (hard Octopia limit).
 """
 
 import argparse
@@ -18,23 +33,6 @@ import sqlite3
 import pandas as pd
 from openpyxl import load_workbook
 
-
-# ── Column mapping (1-based, confirmed from template Row 4 + Row 5) ───────────
-#
-#  Col  Letter  Field code               Human label
-#  ---  ------  -----------------------  ----------------------------
-#   2     B     sellerProductReference   Référence vendeur* (max 50 chars)
-#   3     C     title                    Titre*             (max 132 chars)
-#   4     D     description              Description*       (max 2000 chars)
-#   5     E     sellerPictureUrls_1      URL image 1*
-#  10     J     sellerPictureUrls_2      URL image 2
-#  11     K     sellerPictureUrls_3      URL image 3
-#  12     L     sellerPictureUrls_4      URL image 4
-#  13     M     sellerPictureUrls_5      URL image 5
-#  14     N     sellerPictureUrls_6      URL image 6
-#
-# NOTE: The template only supports 6 image slots total (cols E, J–N).
-# Any images beyond the 6th are silently dropped — this is a hard Octopia limit.
 
 COLUMN_MAP = {
     "sellerProductReference": 2,
@@ -48,20 +46,27 @@ COLUMN_MAP = {
     "image_6":               14,
 }
 
-# Octopia character limits (from Row 8 of the template)
 REF_MAX         = 50
 TITLE_MAX       = 132
 DESCRIPTION_MAX = 2000
-
-# Row where product data starts (rows 1–10 are template headers)
-DATA_START_ROW = 11
+DATA_START_ROW  = 11   # rows 1-10 are template headers
 
 
-# ── DB helpers ────────────────────────────────────────────────────────────────
+# ── DB helpers ─────────────────────────────────────────────────────────────────
 
-def load_products(db_path: str) -> pd.DataFrame:
+def load_products(db_path: str, only_new: bool = False) -> pd.DataFrame:
+    """
+    Load categorized products from SQLite.
+    only_new=True  → only rows where exported_at IS NULL
+    only_new=False → all categorized products
+    """
     conn = sqlite3.connect(db_path)
-    query = """
+
+    where = "WHERE ca.category_id IS NOT NULL"
+    if only_new:
+        where += " AND pf.exported_at IS NULL"
+
+    query = f"""
         SELECT
             pf.product_id,
             pf.url,
@@ -77,7 +82,7 @@ def load_products(db_path: str) -> pd.DataFrame:
         FROM product_fetched pf
         LEFT JOIN product_refined    pr ON pf.product_id = pr.product_id
         LEFT JOIN category_assignment ca ON pf.product_id = ca.product_id
-        WHERE ca.category_id IS NOT NULL
+        {where}
         ORDER BY ca.category_id
     """
     df = pd.read_sql_query(query, conn)
@@ -87,11 +92,8 @@ def load_products(db_path: str) -> pd.DataFrame:
 
 def parse_images(images_raw) -> list:
     """
-    Parse JSON images field from DB into a clean list of URLs.
-
-    Strips query parameters (?width=...&height=...&hash=...) that
-    Octopia's URL validator rejects. Octopia requires clean direct
-    image URLs with no query strings.
+    Parse JSON images field and strip query params (?width=...&hash=...).
+    Octopia rejects URLs with query strings.
     """
     if not images_raw:
         return []
@@ -106,17 +108,10 @@ def parse_images(images_raw) -> list:
         except Exception:
             return []
 
-    clean = []
-    for url in imgs:
-        if url:
-            # Remove ?width=...&height=...&hash=... query strings
-            clean_url = url.split("?")[0].strip()
-            if clean_url:
-                clean.append(clean_url)
-    return clean
+    return [url.split("?")[0].strip() for url in imgs if url]
 
 
-# ── Template writer ───────────────────────────────────────────────────────────
+# ── Template writer ────────────────────────────────────────────────────────────
 
 def write_category_file(
     template_path: str,
@@ -124,36 +119,52 @@ def write_category_file(
     category_code: str,
     category_name: str,
     products: pd.DataFrame,
-):
+    append: bool = False,
+) -> list:
     """
-    Copy the Octopia template, update category header in Row 1,
-    and fill one product per row starting at Row 11.
+    Write products into an Octopia .xlsm template file.
+
+    append=False → copy template fresh, write all products from row 11.
+    append=True  → open existing file and append after the last used row.
+                   Falls back to fresh copy if file does not exist.
+
+    Returns list of product_ids written (used to mark exported_at in DB).
     """
-    shutil.copy2(template_path, out_path)
+    file_exists = os.path.exists(out_path)
 
-    wb = load_workbook(out_path, keep_vba=True)
-    ws = wb.active
+    if append and file_exists:
+        # Open existing file and find next empty row
+        wb = load_workbook(out_path, keep_vba=True)
+        ws = wb.active
+        next_row = DATA_START_ROW
+        for row in range(DATA_START_ROW, ws.max_row + 2):
+            if all(ws.cell(row, c).value is None for c in [2, 3, 5]):
+                next_row = row
+                break
+        print(f"  Appending from row {next_row} (file had {next_row - DATA_START_ROW} product(s) already)")
+    else:
+        # Fresh copy from template
+        shutil.copy2(template_path, out_path)
+        wb = load_workbook(out_path, keep_vba=True)
+        ws = wb.active
 
-    # ── Row 1: update category code (C1) and category name (D1) ──────────────
-    ws.cell(row=1, column=3).value = category_code
-    ws.cell(row=1, column=4).value = category_name
+        # Update Row 1 category header
+        ws.cell(row=1, column=3).value = category_code
+        ws.cell(row=1, column=4).value = category_name
 
-    # ── Rename sheet (Excel max 31 chars, no slashes or special chars) ────────
-    safe_name = (category_name[:31]
-                 .replace("/", "-")
-                 .replace("\\", "-")
-                 .replace("*", "")
-                 .replace("?", "")
-                 .replace(":", "")
-                 .replace("[", "")
-                 .replace("]", ""))
-    ws.title = safe_name
+        # Rename sheet (Excel max 31 chars, no special chars)
+        safe_name = (category_name[:31]
+                     .replace("/", "-").replace("\\", "-")
+                     .replace("*", "").replace("?", "")
+                     .replace(":", "").replace("[", "").replace("]", ""))
+        ws.title = safe_name
+        next_row = DATA_START_ROW
 
-    # ── Write products starting at DATA_START_ROW ─────────────────────────────
+    # Write products
+    written_ids = []
     for row_offset, (_, product) in enumerate(products.iterrows()):
-        excel_row = DATA_START_ROW + row_offset
+        excel_row = next_row + row_offset
 
-        # Prefer LLM-refined content, fall back to raw scraped content
         title       = str(product.get("enhanced_title")       or product.get("original_title")       or "")
         description = str(product.get("enhanced_description") or product.get("original_description") or "")
         product_id  = str(product.get("product_id") or "")
@@ -164,32 +175,35 @@ def write_category_file(
         title       = title[:TITLE_MAX].rstrip()
         description = description[:DESCRIPTION_MAX].rstrip()
 
-        # ── Write fields ──────────────────────────────────────────────────────
         ws.cell(row=excel_row, column=COLUMN_MAP["sellerProductReference"]).value = product_id
         ws.cell(row=excel_row, column=COLUMN_MAP["title"]).value                  = title
         ws.cell(row=excel_row, column=COLUMN_MAP["description"]).value            = description
 
-        # ── Write image URLs (template supports max 6) ────────────────────────
-        img_cols = ["image_1", "image_2", "image_3", "image_4", "image_5", "image_6"]
-        for i, key in enumerate(img_cols):
+        img_keys = ["image_1", "image_2", "image_3", "image_4", "image_5", "image_6"]
+        for i, key in enumerate(img_keys):
             if i < len(images):
                 ws.cell(row=excel_row, column=COLUMN_MAP[key]).value = images[i]
 
-        # Warn if product has more than 6 images (extras are dropped)
         if len(images) > 6:
             print(f"    ⚠  product {product_id} has {len(images)} images — only first 6 written (template limit)")
 
+        written_ids.append(product.get("product_id"))
+
     wb.save(out_path)
-    print(f"  ✅ {len(products)} product(s) → {out_path}")
+    mode_label = "appended" if (append and file_exists) else "written"
+    print(f"  ✅ {len(products)} product(s) {mode_label} → {out_path}")
+    return written_ids
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main (standalone CLI) ──────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Export products to Octopia template files")
-    parser.add_argument("--template", default="pdt_template_fr-FR_20260305_090255.xlsm")
-    parser.add_argument("--db",       default="products.db")
-    parser.add_argument("--out",      default="output_templates")
+    parser.add_argument("--template", default="data/pdt_template_fr-FR_20260305_090255.xlsm")
+    parser.add_argument("--db",       default="data/products.db")
+    parser.add_argument("--out",      default="data/output_templates")
+    parser.add_argument("--only-new", action="store_true",
+                        help="Only export products not yet exported (exported_at IS NULL)")
     args = parser.parse_args()
 
     if not os.path.exists(args.template):
@@ -200,17 +214,14 @@ def main():
         return
 
     os.makedirs(args.out, exist_ok=True)
-
-    print(f"Loading products from {args.db}...")
-    df = load_products(args.db)
+    df = load_products(args.db, only_new=args.only_new)
 
     if df.empty:
-        print("❌ No categorized products found in database.")
-        print("   Run /scrape-only → /refine → /assign-category first.")
+        print("❌ No products to export.")
         return
 
     total_categories = df["category_id"].nunique()
-    print(f"Found {len(df)} products across {total_categories} categories\n")
+    print(f"Found {len(df)} product(s) across {total_categories} category/ies\n")
 
     for category_id, group in df.groupby("category_id"):
         category_name = group.iloc[0]["assigned_category"] or str(category_id)
@@ -224,6 +235,7 @@ def main():
             category_code=str(category_id),
             category_name=str(category_name),
             products=group,
+            append=args.only_new,
         )
 
     print(f"\n✅ Done. {total_categories} file(s) written to '{args.out}/'")
