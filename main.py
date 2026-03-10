@@ -644,7 +644,7 @@ async def export_templates(
                 {"exported_at": now}, synchronize_session=False
             )
             db.commit()
-            print(f"Marked {len(written_ids)} product(s) as exported at {now.isoformat()}")
+            print(f"Marked {updated} product(s) as exported at {now.isoformat()}")  
 
         print(f"Export complete [{result['mode']}] — {result['total_products']} product(s) across {result['total_categories']} file(s)")
         return result
@@ -652,4 +652,5 @@ async def export_templates(
     except Exception as e:
         print(f"Export error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
