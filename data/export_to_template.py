@@ -187,7 +187,9 @@ def write_category_file(
         if len(images) > 6:
             print(f"    ⚠  product {product_id} has {len(images)} images — only first 6 written (template limit)")
 
-        written_ids.append(product.get("product_id"))
+        #written_ids.append(product.get("product_id"))
+        written_ids.append(int(product.get("product_id")))
+
 
     wb.save(out_path)
     mode_label = "appended" if (append and file_exists) else "written"
