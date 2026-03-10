@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional, List
+from datetime import datetime
 
 
 class ScrapeRequest(BaseModel):
@@ -45,7 +46,7 @@ class ProductFetchedOut(BaseModel):
     title:       Optional[str]
     description: Optional[str]
     images:      Optional[List[str]] = []
-    exported_at:  Optional[str] = None
+    exported_at: Optional[datetime] = None 
 
     class Config:
         from_attributes = True
@@ -85,7 +86,8 @@ class ProductFullOut(BaseModel):
     assigned_category:       Optional[str]
     category_id:             Optional[str]
     similarity_score:        Optional[float]
-    exported_at:            Optional[str] = None
+    exported_at: Optional[datetime] = None 
+
 
 
 
