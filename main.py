@@ -637,14 +637,20 @@ async def export_templates(
     try:
         result = await run_in_threadpool(_run_export)
 
+        # written_ids = result.pop("_written_ids", [])
+        # if written_ids:
+        #     now = datetime.now(timezone.utc)
+        #     db.query(ProductFetched).filter(ProductFetched.product_id.in_(written_ids)).update(
+        #         {"exported_at": now}, synchronize_session=False
+        #     )
+        #     db.commit()
+        #     print(f"Marked {updated} product(s) as exported at {now.isoformat()}")  
         written_ids = result.pop("_written_ids", [])
         if written_ids:
             now = datetime.now(timezone.utc)
-            db.query(ProductFetched).filter(ProductFetched.product_id.in_(written_ids)).update(
-                {"exported_at": now}, synchronize_session=False
-            )
+            updated = db.query(ProductFetched).filter(ProductFetched.product_id.in_(written_ids)).update({"exported_at": now}, synchronize_session=False)
             db.commit()
-            print(f"Marked {updated} product(s) as exported at {now.isoformat()}")  
+            print(f"Marked {updated} product(s) as exported at {now.isoformat()}")  # ← updated count not len(written_ids)
 
         print(f"Export complete [{result['mode']}] — {result['total_products']} product(s) across {result['total_categories']} file(s)")
         return result
@@ -652,5 +658,6 @@ async def export_templates(
     except Exception as e:
         print(f"Export error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
