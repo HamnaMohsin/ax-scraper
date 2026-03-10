@@ -59,6 +59,7 @@ def _build_full_out(p: ProductFetched) -> ProductFullOut:
         #category_id=p.category.category_id if p.category else None,
         category_id = str(p.category.category_id) if p.category and p.category.category_id is not None else None,
         similarity_score=p.category.similarity_score if p.category else None,
+        exported_at=p.exported_at.isoformat() if p.exported_at else None, 
     )
 
 
@@ -651,3 +652,4 @@ async def export_templates(
     except Exception as e:
         print(f"Export error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
