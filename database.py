@@ -57,4 +57,9 @@ def run_migrations():
             print("Migration: added 'exported_at' column to products ✅")
         else:
             print("Migration: 'exported_at' already exists, skipping ✅")
+        if "description_marketing" not in existing_cols:
+            conn.execute(text("ALTER TABLE product_fetched ADD COLUMN description_marketing TEXT"))
+            conn.commit()
+            print("Migration: added 'description_marketing' column ✅")
+
 
