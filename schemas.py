@@ -25,6 +25,7 @@ class ScrapeResult(BaseModel):
     category_id:             Optional[str] = None
     similarity_score:        Optional[float] = None
     images:                  Optional[List[str]] = []
+    description_marketing:   Optional[str] = None
 
 
 class ScrapeResponse(BaseModel):
@@ -46,7 +47,8 @@ class ProductFetchedOut(BaseModel):
     title:       Optional[str]
     description: Optional[str]
     images:      Optional[List[str]] = []
-    exported_at: Optional[datetime] = None 
+    exported_at: Optional[datetime] = None
+    description_marketing: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -87,6 +89,8 @@ class ProductFullOut(BaseModel):
     category_id:             Optional[str]
     similarity_score:        Optional[float]
     exported_at: Optional[datetime] = None 
+    description_marketing: Optional[str] = None
+
 
 
 
