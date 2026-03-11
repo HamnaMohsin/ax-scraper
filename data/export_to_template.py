@@ -39,6 +39,7 @@ COLUMN_MAP = {
     "title":                  3,
     "description":            4,
     "image_1":                5,
+    "richMarketingDescription": 9,
     "image_2":               10,
     "image_3":               11,
     "image_4":               12,
@@ -184,7 +185,8 @@ def write_category_file(
         product_id  = str(product.get("product_id") or "")
         images      = parse_images(product.get("images"))
         desc_marketing = str(product.get("description_marketing") or "")[:DESC_MARKETING_MAX]
-        ws.cell(row=excel_row, column=COLUMN_MAP["descriptionMarketing"]).value = desc_marketing
+        #ws.cell(row=excel_row, column=COLUMN_MAP["descriptionMarketing"]).value = desc_marketing
+        ws.cell(row=excel_row, column=COLUMN_MAP["richMarketingDescription"]).value = desc_marketing
 
         # Enforce Octopia character limits
         product_id  = product_id[:REF_MAX]
