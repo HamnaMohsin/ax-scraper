@@ -50,6 +50,7 @@ REF_MAX         = 50
 TITLE_MAX       = 132
 DESCRIPTION_MAX = 2000
 DATA_START_ROW  = 11   # rows 1-10 are template headers
+DESC_MARKETING_MAX = 5000
 
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
@@ -73,6 +74,7 @@ def load_products(db_path: str, only_new: bool = False) -> pd.DataFrame:
             pf.title              AS original_title,
             pf.description        AS original_description,
             pf.images,
+            pf.description_marketing,
             pr.enhanced_title,
             pr.enhanced_description,
             ca.assigned_category,
@@ -110,6 +112,18 @@ def parse_images(images_raw) -> list:
 
     return [url.split("?")[0].strip() for url in imgs if url]
 
+def get_leaf_category(category_name: str) -> str:
+    if not category_name:
+        return ""
+    return category_name.strip().split("/")[-1].strip()
+
+
+def make_safe_filename(category_id: str, category_name: str) -> str:
+    leaf = get_leaf_category(category_name)
+    raw  = f"{category_id} - {leaf}" if leaf else category_id
+    for ch in ['/', '\\', ':', '*', '?', '"', '<', '>', '|']:
+        raw = raw.replace(ch, '')
+    return raw.strip()
 
 # ── Template writer ────────────────────────────────────────────────────────────
 
@@ -169,6 +183,8 @@ def write_category_file(
         description = str(product.get("enhanced_description") or product.get("original_description") or "")
         product_id  = str(product.get("product_id") or "")
         images      = parse_images(product.get("images"))
+        desc_marketing = str(product.get("description_marketing") or "")[:DESC_MARKETING_MAX]
+        ws.cell(row=excel_row, column=COLUMN_MAP["descriptionMarketing"]).value = desc_marketing
 
         # Enforce Octopia character limits
         product_id  = product_id[:REF_MAX]
@@ -227,7 +243,8 @@ def main():
 
     for category_id, group in df.groupby("category_id"):
         category_name = group.iloc[0]["assigned_category"] or str(category_id)
-        safe_filename = str(category_id).replace("/", "_").replace(" ", "_")
+        #safe_filename = str(category_id).replace("/", "_").replace(" ", "_")
+        safe_filename = make_safe_filename(str(category_id), category_name)
         out_path = os.path.join(args.out, f"{safe_filename}.xlsm")
 
         print(f"Category [{category_id}] {category_name} — {len(group)} product(s)")
