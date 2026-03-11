@@ -73,6 +73,7 @@ def _upsert(db: Session, url: str, product_id: int, data: dict, refined: dict, c
         product.title       = data["title"]
         product.description = data["description_text"]
         product.images      = data["images"]
+        product.description_marketing = data["description_marketing"]
         product.exported_at = None
     else:
         print("New product → inserting")
@@ -82,6 +83,7 @@ def _upsert(db: Session, url: str, product_id: int, data: dict, refined: dict, c
             title=data["title"],
             description=data["description_text"],
             images=data["images"],
+            description_marketing=data["description_marketing"],
             exported_at=None,
         )
         db.add(product)
@@ -287,6 +289,7 @@ async def scrape_only(request: ScrapeRequest):
                     product.title       = data["title"]
                     product.description = data["description_text"]
                     product.images      = data["images"]
+                    product.description_marketing = data["description_marketing"]
                 else:
                     product = ProductFetched(
                         product_id=product_id,
@@ -294,6 +297,7 @@ async def scrape_only(request: ScrapeRequest):
                         title=data["title"],
                         description=data["description_text"],
                         images=data["images"],
+                        description_marketing = data["description_marketing"]
                     )
                     db.add(product)
                 db.commit()
@@ -658,6 +662,7 @@ async def export_templates(
     except Exception as e:
         print(f"Export error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
