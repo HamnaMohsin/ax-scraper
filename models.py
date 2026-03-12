@@ -12,7 +12,6 @@ class ProductFetched(Base):
     title       = Column(String, nullable=True)
     description = Column(Text, nullable=True)
     images      = Column(JSON, nullable=True)
-    description_marketing = Column(Text, nullable=True)   # raw HTML, max 5000 chars
 
     refined  = relationship("ProductRefined",     back_populates="product", uselist=False, cascade="all, delete-orphan")
     category = relationship("CategoryAssignment", back_populates="product", uselist=False, cascade="all, delete-orphan")
@@ -26,6 +25,7 @@ class ProductRefined(Base):
     product_id           = Column(BigInteger, ForeignKey("product_fetched.product_id", ondelete="CASCADE"), unique=True, nullable=False)
     enhanced_title       = Column(String, nullable=True)
     enhanced_description = Column(Text, nullable=True)
+    description_marketing = Column(Text, nullable=True)
 
     product = relationship("ProductFetched", back_populates="refined")
 
@@ -42,5 +42,6 @@ class CategoryAssignment(Base):
     similarity_score       = Column(Float, nullable=True)
 
     product = relationship("ProductFetched", back_populates="category")
+
 
 
