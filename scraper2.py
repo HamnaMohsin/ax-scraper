@@ -125,7 +125,7 @@ SHADOW_DOM_EXTRACT_JS = """
     if (!container) return { error: 'no #product-description' };
 
     const host = container.querySelector(':scope > div');
-    if (!host)       return { error: 'no child div in #product-description' };
+    if (!host)            return { error: 'no child div in #product-description' };
     if (!host.shadowRoot) return { error: 'no shadowRoot on child div' };
 
     const root = host.shadowRoot;
@@ -154,10 +154,12 @@ SHADOW_DOM_EXTRACT_JS = """
     const texts = [];
     const seen  = new Set();
 
-    for (const el of root.querySelectorAll('p,h1,h2,h3,h4,h5,li,span,td,div')) {
-        function isCollectable(el) {
+    function isCollectable(el) {
         if (el.children.length === 0) return true;
-        return Array.from(el.children).every(c => c.tagName === 'BR');}
+        return Array.from(el.children).every(c => c.tagName === 'BR');
+    }
+
+    for (const el of root.querySelectorAll('p,h1,h2,h3,h4,h5,li,span,td,div')) {
         if (!isCollectable(el)) continue;
 
         const t = (el.innerText || el.textContent || '').trim();
@@ -216,7 +218,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
-                    "--single-process",
+                    "--no-zygote",
                 ]
             )
             context = browser.new_context(
@@ -269,11 +271,9 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             page.wait_for_timeout(8000)
             random_delay(1.0, 3.0)
 
-            # ── Scroll — wrapped so a mid-redirect crash is handled cleanly ──
+            # ── Scroll ────────────────────────────────────────────────────────
             scroll_ok = safe_scroll(page, steps=12)
             if not scroll_ok:
-                # Page was closed by a redirect; re-open on the new URL
-                # (browser is still alive, just that page closed)
                 print("Scroll failed — page likely redirected. Retrying attempt...")
                 try:
                     browser.close()
@@ -336,7 +336,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     nav_desc.click(force=True)
                     print("Clicked #nav-description — waiting for XHR...")
 
-                    # Poll until shadow root text exceeds CSS-only length (~3634)
                     try:
                         page.wait_for_function(
                             """() => {
@@ -363,7 +362,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
                 if result and "error" not in result:
                     description_text = result.get("text", "").strip()
-                    images = result.get("images", [])
+                    images           = result.get("images", [])
                     print(f"Shadow DOM: {len(description_text)} chars, {len(images)} images")
                 elif result and "error" in result:
                     print(f"Shadow DOM JS returned: {result['error']}")
@@ -378,9 +377,12 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     if container:
                         for el in container.query_selector_all("p, span, li, h3, h4, div"):
                             try:
-                                child_count = el.evaluate("e => e.children.length")
+                                only_br = el.evaluate(
+                                    "e => e.children.length === 0 || "
+                                    "Array.from(e.children).every(c => c.tagName === 'BR')"
+                                )
                                 text = el.text_content().strip()
-                                if child_count == 0 and text and len(text) >= 6:
+                                if only_br and text and len(text) >= 6:
                                     if not re.match(r'^[\d\s\.\,\$\€\£\¥\%\+\-]+$', text):
                                         description_text += text + " "
                             except Exception:
@@ -410,9 +412,9 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             browser.close()
 
             return {
-                "title": clean_text(title),
+                "title":            clean_text(title),
                 "description_text": clean_text(description_text),
-                "images": images,
+                "images":           images,
             }
 
     print(f"All {max_retries} attempts exhausted.")
