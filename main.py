@@ -74,7 +74,6 @@ def _upsert(db: Session, url: str, product_id: int, data: dict, refined: dict, c
         product.title       = data["title"]
         product.description = data["description_text"]
         product.images      = data["images"]
-        product.description_marketing = data["description_marketing"]
         product.exported_at = None
     else:
         print("New product → inserting")
@@ -84,7 +83,6 @@ def _upsert(db: Session, url: str, product_id: int, data: dict, refined: dict, c
             title=data["title"],
             description=data["description_text"],
             images=data["images"],
-            description_marketing=data["description_marketing"],
             exported_at=None,
         )
         db.add(product)
@@ -96,11 +94,13 @@ def _upsert(db: Session, url: str, product_id: int, data: dict, refined: dict, c
     if refined_row:
         refined_row.enhanced_title       = refined["refined_title"]
         refined_row.enhanced_description = refined["refined_description"]
+        refined_row.description_marketing = refined["description_marketing"]
     else:
         db.add(ProductRefined(
             product_id=product_id,
             enhanced_title=refined["refined_title"],
             enhanced_description=refined["refined_description"],
+            description_marketing=refined["description_marketing"],
         ))
 
     # 3. category_assignment
@@ -664,6 +664,7 @@ async def export_templates(
     except Exception as e:
         print(f"Export error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
