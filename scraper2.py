@@ -66,10 +66,6 @@ def detect_recaptcha(page) -> bool:
 
 
 def safe_scroll(page, steps: int = 12) -> bool:
-    """
-    Scroll gradually. Returns False if the page closed mid-scroll
-    (happens when AliExpress fires a mid-page redirect).
-    """
     for _ in range(steps):
         try:
             if page.is_closed():
@@ -180,19 +176,9 @@ SHADOW_DOM_EXTRACT_JS = """
 }
 """
 
-# ── Stealth script ─────────────────────────────────────────────────────────────
-# CHANGE 1: Replaces the single navigator.webdriver line.
-# AliExpress bot detection checks all 8 of these properties on page load.
-# A real Chrome browser has all of them — headless Chromium is missing or
-# wrong on every one. Fixing only webdriver (the old approach) leaves 7
-# signals intact that instantly trigger the CAPTCHA iframe.
-
 STEALTH_JS = """
 (() => {
-    // 1. webdriver flag — most basic signal, but not the only one
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-
-    // 2. plugins — empty list is an immediate headless giveaway
     Object.defineProperty(navigator, 'plugins', {
         get: () => [
             { name: 'Chrome PDF Plugin',  filename: 'internal-pdf-viewer',             description: 'Portable Document Format' },
@@ -200,39 +186,36 @@ STEALTH_JS = """
             { name: 'Native Client',      filename: 'internal-nacl-plugin',             description: '' },
         ],
     });
-
-    // 3. languages — absent or empty in headless
     Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-
-    // 4. window.chrome — completely absent in headless Chromium
     window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
-
-    // 5. Permissions API — headless always returns 'denied' for notifications
     const originalQuery = window.navigator.permissions.query;
     window.navigator.permissions.query = (parameters) => (
         parameters.name === 'notifications'
             ? Promise.resolve({ state: Notification.permission })
             : originalQuery(parameters)
     );
-
-    // 6. WebGL vendor/renderer — headless uses SwiftShader, a known bot signal
     const getParameter = WebGLRenderingContext.prototype.getParameter;
     WebGLRenderingContext.prototype.getParameter = function(parameter) {
         if (parameter === 37445) return 'Intel Inc.';
         if (parameter === 37446) return 'Intel Iris OpenGL Engine';
         return getParameter.call(this, parameter);
     };
-
-    // 7. screen color depth — wrong values in headless
     Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
     Object.defineProperty(screen, 'pixelDepth',  { get: () => 24 });
-
-    // 8. userAgent string — contains 'HeadlessChrome' in headless mode
     Object.defineProperty(navigator, 'userAgent', {
         get: () => navigator.userAgent.replace('HeadlessChrome', 'Chrome'),
     });
 })();
 """
+
+# Title selectors shared between wait_for_selector and extraction
+TITLE_SELECTORS = [
+    "[data-pl='product-title']",
+    ".title--wrap--UUHae_g h1",
+    ".title--wrap--NWOaiSp h1",
+    ".product-title-text",
+    "#root h1",
+]
 
 
 # ── Main scraper ───────────────────────────────────────────────────────────────
@@ -286,8 +269,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 bypass_csp=True,
             )
             page = context.new_page()
-
-            # CHANGE 2: inject full stealth script instead of single-line override
             page.add_init_script(STEALTH_JS)
 
             # ── Navigate ──────────────────────────────────────────────────────
@@ -336,6 +317,25 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 browser.close()
                 continue
 
+            # ── Wait for title element ─────────────────────────────────────────
+            # FIX: flat wait_for_timeout(8000) isn't enough on .de/.nl — React
+            # renders slower on regional domains. wait_for_selector blocks until
+            # the element actually appears, up to 10s, then moves on immediately.
+            title_appeared = False
+            for sel in TITLE_SELECTORS:
+                try:
+                    page.wait_for_selector(sel, timeout=10000, state="visible")
+                    title_appeared = True
+                    print(f"Title element visible via '{sel}'")
+                    break
+                except Exception:
+                    continue
+
+            if not title_appeared:
+                print("Title element never appeared — page blocked or too slow.")
+                browser.close()
+                continue
+
             # ── Extract title ─────────────────────────────────────────────────
             def safe_text(sel: str) -> str:
                 try:
@@ -349,13 +349,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 "log in", "login", "verify", "robot",
             }
             title = ""
-            for sel in [
-                "[data-pl='product-title']",
-                ".title--wrap--UUHae_g h1",
-                ".title--wrap--NWOaiSp h1",
-                ".product-title-text",
-                "#root h1",
-            ]:
+            for sel in TITLE_SELECTORS:
                 candidate = safe_text(sel)
                 if candidate and candidate.lower().strip() not in BLOCKED:
                     title = candidate
