@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 
 # -----------------------------
 # Paths & Folders
-
+# -----------------------------
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -20,6 +20,7 @@ engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False}
 )
+
 # -----------------------------
 # Session maker
 # -----------------------------
@@ -45,9 +46,14 @@ def get_db():
     finally:
         db.close()
 
-# add this entire function at the bottom of database.py:
+
+# -----------------------------
+# Database migrations
+# -----------------------------
 def run_migrations():
     with engine.connect() as conn:
+
+        # Check columns in product_fetched
         result = conn.execute(text("PRAGMA table_info(product_fetched)"))
         existing_cols = {row[1] for row in result.fetchall()}
 
@@ -57,9 +63,14 @@ def run_migrations():
             print("Migration: added 'exported_at' column to products ✅")
         else:
             print("Migration: 'exported_at' already exists, skipping ✅")
-        if "description_marketing" not in existing_cols:
-            conn.execute(text("ALTER TABLE product_fetched ADD COLUMN description_marketing TEXT"))
+
+        # Check columns in product_refined
+        result2 = conn.execute(text("PRAGMA table_info(product_refined)"))
+        refined_cols = {row[1] for row in result2.fetchall()}
+
+        if "description_marketing" not in refined_cols:
+            conn.execute(text("ALTER TABLE product_refined ADD COLUMN description_marketing TEXT"))
             conn.commit()
-            print("Migration: added 'description_marketing' column ✅")
-
-
+            print("Migration: added 'description_marketing' to product_refined ✅")
+        else:
+            print("Migration: 'description_marketing' already exists in product_refined, skipping ✅")
