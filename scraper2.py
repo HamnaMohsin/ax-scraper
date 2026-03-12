@@ -246,9 +246,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 bypass_csp=True,
             )
             page = context.new_page()
-            page.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
+            page.add_init_script(STEALTH_JS)  # full 8-property stealth script defined above
 
             # ── Navigate ──────────────────────────────────────────────────────
             try:
