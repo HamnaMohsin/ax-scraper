@@ -1,44 +1,13 @@
-import os
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-# -----------------------------
-# Paths & Folders
-# -----------------------------
+DATABASE_URL = "sqlite:///./data/products.db"
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-DB_PATH = os.getenv(
-    "DB_PATH",
-    os.path.join(BASE_DIR, "data", "products.db")
-)
-
-DATABASE_URL = f"sqlite:///{DB_PATH}"
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False}
-)
-
-# -----------------------------
-# Session maker
-# -----------------------------
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine
-)
-
-# -----------------------------
-# Base class for models
-# -----------------------------
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# -----------------------------
-# Dependency for FastAPI
-# -----------------------------
-# Use this with Depends(get_db) in endpoints
+
 def get_db():
     db = SessionLocal()
     try:
@@ -47,24 +16,19 @@ def get_db():
         db.close()
 
 
-# -----------------------------
-# Database migrations
-# -----------------------------
 def run_migrations():
+    """Add new columns to existing tables if they don't exist yet."""
     with engine.connect() as conn:
-
-        # Check columns in product_fetched
+        # ── product_fetched: exported_at ──────────────────────────────────────
         result = conn.execute(text("PRAGMA table_info(product_fetched)"))
-        existing_cols = {row[1] for row in result.fetchall()}
+        fetched_cols = {row[1] for row in result.fetchall()}
 
-        if "exported_at" not in existing_cols:
-            conn.execute(text("ALTER TABLE products ADD COLUMN exported_at DATETIME"))
+        if "exported_at" not in fetched_cols:
+            conn.execute(text("ALTER TABLE product_fetched ADD COLUMN exported_at DATETIME"))
             conn.commit()
-            print("Migration: added 'exported_at' column to products ✅")
-        else:
-            print("Migration: 'exported_at' already exists, skipping ✅")
+            print("Migration: added 'exported_at' to product_fetched ✅")
 
-        # Check columns in product_refined
+        # ── product_refined: description_marketing ────────────────────────────
         result2 = conn.execute(text("PRAGMA table_info(product_refined)"))
         refined_cols = {row[1] for row in result2.fetchall()}
 
@@ -72,5 +36,9 @@ def run_migrations():
             conn.execute(text("ALTER TABLE product_refined ADD COLUMN description_marketing TEXT"))
             conn.commit()
             print("Migration: added 'description_marketing' to product_refined ✅")
-        else:
-            print("Migration: 'description_marketing' already exists in product_refined, skipping ✅")
+
+
+def init_db():
+    import models  # noqa: F401 — registers all models with Base
+    Base.metadata.create_all(bind=engine)
+    run_migrations()
