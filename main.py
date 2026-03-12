@@ -24,7 +24,7 @@ from scraper2 import extract_aliexpress_product
 from llm_refiner2 import refine_with_llm
 from assign_embeddings2 import categorize_product
 
-from data.export_to_template import load_products, write_category_file
+from data.export_to_template import load_products, write_category_file, make_safe_filename
 
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_PATH = os.path.join(BASE_DIR, "data", "pdt_template_fr-FR_20260305_090255.xlsm")
@@ -60,6 +60,7 @@ def _build_full_out(p: ProductFetched) -> ProductFullOut:
         category_id = str(p.category.category_id) if p.category and p.category.category_id is not None else None,
         similarity_score=p.category.similarity_score if p.category else None,
         exported_at=p.exported_at.isoformat() if p.exported_at else None, 
+        description_marketing=p.description_marketing or None,
     )
 
 
@@ -585,7 +586,8 @@ async def export_templates(
 
         for category_id, group in df.groupby("category_id"):
             category_name = group.iloc[0]["assigned_category"] or str(category_id)
-            safe_filename = str(category_id).replace("/", "_").replace(" ", "_")
+            safe_filename = make_safe_filename(str(category_id), category_name)
+
             out_path      = os.path.join(OUT_DIR, f"{safe_filename}.xlsm")
 
             print(f"Category [{category_id}] {category_name} — {len(group)} product(s)")
@@ -662,6 +664,7 @@ async def export_templates(
     except Exception as e:
         print(f"Export error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
