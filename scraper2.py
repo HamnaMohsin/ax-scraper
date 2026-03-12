@@ -27,7 +27,6 @@ def rotate_tor_circuit():
 
 
 def is_aliexpress_url(url: str) -> bool:
-    """Accept any regional AliExpress domain: .com, .us, .co.uk, .it, etc."""
     return "aliexpress." in url.lower()
 
 
@@ -54,11 +53,10 @@ def detect_recaptcha(page) -> bool:
         return True
 
     page_title = page.title()
-    page_title_lower = page_title.lower()
     is_product_page = is_aliexpress_url(page.url) and len(page_title) > 40
     if not is_product_page:
         block_titles = ["verify", "captcha", "robot", "access denied", "blocked", "aanmelden", "sign in"]
-        if any(kw in page_title_lower for kw in block_titles):
+        if any(kw in page_title.lower() for kw in block_titles):
             print(f"Block detected via page title: '{page_title}'")
             return True
 
@@ -105,8 +103,6 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-# ── Shadow DOM extraction ──────────────────────────────────────────────────────
-
 SHADOW_DOM_EXTRACT_JS = """
 () => {
     const container = document.querySelector('#product-description');
@@ -147,13 +143,11 @@ SHADOW_DOM_EXTRACT_JS = """
 
     for (const el of root.querySelectorAll('p,h1,h2,h3,h4,h5,li,span,td,div')) {
         if (!isCollectable(el)) continue;
-
         const t = (el.innerText || el.textContent || '').trim();
         if (!t || t.length < 6) continue;
         if (/^[\d\s\.\,\$\€\£\¥\%\+\-\&nbsp;]+$/.test(t)) continue;
         if (JUNK.has(t.toLowerCase())) continue;
         if (seen.has(t)) continue;
-
         seen.add(t);
         texts.push(t);
     }
@@ -208,14 +202,19 @@ STEALTH_JS = """
 })();
 """
 
-# Title selectors shared between wait_for_selector and extraction
 TITLE_SELECTORS = [
     "[data-pl='product-title']",
     ".title--wrap--UUHae_g h1",
     ".title--wrap--NWOaiSp h1",
     ".product-title-text",
     "#root h1",
+    "h1",   # broad fallback for regional variants
 ]
+
+BLOCKED_TITLES = {
+    "aliexpress", "", "aanmelden", "sign in",
+    "log in", "login", "verify", "robot",
+}
 
 
 # ── Main scraper ───────────────────────────────────────────────────────────────
@@ -293,38 +292,16 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 browser.close()
                 continue
 
-            page.wait_for_timeout(8000)
-            random_delay(1.0, 3.0)
-
-            scroll_ok = safe_scroll(page, steps=12)
-            if not scroll_ok:
-                print("Scroll failed — page likely redirected. Retrying attempt...")
-                try:
-                    browser.close()
-                except Exception:
-                    pass
-                continue
-
-            random_delay(1.0, 2.0)
-
-            if page.is_closed():
-                print("Page closed unexpectedly after scroll.")
-                browser.close()
-                continue
-
-            if detect_recaptcha(page):
-                print("CAPTCHA detected after scroll — retrying.")
-                browser.close()
-                continue
-
-            # ── Wait for title element ─────────────────────────────────────────
-            # FIX: flat wait_for_timeout(8000) isn't enough on .de/.nl — React
-            # renders slower on regional domains. wait_for_selector blocks until
-            # the element actually appears, up to 10s, then moves on immediately.
+            # ── STEP 1: Wait for title BEFORE scrolling ────────────────────────
+            # Critical ordering fix: scroll triggers AliExpress regional redirects
+            # which close the page mid-scroll. If we scroll first, the title check
+            # runs against a closed/redirected page and always fails.
+            # Waiting for title first confirms the page is fully loaded, THEN scroll.
+            print("Waiting for title element...")
             title_appeared = False
             for sel in TITLE_SELECTORS:
                 try:
-                    page.wait_for_selector(sel, timeout=10000, state="visible")
+                    page.wait_for_selector(sel, timeout=15000, state="visible")
                     title_appeared = True
                     print(f"Title element visible via '{sel}'")
                     break
@@ -336,7 +313,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 browser.close()
                 continue
 
-            # ── Extract title ─────────────────────────────────────────────────
+            # ── STEP 2: Extract title immediately while page is stable ─────────
             def safe_text(sel: str) -> str:
                 try:
                     el = page.query_selector(sel)
@@ -344,14 +321,10 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 except Exception:
                     return ""
 
-            BLOCKED = {
-                "aliexpress", "", "aanmelden", "sign in",
-                "log in", "login", "verify", "robot",
-            }
             title = ""
             for sel in TITLE_SELECTORS:
                 candidate = safe_text(sel)
-                if candidate and candidate.lower().strip() not in BLOCKED:
+                if candidate and candidate.lower().strip() not in BLOCKED_TITLES:
                     title = candidate
                     print(f"Title via '{sel}': {title[:70]}")
                     break
@@ -361,10 +334,38 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 browser.close()
                 continue
 
-            # ── Click #nav-description to trigger description XHR ─────────────
+            # ── STEP 3: Scroll to trigger lazy loads ───────────────────────────
+            # Now that title is secured, scroll to load below-fold content.
+            # If scroll causes a redirect/close, we continue gracefully with
+            # the title we already have — description extraction is optional.
+            random_delay(1.0, 2.0)
+            safe_scroll(page, steps=12)
+            random_delay(1.0, 2.0)
+
+            # ── STEP 4: Extract description ────────────────────────────────────
             description_text = ""
             description_marketing = ""
             images = []
+
+            if page.is_closed():
+                print("Page closed after scroll — returning title only.")
+                browser.close()
+                return {
+                    "title": clean_text(title),
+                    "description_text": "",
+                    "description_marketing": "",
+                    "images": [],
+                }
+
+            if detect_recaptcha(page):
+                print("CAPTCHA after scroll — returning title only.")
+                browser.close()
+                return {
+                    "title": clean_text(title),
+                    "description_text": "",
+                    "description_marketing": "",
+                    "images": [],
+                }
 
             try:
                 nav_desc = page.query_selector('#nav-description')
@@ -391,11 +392,11 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
                     random_delay(1.0, 2.0)
                 else:
-                    print("#nav-description not found — description XHR won't fire.")
+                    print("#nav-description not found.")
             except Exception as e:
                 print(f"Could not click #nav-description: {e}")
 
-            # ── Extract via Shadow DOM JS ─────────────────────────────────────
+            # Shadow DOM extraction
             try:
                 result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
                 if result and "error" not in result:
@@ -408,7 +409,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             except Exception as e:
                 print(f"Shadow DOM evaluate error: {e}")
 
-            # ── Fallback: plain DOM ───────────────────────────────────────────
+            # Plain DOM fallback
             if not description_text and not images:
                 print("Shadow DOM empty — trying plain DOM fallback...")
                 try:
