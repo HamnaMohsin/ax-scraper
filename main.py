@@ -23,7 +23,7 @@ from schemas import (
 )
 from scraper2       import extract_aliexpress_product
 from llm_refiner2   import refine_product
-from assign_embeddings2 import assign_category
+from assign_embeddings2 import categorize_product as assign_category
 
 from data.export_to_template import (
     load_products,
@@ -59,7 +59,7 @@ def _build_full_out(p: ProductFetched) -> ProductFullOut:
         description_marketing = p.refined.description_marketing if p.refined else None,
         llm_predicted_category= p.category.llm_predicted_category if p.category else None,
         assigned_category     = p.category.assigned_category      if p.category else None,
-        category_id           = p.category.category_id            if p.category else None,
+        category_id           = str(p.category.category_id) if p.category and p.category.category_id is not None else None,
         similarity_score      = p.category.similarity_score       if p.category else None,
     )
 
@@ -396,14 +396,6 @@ def list_products(limit: int = 20, offset: int = 0, db: Session = Depends(get_db
     return [_build_full_out(p) for p in products]
 
 
-@app.get("/products/{product_id}", response_model=ProductFullOut)
-def get_product(product_id: int, db: Session = Depends(get_db)):
-    p = db.query(ProductFetched).filter_by(product_id=product_id).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Product not found")
-    return _build_full_out(p)
-
-
 @app.get("/products/fetched", response_model=list[ProductFetchedOut])
 def list_fetched(limit: int = 20, offset: int = 0, db: Session = Depends(get_db)):
     return db.query(ProductFetched).offset(offset).limit(limit).all()
@@ -438,3 +430,11 @@ def delete_product(product_id: int, db: Session = Depends(get_db)):
     db.delete(p)
     db.commit()
     return {"message": f"Product {product_id} deleted (cascaded to all tables)"}
+@app.get("/products/{product_id}", response_model=ProductFullOut)
+def get_product(product_id: int, db: Session = Depends(get_db)):
+    p = db.query(ProductFetched).filter_by(product_id=product_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return _build_full_out(p)
+
+

@@ -212,7 +212,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
-                proxy={"server": "socks5://127.0.0.1:9050"},
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
@@ -268,7 +267,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 continue
 
             # Wait for initial JS render
-            page.wait_for_timeout(8000)
+            page.wait_for_timeout(15000)
             random_delay(1.0, 3.0)
 
             # ── Scroll ────────────────────────────────────────────────────────
