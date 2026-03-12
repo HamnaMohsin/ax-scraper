@@ -226,7 +226,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
     if not base_url.startswith("http"):
         base_url = "https://" + base_url
 
-    empty_result = {"title": "", "description_text": "", "description_marketing": "", "images": []}
+    empty_result = {"title": "", "description_text": "", "images": []}
 
     for attempt in range(1, max_retries + 1):
         print(f"\n── Attempt {attempt}/{max_retries} ──")
@@ -344,7 +344,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
             # ── STEP 4: Extract description ────────────────────────────────────
             description_text = ""
-            description_marketing = ""
             images = []
 
             if page.is_closed():
@@ -353,7 +352,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 return {
                     "title": clean_text(title),
                     "description_text": "",
-                    "description_marketing": "",
                     "images": [],
                 }
 
@@ -363,7 +361,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 return {
                     "title": clean_text(title),
                     "description_text": "",
-                    "description_marketing": "",
                     "images": [],
                 }
 
@@ -402,7 +399,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 if result and "error" not in result:
                     description_text = result.get("text", "").strip()
                     images = result.get("images", [])
-                    description_marketing = result.get("html", "").strip()[:5000]
                     print(f"Shadow DOM: {len(description_text)} chars, {len(images)} images")
                 elif result and "error" in result:
                     print(f"Shadow DOM JS returned: {result['error']}")
@@ -415,12 +411,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 try:
                     container = page.query_selector("#product-description")
                     if container:
-                        if not description_marketing:
-                            try:
-                                description_marketing = container.inner_html()[:5000]
-                            except Exception:
-                                description_marketing = ""
-
                         for el in container.query_selector_all("p, span, li, h3, h4, div"):
                             try:
                                 only_br = el.evaluate(
@@ -461,7 +451,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             return {
                 "title": clean_text(title),
                 "description_text": clean_text(description_text),
-                "description_marketing": description_marketing[:5000] if description_marketing else "",
                 "images": images,
             }
 
