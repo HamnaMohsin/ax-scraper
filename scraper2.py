@@ -108,7 +108,53 @@ def clean_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
-
+STEALTH_JS = """
+(() => {
+    // 1. webdriver flag — most basic signal, but not the only one
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+ 
+    // 2. plugins — empty list is an immediate headless giveaway
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+            { name: 'Chrome PDF Plugin',  filename: 'internal-pdf-viewer',             description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer',  filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client',      filename: 'internal-nacl-plugin',             description: '' },
+        ],
+    });
+ 
+    // 3. languages — absent or empty in headless
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+ 
+    // 4. window.chrome — completely absent in headless Chromium
+    window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
+ 
+    // 5. Permissions API — headless always returns 'denied' for notifications
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+        parameters.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : originalQuery(parameters)
+    );
+ 
+    // 6. WebGL vendor/renderer — headless uses SwiftShader, a known bot signal
+    const getParameter = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+        if (parameter === 37445) return 'Intel Inc.';
+        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+        return getParameter.call(this, parameter);
+    };
+ 
+    // 7. screen color depth — wrong values in headless
+    Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
+    Object.defineProperty(screen, 'pixelDepth',  { get: () => 24 });
+ 
+    // 8. userAgent string — contains 'HeadlessChrome' in headless mode
+    Object.defineProperty(navigator, 'userAgent', {
+        get: () => navigator.userAgent.replace('HeadlessChrome', 'Chrome'),
+    });
+})();
+"""
+ 
 # ── Shadow DOM extraction ──────────────────────────────────────────────────────
 #
 # CONFIRMED FROM DEBUG OUTPUT:
