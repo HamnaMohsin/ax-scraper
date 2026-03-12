@@ -48,7 +48,6 @@ class ProductFetchedOut(BaseModel):
     description: Optional[str]
     images:      Optional[List[str]] = []
     exported_at: Optional[datetime] = None
-    description_marketing: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -59,6 +58,7 @@ class ProductRefinedOut(BaseModel):
     product_id:           int
     enhanced_title:       Optional[str]
     enhanced_description: Optional[str]
+    description_marketing: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -90,6 +90,7 @@ class ProductFullOut(BaseModel):
     similarity_score:        Optional[float]
     exported_at: Optional[datetime] = None 
     description_marketing: Optional[str] = None
+
 
 
 
