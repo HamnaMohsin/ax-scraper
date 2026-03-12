@@ -1,111 +1,88 @@
-from openai import OpenAI
+import os
 import json
-import re
+import openai
 
-client = OpenAI()
+client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-# Octopia template hard limits (from Row 8 of the template)
-TITLE_MAX_CHARS = 132
-DESCRIPTION_MAX_CHARS = 2000
-MARKETING_DESC_MAX_CHARS = 5000
+TITLE_MAX        = 132
+DESCRIPTION_MAX  = 2000
+MARKETING_MAX    = 5000
+
+SYSTEM_PROMPT = """You are a product copywriter for a French marketplace (Octopia/Cdiscount).
+Given a product title and description scraped from AliExpress, return a JSON object with exactly these three keys:
+
+1. "refined_title"
+   - Clean, accurate product title
+   - Maximum 132 characters
+   - English, no promotional filler ("Best!", "Hot sale!", etc.)
+   - Keep brand names, model numbers, key specs
+
+2. "refined_description"
+   - Informative product description in English
+   - Maximum 2000 characters
+   - Plain text only — no HTML tags
+   - Focus on features, specs, compatibility, use cases
+
+3. "description_marketing"
+   - HTML-formatted marketing version of the description
+   - Maximum 5000 characters
+   - Use ONLY these tags: <p>, <b>, <ul>, <li>, <h3>, <img>
+   - No inline styles, no classes, no other tags
+   - Structure it clearly: short intro paragraph, feature list, closing paragraph
+   - Do NOT include <html>, <head>, <body>, or <div> tags
+
+Return ONLY the JSON object — no preamble, no markdown fences, no extra text."""
 
 
-def refine_with_llm(title: str, description: str) -> dict:
-    print("Sending data to LLM...")
+def refine_product(title: str, description: str) -> dict:
+    """
+    Call GPT-4o-mini to refine title/description and generate marketing HTML.
 
-    prompt = f"""
-You are an expert e-commerce product content optimizer writing for the Octopia marketplace (Cdiscount, Carrefour).
-
-You are given raw product data extracted from an AliExpress product page.
-
-Original Title:
-{title}
-
-Original Description:
-{description}
-
-Your task:
-- Improve the product title for clarity and SEO
-- Rewrite the description to be clear, structured, and persuasive, including concise bullet points highlighting key benefits as part of the description text (e.g., "Key benefits:\\n- Bullet 1\\n- Bullet 2")
-- If description is empty or null, return empty string for refined_description
-
-Also return a 'description_marketing' field: an HTML-formatted marketing version
-of the description using only these tags: <p>, <b>, <ul>, <li>, <h3>, <img>.
-Maximum {MARKETING_DESC_MAX_CHARS} characters. Must be valid HTML. No inline styles.
-
-STRICT CHARACTER LIMITS — you must respect these exactly:
-- refined_title: MAXIMUM {TITLE_MAX_CHARS} characters (including spaces)
-- refined_description: MAXIMUM {DESCRIPTION_MAX_CHARS} characters (including spaces)
-
-Rules:
-- Do NOT hallucinate features not implied by the input
-- Do NOT include explanations or extra text
-- Return ONLY valid JSON
-
-Return JSON in this EXACT format:
-{{
-  "refined_title": "Improved product title under {TITLE_MAX_CHARS} characters",
-  "refined_description": "Improved product description under {DESCRIPTION_MAX_CHARS} characters",
-  "description_marketing": "<p>HTML marketing description...</p>"
-}}
-"""
-
-    content = ""
+    Returns:
+        {
+            "refined_title":         str,   # max 132 chars
+            "refined_description":   str,   # max 2000 chars, plain text
+            "description_marketing": str,   # max 5000 chars, HTML
+        }
+    """
+    user_content = f"Title: {title}\n\nDescription: {description}"
 
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": user_content},
+            ],
+            temperature=0.3,
+            max_tokens=1500,
         )
 
-        content = response.choices[0].message.content.strip()
-        result = json.loads(content)
+        raw = response.choices[0].message.content.strip()
 
-    except json.JSONDecodeError:
+        # Strip markdown fences if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
 
-        json_match = re.search(r"\{.*\}", content, re.DOTALL)
+        data = json.loads(raw)
 
-        if json_match:
-            try:
-                result = json.loads(json_match.group(0))
-            except json.JSONDecodeError:
-                result = None
-        else:
-            result = None
+        refined_title        = str(data.get("refined_title",        title))[:TITLE_MAX]
+        refined_description  = str(data.get("refined_description",  description))[:DESCRIPTION_MAX]
+        description_marketing = str(data.get("description_marketing", ""))[:MARKETING_MAX]
 
-        if result is None:
-            print("LLM response invalid — falling back to original data.")
+        return {
+            "refined_title":         refined_title,
+            "refined_description":   refined_description,
+            "description_marketing": description_marketing,
+        }
 
-            return {
-                "refined_title": title,
-                "refined_description": description,
-                "description_marketing": ""
-            }
-
-    # ── Post-LLM validation ─────────────────────────────────────────────
-
-    refined_title = result.get("refined_title", title) or title
-    refined_description = result.get("refined_description", description) or ""
-    description_marketing = result.get("description_marketing", "") or ""
-
-    if description == "":
-        refined_description = ""
-
-    if len(refined_title) > TITLE_MAX_CHARS:
-        print(f"WARNING: LLM title exceeded {TITLE_MAX_CHARS} chars ({len(refined_title)}) — truncating.")
-        refined_title = refined_title[:TITLE_MAX_CHARS].rstrip()
-
-    if len(refined_description) > DESCRIPTION_MAX_CHARS:
-        print(f"WARNING: LLM description exceeded {DESCRIPTION_MAX_CHARS} chars ({len(refined_description)}) — truncating.")
-        refined_description = refined_description[:DESCRIPTION_MAX_CHARS].rstrip()
-
-    if len(description_marketing) > MARKETING_DESC_MAX_CHARS:
-        print(f"WARNING: LLM marketing description exceeded {MARKETING_DESC_MAX_CHARS} chars — truncating.")
-        description_marketing = description_marketing[:MARKETING_DESC_MAX_CHARS].rstrip()
-
-    return {
-        "refined_title": refined_title,
-        "refined_description": refined_description,
-        "description_marketing": description_marketing
-    }
+    except Exception as e:
+        print(f"LLM refinement failed: {e}")
+        return {
+            "refined_title":         title[:TITLE_MAX],
+            "refined_description":   description[:DESCRIPTION_MAX],
+            "description_marketing": "",
+        }
