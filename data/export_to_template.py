@@ -75,7 +75,7 @@ def load_products(db_path: str, only_new: bool = False) -> pd.DataFrame:
             pf.title              AS original_title,
             pf.description        AS original_description,
             pf.images,
-            pf.description_marketing,
+            pr.description_marketing,
             pr.enhanced_title,
             pr.enhanced_description,
             ca.assigned_category,
