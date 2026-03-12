@@ -1,98 +1,68 @@
-from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
+from pydantic import BaseModel
 
 
 class ScrapeRequest(BaseModel):
-    urls: str  # comma-separated AliExpress URLs, e.g. "https://.../item/123.html, https://.../item/456.html"
+    urls: str   # comma-separated AliExpress URLs
 
-class CategoryRequest(BaseModel):
+
+class CategorizeRequest(BaseModel):
     title: str
     description: str
 
 
-class ScrapeResult(BaseModel):
-    url:                     str
-    success:                 bool
-    error:                   Optional[str] = None
-    product_id:              Optional[int] = None
-    original_title:          Optional[str] = None
-    original_description:    Optional[str] = None
-    enhanced_title:          Optional[str] = None
-    enhanced_description:    Optional[str] = None
-    llm_predicted_category:  Optional[str] = None
-    assigned_category:       Optional[str] = None
-    category_id:             Optional[str] = None
-    similarity_score:        Optional[float] = None
-    images:                  Optional[List[str]] = []
-    description_marketing:   Optional[str] = None
-
-
-class ScrapeResponse(BaseModel):
-    total:   int
-    success: int
-    failed:  int
-    results: List[ScrapeResult]
-
-
-class CategoryResponse(BaseModel):
-    category_id:      str
-    category_path:    str
-    similarity_score: float
-
+# ── Single-table views ─────────────────────────────────────────────────────────
 
 class ProductFetchedOut(BaseModel):
     product_id:  int
     url:         str
-    title:       Optional[str]
-    description: Optional[str]
-    images:      Optional[List[str]] = []
+    title:       Optional[str] = None
+    description: Optional[str] = None
+    images:      Optional[list] = None
     exported_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class ProductRefinedOut(BaseModel):
-    id:                   int
-    product_id:           int
-    enhanced_title:       Optional[str]
-    enhanced_description: Optional[str]
+    product_id:            int
+    enhanced_title:        Optional[str] = None
+    enhanced_description:  Optional[str] = None
     description_marketing: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class CategoryAssignmentOut(BaseModel):
-    id:                     int
     product_id:             int
-    llm_predicted_category: Optional[str]
-    assigned_category:      Optional[str]
-    category_id:            Optional[str]
-    similarity_score:       Optional[float]
+    llm_predicted_category: Optional[str] = None
+    assigned_category:      Optional[str] = None
+    category_id:            Optional[str] = None
+    similarity_score:       Optional[float] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
+
+# ── Full joined view ───────────────────────────────────────────────────────────
 
 class ProductFullOut(BaseModel):
-    product_id:              int
-    url:                     str
-    title:                   Optional[str]
-    description:             Optional[str]
-    images:                  Optional[List[str]] = []
-    enhanced_title:          Optional[str]
-    enhanced_description:    Optional[str]
-    llm_predicted_category:  Optional[str]
-    assigned_category:       Optional[str]
-    category_id:             Optional[str]
-    similarity_score:        Optional[float]
-    exported_at: Optional[datetime] = None 
-    description_marketing: Optional[str] = None
+    product_id:             int
+    url:                    Optional[str] = None
+    title:                  Optional[str] = None
+    description:            Optional[str] = None
+    images:                 Optional[list] = None
+    exported_at:            Optional[datetime] = None
 
+    # from product_refined
+    enhanced_title:         Optional[str] = None
+    enhanced_description:   Optional[str] = None
+    description_marketing:  Optional[str] = None
 
+    # from category_assignment
+    llm_predicted_category: Optional[str] = None
+    assigned_category:      Optional[str] = None
+    category_id:            Optional[str] = None
+    similarity_score:       Optional[float] = None
 
-
-
-
+    model_config = {"from_attributes": True}
