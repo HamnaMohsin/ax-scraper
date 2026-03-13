@@ -239,19 +239,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
 
     for attempt in range(1, max_retries + 1):
-        context = browser.new_context(
-            user_agent=random.choice([...]),
-            viewport=random_viewport(),
-            locale="en-US",
-            timezone_id=random.choice([...]),
-            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-            java_script_enabled=True,
-            bypass_csp=True,
-            # Add these
-            ignore_https_errors=True,
-            accept_downloads=False,
-            service_workers="block",
-        )
+        context.clear_cookies()
+        context.clear_permissions()
         print(f"\n── Attempt {attempt}/{max_retries} ──")
 
         if attempt > 1:
