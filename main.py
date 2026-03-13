@@ -21,7 +21,7 @@ from schemas import (
     CategoryAssignmentOut,
     ProductFullOut,
 )
-from scraper       import extract_aliexpress_product
+from scraper2       import extract_aliexpress_product
 from llm_refiner2   import refine_product
 from assign_embeddings2 import categorize_product as assign_category
 
