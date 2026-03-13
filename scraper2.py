@@ -240,9 +240,37 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 bypass_csp=True,
             )
             page = context.new_page()
-            page.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
+            page.add_init_script("""
+(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+            { name: 'Chrome PDF Plugin',  filename: 'internal-pdf-viewer',             description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer',  filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client',      filename: 'internal-nacl-plugin',             description: '' },
+        ],
+    });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+        parameters.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : originalQuery(parameters)
+    );
+    const getParameter = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+        if (parameter === 37445) return 'Intel Inc.';
+        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+        return getParameter.call(this, parameter);
+    };
+    Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
+    Object.defineProperty(screen, 'pixelDepth',  { get: () => 24 });
+    Object.defineProperty(navigator, 'userAgent', {
+        get: () => navigator.userAgent.replace('HeadlessChrome', 'Chrome'),
+    });
+})();
+""")
 
             # ── Navigate ──────────────────────────────────────────────────────
             try:
