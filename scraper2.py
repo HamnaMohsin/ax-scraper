@@ -37,33 +37,74 @@ def dismiss_cookie_banner(page):
     Must be dismissed before any content can be extracted.
     """
     cookie_selectors = [
-        "button[data-role='accept']",
-        "button[id*='accept']",
-        "button[class*='accept']",
-        ".comet-btn-primary",          # AliExpress primary button style
-        "#gdpr-new-container button",
-        ".gdpr-container button",
+        # Primary AliExpress cookie consent buttons
+        "button.comet-btn.comet-btn-primary",  # Updated primary button selector
+        "button.comet-btn[type='submit']",      # Submit button style
+        "button.gdpr-btn--accept",              # GDPR accept button
+        "button.cookies-agree-btn",              # Cookie agreement button
+        
+        # Text-based selectors (more reliable)
         "button:has-text('Accept')",
         "button:has-text('Accept All')",
+        "button:has-text('Accept Cookies')",
         "button:has-text('Agree')",
         "button:has-text('I Accept')",
         "button:has-text('Akzeptieren')",   # German
+        "button:has-text('Alle akzeptieren')", # German - All accept
         "button:has-text('Accepteren')",    # Dutch
+        "button:has-text('Alle accepteren')",  # Dutch - All accept
         "button:has-text('Accepter')",      # French
+        "button:has-text('Tout accepter')",    # French - All accept
         "button:has-text('Accetta')",       # Italian
+        "button:has-text('Accetta tutto')",     # Italian - All accept
+        
+        # Common container selectors
+        "button[data-role='accept']",
+        "button[id*='accept']",
+        "button[class*='accept']",
+        ".gdpr-container button",
+        ".cookie-consent button",
+        "#gdpr-new-container button",
     ]
+    
+    # Try immediate dismissal
     for sel in cookie_selectors:
         try:
-            btn = page.query_selector(sel)
-            if btn and btn.is_visible():
+            # Wait briefly for the button to be visible
+            btn = page.wait_for_selector(sel, state="visible", timeout=3000)
+            if btn:
                 btn.click(force=True)
                 print(f"Cookie banner dismissed via '{sel}'")
-                page.wait_for_timeout(1500)
+                # Wait for banner to disappear
+                page.wait_for_timeout(2000)
                 return True
         except Exception:
             continue
+    
+    # If no button found, try JavaScript dismissal
+    try:
+        page.evaluate("""
+            () => {
+                // Try to find and click any accept button
+                const buttons = document.querySelectorAll('button');
+                for (const btn of buttons) {
+                    const text = btn.innerText.toLowerCase();
+                    if (text.includes('accept') || text.includes('akzeptieren') || 
+                        text.includes('accepteren') || text.includes('agree')) {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            }
+        """)
+        print("Cookie banner dismissed via JavaScript")
+        page.wait_for_timeout(2000)
+        return True
+    except Exception:
+        pass
+    
     return False
-
 
 def detect_recaptcha(page) -> bool:
     indicators = [
@@ -73,27 +114,42 @@ def detect_recaptcha(page) -> bool:
         "#captcha-verify",
         ".baxia-punish",
         "[id*='captcha']",
+        # Cookie wall indicators (blocking content)
+        ".gdpr-container",
+        "#gdpr-new-container",
+        ".cookie-consent",
     ]
+    
     for selector in indicators:
         try:
-            if page.query_selector(selector):
-                print(f"reCAPTCHA/block detected via selector: {selector}")
+            el = page.query_selector(selector)
+            if el and el.is_visible():
+                print(f"Block detected via selector: {selector}")
                 return True
         except Exception:
             pass
+
+    # Check if page is showing help/legal text instead of product
+    body_text = page.evaluate("() => document.body?.innerText?.toLowerCase() || ''")
+    blocked_keywords = [
+        "hilfe", "help", "hulp",  # Help in German/English/Dutch
+        "cookie", "gdpr", "datenschutz", "privacy",
+        "anmelden", "sign in", "inloggen",
+        "rückgabe", "return", "retour",
+        "streitigkeiten", "disputes", "geschillen"
+    ]
+    
+    # If body contains many blocked keywords but no product info
+    if body_text:
+        keyword_count = sum(1 for kw in blocked_keywords if kw in body_text)
+        if keyword_count >= 3 and "product" not in body_text and "item" not in body_text:
+            print(f"Page showing legal/help content ({keyword_count} keywords) - likely blocked")
+            return True
 
     page_url = page.url.lower()
     if any(kw in page_url for kw in ["baxia", "punish", "captcha", "verify"]):
         print(f"Block detected via URL: '{page.url}'")
         return True
-
-    page_title = page.title()
-    is_product_page = is_aliexpress_url(page.url) and len(page_title) > 40
-    if not is_product_page:
-        block_titles = ["verify", "captcha", "robot", "access denied", "blocked", "aanmelden", "sign in"]
-        if any(kw in page_title.lower() for kw in block_titles):
-            print(f"Block detected via page title: '{page_title}'")
-            return True
 
     return False
 
@@ -324,39 +380,63 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             page = context.new_page()
             page.add_init_script(STEALTH_JS)
 
-            # ── Navigate ──────────────────────────────────────────────────────
+            
+           # ── Navigate ──────────────────────────────────────────────────────
             try:
-                page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
+                context.clear_cookies()
+                print("Cookies cleared")
+                # Use wait_until="commit" to get to page faster
+                response = page.goto(base_url, timeout=60000, wait_until="commit")
+                
+                # IMMEDIATELY check for and dismiss cookie banner
+                # Don't wait for domcontentloaded first - banner blocks it
+                dismiss_cookie_banner(page)
+                
+                # Now wait for content to load
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+                
             except Exception as e:
                 print(f"Navigation failed: {e}")
                 browser.close()
                 continue
-
+            
             print(f"Landed on: {page.url}")
-
+            
             if not is_aliexpress_url(page.url):
                 print(f"Redirected off AliExpress to {page.url} — skipping.")
                 browser.close()
                 continue
-
-            random_delay(3.0, 6.0)
-
-            # ── Dismiss cookie consent banner (EU domains: .de .nl .it .fr) ──
-            # GDPR cookie walls overlay the page on regional domains and prevent
-            # the product title from rendering. Must dismiss before waiting.
+            
+            # Additional banner dismissal attempts (sometimes banners appear after load)
             dismiss_cookie_banner(page)
             random_delay(1.0, 2.0)
-
+            
+            # Check for CAPTCHA
             if detect_recaptcha(page):
                 print("CAPTCHA detected — retrying.")
                 browser.close()
                 continue
+                        
 
             # ── Wait for JS render ─────────────────────────────────────────────
-            # Confirmed working: flat 20s wait gives React time to render title.
-            # wait_for_selector approach was tried and failed on .de/.nl domains.
-            page.wait_for_timeout(20000)
-            random_delay(1.0, 3.0)
+            # Wait for title to appear instead of fixed timeout
+            try:
+                page.wait_for_function("""
+                    () => {
+                        // Check if cookie banner is gone
+                        const bannerGone = !document.querySelector('.gdpr-container, .cookie-consent');
+                        // Check if title exists
+                        const titleSelectors = ['[data-pl="product-title"]', '.title--wrap--UUHae_g h1'];
+                        const hasTitle = titleSelectors.some(sel => {
+                            const el = document.querySelector(sel);
+                            return el && el.innerText && el.innerText.length > 10;
+                        });
+                        return bannerGone && hasTitle;
+                    }
+                """, timeout=20000)
+                print("Title detected - page loaded successfully")
+            except Exception:
+                print("Timeout waiting for title - checking current state...")
 
             # ── Diagnostic ────────────────────────────────────────────────────
             try:
