@@ -294,20 +294,24 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 print("CAPTCHA detected — retrying.")
                 browser.close()
                 continue
-
-            # Wait for initial JS render
-            page.wait_for_timeout(20000)
-            random_delay(1.0, 3.0)
-
+            # Wait for title element before scrolling
+            # Scroll can trigger redirects that close the page — secure title first
+            try:
+                page.wait_for_selector("[data-pl='product-title']", timeout=20000, state="visible")
+                print("Title element confirmed visible.")
+            except Exception:
+                print("Title selector timed out — trying h1 fallback...")
+                try:
+                    page.wait_for_selector("h1", timeout=5000, state="visible")
+                except Exception:
+                    print("No h1 found either — page likely blocked.")
+                    browser.close()
+                    continue
+            
             # ── Scroll ────────────────────────────────────────────────────────
             scroll_ok = safe_scroll(page, steps=12)
             if not scroll_ok:
-                print("Scroll failed — page likely redirected. Retrying attempt...")
-                try:
-                    browser.close()
-                except Exception:
-                    pass
-                continue
+                print("Scroll failed — extracting title only before retry.")
 
             random_delay(1.0, 2.0)
 
