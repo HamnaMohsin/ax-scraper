@@ -239,8 +239,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
 
     for attempt in range(1, max_retries + 1):
-        context.clear_cookies()
-        context.clear_permissions()
         print(f"\n── Attempt {attempt}/{max_retries} ──")
 
         if attempt > 1:
@@ -252,19 +250,19 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             browser = p.chromium.launch(
                 headless=True,
                 proxy={"server": "socks5://127.0.0.1:9050"},
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-zygote",
-                # Force new connection for each browser
-                "--disable-http-cache",
-                "--disable-http2",  # Force HTTP/1.1 to avoid connection reuse
-                "--disable-features=IsolateOrigins,site-per-process",
-                "--proxy-server=socks5://127.0.0.1:9050",  # Explicit proxy
-                "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE localhost",  # Force DNS through proxy
-            ]
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--no-zygote",
+                    # Force new connection for each browser
+                    "--disable-http-cache",
+                    "--disable-http2",  # Force HTTP/1.1 to avoid connection reuse
+                    "--disable-features=IsolateOrigins,site-per-process",
+                    "--proxy-server=socks5://127.0.0.1:9050",  # Explicit proxy
+                    "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE localhost",  # Force DNS through proxy
+                ]
             )
             context = browser.new_context(
                 user_agent=random.choice([
@@ -284,10 +282,15 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 java_script_enabled=True,
                 bypass_csp=True,
             )
+            
+            # Clear context cookies and permissions (now that context exists)
+            context.clear_cookies()
+            context.clear_permissions()
+            
             page = context.new_page()
             page.add_init_script(
-    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-)
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
 
             # ── Navigate ──────────────────────────────────────────────────────
             try:
@@ -472,7 +475,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 "description_text": clean_text(description_text),
                 "description_marketing": description_marketing[:5000] if description_marketing else "",
                 "images": images,
-                    }
+            }
 
     print(f"All {max_retries} attempts exhausted.")
     return empty_result
+    
