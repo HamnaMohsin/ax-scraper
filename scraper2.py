@@ -21,10 +21,19 @@ def rotate_tor_circuit():
             controller.authenticate()
             controller.signal(Signal.NEWNYM)
             print("Tor circuit rotated — new exit IP assigned.")
-            time.sleep(5)
+            
+            # CRITICAL: Wait longer for circuit to fully rebuild
+            # AliExpress is aggressive, need full circuit refresh
+            time.sleep(15)  # Increased from 5 to 15 seconds
+            
+            # Force DNS to use new circuit
+            import socket
+            socket.setdefaulttimeout(10)
+            
+            return True
     except Exception as e:
         print(f"Failed to rotate Tor circuit: {e}")
-
+        return False
 
 def is_aliexpress_url(url: str) -> bool:
     """Accept any regional AliExpress domain: .com, .us, .co.uk, .it, etc."""
@@ -219,13 +228,19 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             browser = p.chromium.launch(
                 headless=True,
                 proxy={"server": "socks5://127.0.0.1:9050"},
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--no-zygote",
-                ]
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-zygote",
+                # Force new connection for each browser
+                "--disable-http-cache",
+                "--disable-http2",  # Force HTTP/1.1 to avoid connection reuse
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--proxy-server=socks5://127.0.0.1:9050",  # Explicit proxy
+                "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE localhost",  # Force DNS through proxy
+            ]
             )
             context = browser.new_context(
                 user_agent=random.choice([
