@@ -267,7 +267,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 continue
 
             # Wait for initial JS render
-            page.wait_for_timeout(15000)
+            page.wait_for_timeout(20000)
             random_delay(1.0, 3.0)
 
             # ── Scroll ────────────────────────────────────────────────────────
