@@ -61,7 +61,7 @@ def safe_scroll(page, steps: int = 12) -> bool:
         try:
             if page.is_closed():
                 print("Page closed during scroll — likely a redirect.")
-                return False
+                return True
             
             # Occasionally pause longer (human behavior)
             if i % 4 == 0:
@@ -71,8 +71,8 @@ def safe_scroll(page, steps: int = 12) -> bool:
             page.wait_for_timeout(random.randint(300, 800))
         except Exception as e:
             print(f"Scroll interrupted: {e}")
-            return False
-    return True
+            return True
+    return False
 
 
 def random_viewport():
