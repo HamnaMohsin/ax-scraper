@@ -151,238 +151,70 @@ SHADOW_DOM_EXTRACT_JS = """
 
 
 def extract_aliexpress_product(url: str, max_retries: int = 5) -> dict:
-    print("🚀 Stealth AliExpress Scraper Starting...")
-
-    base_url = url.split('#')[0].strip()
-    if not base_url.startswith("http"):
-        base_url = "https://" + base_url
-
-    MOBILE_UA = [
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1",
-        "Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-        "Mozilla/5.0 (iPad; CPU OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1",
-    ]
+    base_url = "https://www.aliexpress.com" + url.split('aliexpress.com')[-1].split('?')[0]
 
     for attempt in range(1, max_retries + 1):
-        print(f"\n🔄 Attempt {attempt}/{max_retries} (Mobile Stealth Mode)")
+        print(f"🔄 Attempt {attempt}/5")
 
         if attempt > 1:
             rotate_tor_circuit()
-            random_delay(15, 25)
+            time.sleep(10)
 
         with sync_playwright() as p:
-            # PERFECT STEALTH LAUNCH
-            browser = p.chromium.launch(
-                headless=True,
-                proxy={"server": "socks5://127.0.0.1:9050"},
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--disable-extensions",
-                    "--disable-plugins",
-                    "--disable-images",  # Faster load
-                    "--disable-background-timer-throttling",
-                    "--disable-backgrounding-occluded-windows",
-                    "--disable-renderer-backgrounding",
-                    "--disable-field-trial-config",
-                    "--disable-ipc-flooding-protection",
-                    "--no-first-run",
-                    "--no-service-autorun",
-                    "--password-store=basic",
-                    "--use-mock-keychain",
-                    "--disable-blink-features=AutomationControlled",
-                ]
-            )
-
-            # MOBILE EMULATION + PERFECT FINGERPRINTS
+            browser = p.chromium.launch(headless=True, proxy={"server": "socks5://127.0.0.1:9050"})
             context = browser.new_context(
-                user_agent=random.choice(MOBILE_UA),
-                viewport={'width': 390, 'height': 844},  # iPhone 13
-                device_scale_factor=3,
-                is_mobile=True,
-                has_touch=True,
-                locale='en-US',
-                timezone_id='America/New_York',
-                color_scheme='light',
-                reduced_motion='no-preference',
-                forced_colors='none',
-                extra_http_headers={
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'DNT': '1',
-                    'Sec-Fetch-Dest': 'document',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none',
-                    'Sec-Fetch-User': '?1',
-                    'Upgrade-Insecure-Requests': '1',
-                    'Cache-Control': 'max-age=0',
-                },
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080}
             )
-
             page = context.new_page()
 
-            # ULTIMATE STEALTH SCRIPT
-            page.add_init_script("""
-() => {
-    // Remove ALL automation traces
-    delete navigator.__proto__.webdriver;
-    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-    
-    // Perfect plugins
-    Object.defineProperty(navigator, 'plugins', {
-        get: () => [
-            {name: 'Chrome PDF Plugin'},
-            {name: 'Chrome PDF Viewer'},
-            {name: 'Native Client'}
-        ]
-    });
-    
-    // Languages
-    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-    
-    // Chrome object
-    window.chrome = {runtime: {}, app: {}};
-    
-    // Permissions
-    const origQuery = navigator.permissions.query;
-    navigator.permissions.query = params => 
-        params.name === 'notifications' ? 
-        Promise.resolve({state: Notification.permission}) : 
-        origQuery(params);
-    
-    // WebGL spoof
-    const getParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(param) {
-        if (param === 37445) return 'Apple Inc.';
-        if (param === 37446) return 'Apple GPU';
-        return getParameter.call(this, param);
-    };
-    
-    // Screen
-    Object.defineProperty(screen, 'colorDepth', {get: () => 24});
-    Object.defineProperty(screen, 'pixelDepth', {get: () => 24});
-    
-    // Hardware
-    Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 4});
-    Object.defineProperty(navigator, 'deviceMemory', {get: () => 4});
-    Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 5});
-    
-    // Clean UA
-    Object.defineProperty(navigator, 'userAgent', {
-        get: () => navigator.userAgent.replace(/Headless/i, 'Chrome')
-    });
-};
-            """)
-
-            # HUMAN MOUSE MOVEMENT
-            page.add_init_script("""
-() => {
-    let lastX = 195, lastY = 422;
-    document.addEventListener('mousemove', e => {
-        const nowX = lastX + (Math.random() - 0.5) * 20;
-        const nowY = lastY + (Math.random() - 0.5) * 20;
-        lastX = nowX; lastY = nowY;
-    }, true);
-}
-            """)
-
             try:
-                # SLOW HUMAN NAVIGATION
-                print("📱 Navigating slowly...")
-                page.goto(base_url, wait_until="domcontentloaded", timeout=90000)
-                
-                # HUMAN DELAYS + SCROLLS
-                random_delay(4, 7)
-                page.mouse.move(random.randint(50, 340), random.randint(100, 700))
-                random_delay(2, 4)
-                
-                # GENTLE SCROLLS (triggers lazy content)
-                for _ in range(3):
-                    page.mouse.wheel(0, random.randint(200, 400))
-                    random_delay(1.5, 3)
+                # 15s TOTAL LOAD
+                page.goto(base_url, wait_until="networkidle", timeout=30000)
+                page.wait_for_timeout(5000)  # JS settle
 
-                random_delay(3, 6)
+                # FORCE US + QUICK RELOAD
+                page.evaluate("localStorage.setItem('aep_us','US')")
+                page.reload(wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
 
-                print(f"📍 Final URL: {page.url}")
-                print(f"📄 Title: {page.title()[:50]}")
-
-                # LENIENT CHECK - NO CAPTCHA BLOCK
-                if ".baxia-punish" in page.content():
-                    print("❌ Hard ban detected")
+                # QUICK VALIDATION
+                title = page.title()
+                if len(title) < 10:
+                    page.screenshot(path=f"fail_{attempt}.png")
                     browser.close()
                     continue
 
-                # ULTRA ROBUST TITLE EXTRACTION
-                title_selectors = [
-                    "[data-pl='product-title']",
-                    ".product-title-text",
-                    "h1",
-                    ".title--wrap--UUHae_g",
-                    ".product-title-container h1",
-                    ".sku-title",
-                    "[class*='title'] h1",
-                ]
+                print(f"✅ Loaded: {title[:50]}")
 
-                title = ""
-                for selector in title_selectors:
-                    try:
-                        el = page.query_selector(selector)
-                        if el:
-                            title = el.text_content().strip()
-                            if len(title) > 15:
-                                print(f"✅ Title: {title[:60]}...")
-                                break
-                    except:
-                        continue
+                # SINGLE SCROLL + DESCRIPTION
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight*0.6)")
+                page.wait_for_timeout(2000)
+                
+                page.click('#nav-description, .tab[href*="description"]', timeout=5000)
+                page.wait_for_timeout(4000)
 
-                if not title:
-                    print("❌ No title - screenshot")
-                    page.screenshot(path=f"no_title_{attempt}.png")
-                    browser.close()
-                    continue
+                # EXTRACT
+                title_final = page.evaluate("""
+                    () => document.querySelector('h1, [data-pl="product-title"]')?.textContent?.trim() || ''
+                """)
 
-                # FULL DESCRIPTION LOAD
-                desc_selectors = ['#nav-description', '.tab-description', '[href*="description"]']
-                for selector in desc_selectors:
-                    try:
-                        tab = page.query_selector(selector)
-                        if tab:
-                            tab.scroll_into_view_if_needed()
-                            random_delay(1, 2)
-                            page.mouse.click(tab.bounding_box()['x'] + 10, tab.bounding_box()['y'] + 10)
-                            print("📖 Description tab clicked")
-                            random_delay(4, 7)
-                            break
-                    except:
-                        continue
-
-                # FINAL SCROLL FOR LAZY CONTENT
-                for _ in range(2):
-                    page.mouse.wheel(0, 300)
-                    random_delay(2, 4)
-
-                # EXTRACT EVERYTHING
                 result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
-                description_text = result.get("text", "") if result else ""
-                images = result.get("images", []) if result else []
+                desc = result.get('text', '') if result else ''
+                imgs = result.get('images', []) if result else []
 
                 browser.close()
+                
+                if title_final:
+                    print(f"✅ SUCCESS: {len(desc)} chars")
+                    return {
+                        "title": clean_text(title_final),
+                        "description_text": clean_text(desc),
+                        "images": [normalize_img_url(img) for img in imgs]
+                    }
 
-                print(f"✅ SUCCESS: {len(description_text)} chars, {len(images)} images")
-                return {
-                    "title": clean_text(title),
-                    "description_text": clean_text(description_text),
-                    "images": [normalize_img_url(img) for img in images],
-                }
-
-            except Exception as e:
-                print(f"❌ Error: {e}")
-                try:
-                    browser.close()
-                except:
-                    pass
+            except:
+                browser.close()
                 continue
 
     return {"title": "", "description_text": "", "images": []}
