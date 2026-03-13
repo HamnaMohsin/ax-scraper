@@ -152,71 +152,85 @@ SHADOW_DOM_EXTRACT_JS = """
 
 def extract_aliexpress_product(url: str, max_retries: int = 5) -> dict:
     base_url = "https://www.aliexpress.com" + url.split('aliexpress.com')[-1].split('?')[0]
+    print(f"🎯 Scraping: {base_url}")
 
     for attempt in range(1, max_retries + 1):
-        print(f"🔄 Attempt {attempt}/5")
+        print(f"🔄 [{attempt}/{max_retries}] Starting...")
+        
+        browser = None
+        page = None
+        
+        try:
+            if attempt > 1:
+                rotate_tor_circuit()
+                time.sleep(8)
 
-        if attempt > 1:
-            rotate_tor_circuit()
-            time.sleep(10)
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True, 
+                    proxy={"server": "socks5://127.0.0.1:9050"},
+                    args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                )
+                
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    viewport={"width": 1366, "height": 768}
+                )
+                
+                page = context.new_page()
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, proxy={"server": "socks5://127.0.0.1:9050"})
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                viewport={"width": 1920, "height": 1080}
-            )
-            page = context.new_page()
+                print(f"   → Navigating...")
+                page.goto(base_url, timeout=45000, wait_until="domcontentloaded")
+                print(f"   → DOM loaded: {page.url}")
 
-            try:
-                # 15s TOTAL LOAD
-                page.goto(base_url, wait_until="networkidle", timeout=30000)
-                page.wait_for_timeout(5000)  # JS settle
-
-                # FORCE US + QUICK RELOAD
+                # QUICK US FIX
                 page.evaluate("localStorage.setItem('aep_us','US')")
-                page.reload(wait_until="domcontentloaded")
-                page.wait_for_timeout(3000)
+                print(f"   → US region set")
 
-                # QUICK VALIDATION
-                title = page.title()
-                if len(title) < 10:
-                    page.screenshot(path=f"fail_{attempt}.png")
-                    browser.close()
+                # WAIT FOR TITLE (10s max)
+                print(f"   → Waiting for title...")
+                title = page.wait_for_selector("h1, [data-pl='product-title'], .product-title-text", 
+                                             timeout=10000, state="visible")
+                title_text = title.text_content().strip() if title else ""
+                print(f"   → Title: {title_text[:50]}...")
+
+                if not title_text or len(title_text) < 10:
+                    print(f"   ❌ Empty title")
+                    page.screenshot(path=f"empty_{attempt}.png")
                     continue
 
-                print(f"✅ Loaded: {title[:50]}")
-
-                # SINGLE SCROLL + DESCRIPTION
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight*0.6)")
-                page.wait_for_timeout(2000)
+                # QUICK SCROLL + DESCRIPTION
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.5)")
+                time.sleep(2)
                 
-                page.click('#nav-description, .tab[href*="description"]', timeout=5000)
-                page.wait_for_timeout(4000)
+                page.click('#nav-description, .description-tab, [href*="description"]', timeout=3000)
+                time.sleep(3)
 
                 # EXTRACT
-                title_final = page.evaluate("""
-                    () => document.querySelector('h1, [data-pl="product-title"]')?.textContent?.trim() || ''
-                """)
-
                 result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
-                desc = result.get('text', '') if result else ''
-                imgs = result.get('images', []) if result else []
+                desc = result.get('text', '') if isinstance(result, dict) else ''
+                imgs = result.get('images', []) if isinstance(result, dict) else []
 
-                browser.close()
-                
-                if title_final:
-                    print(f"✅ SUCCESS: {len(desc)} chars")
-                    return {
-                        "title": clean_text(title_final),
-                        "description_text": clean_text(desc),
-                        "images": [normalize_img_url(img) for img in imgs]
-                    }
+                print(f"✅ SUCCESS: {len(title_text)} title chars, {len(desc)} desc chars, {len(imgs)} images")
+                return {
+                    "title": clean_text(title_text),
+                    "description_text": clean_text(desc),
+                    "images": [normalize_img_url(img) for img in imgs if img]
+                }
 
+        except Exception as e:
+            print(f"💥 [{attempt}] FAILED: {str(e)[:100]}")
+            
+        finally:
+            try:
+                if page:
+                    page.screenshot(path=f"crash_{attempt}.png")
+                if browser:
+                    browser.close()
             except:
-                browser.close()
-                continue
+                pass
 
+    print("😞 All attempts failed")
     return {"title": "", "description_text": "", "images": []}
 # def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 #     print("Starting scrape...")
