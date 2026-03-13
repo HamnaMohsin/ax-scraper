@@ -151,7 +151,6 @@ SHADOW_DOM_EXTRACT_JS = """
 
 
 # ── FIXED Main scraper ────────────────────────────────────────────────────────
-
 def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
     print("Starting scrape...")
 
@@ -166,17 +165,17 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
         if attempt > 1:
             rotate_tor_circuit()
-            random_delay(10.0, 20.0)  # Longer delays between retries
+            random_delay(10.0, 20.0)
 
         with sync_playwright() as p:
             browser = p.chromium.launch(
-                headless=False,  # ← CHANGED: Show browser for debugging
+                headless=True,  # ← FIXED: Headless mode
                 proxy={"server": "socks5://127.0.0.1:9050"},
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--disable-features=VizDisplayCompositor",
                     "--no-sandbox",
-                    "--disable-dev-shm-usage",
+                    "--disable-dev-shm-usage", 
                     "--disable-gpu",
                     "--disable-extensions",
                     "--disable-plugins",
@@ -184,228 +183,148 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     "--no-service-autorun",
                     "--password-store=basic",
                     "--use-mock-keychain",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                    "--disable-field-trial-config",
+                    "--disable-ipc-flooding-protection",
                 ]
             )
+            
+            # ... rest of context/page setup SAME AS BEFORE ...
             
             context = browser.new_context(
                 user_agent=random.choice([
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 ]),
-                viewport=random_viewport(),
+                viewport={"width": 1366, "height": 768},  # Fixed common viewport
                 locale="en-US",
                 timezone_id="America/New_York",
                 extra_http_headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
                     "Accept-Encoding": "gzip, deflate, br",
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "none",
-                    "Sec-Fetch-User": "?1",
+                    "DNT": "1",
+                    "Connection": "keep-alive",
                     "Upgrade-Insecure-Requests": "1",
                 },
-                java_script_enabled=True,
-                bypass_csp=True,
-                ignore_https_errors=True,
             )
             
             page = context.new_page()
             
-            # ← FIXED: More comprehensive stealth script
+            # ← SIMPLIFIED stealth script (more reliable)
             page.add_init_script("""
 () => {
-    // Hide webdriver completely
-    delete navigator.__proto__.webdriver;
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+    Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+    window.chrome = {runtime: {}};
     
-    // Mock plugins
-    Object.defineProperty(navigator, 'plugins', {
-        get: () => [1, 2, 3, 4, 5],
-    });
-    
-    // Mock languages
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    
-    // Chrome object
-    window.chrome = {
-        runtime: {},
-        app: {},
-        loadTimes: function() {},
-        csi: function() {},
-    };
-    
-    // Permissions mock
+    // Permissions API
     const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => (
-        parameters.name === 'notifications' ?
-            Promise.resolve({ state: Notification.permission }) :
-            originalQuery(parameters)
+    return window.navigator.permissions.query = (parameters) => (
+        parameters.name === 'notifications' ? 
+        Promise.resolve({state: Notification.permission}) : 
+        originalQuery(parameters)
     );
-    
-    // WebGL fingerprinting
-    const getParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-        if (parameter === 37445) return 'Intel Inc. (0x8086)';
-        if (parameter === 37446) return 'Intel(R) Iris(TM) Xe Graphics';
-        return getParameter.call(this, parameter);
-    };
-    
-    // Screen properties
-    Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
-    Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
-    
-    // Hardware concurrency
-    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-    
-    // Mock touch support
-    Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
-    
-    // Clean user agent
-    Object.defineProperty(navigator, 'userAgent', {
-        get: () => navigator.userAgent.replace(/Headless|headless/i, 'Chrome'),
-    });
-}
-""")
-
-            # Simulate human mouse movement
-            page.add_init_script("""
-() => {
-                const events = ['mousemove', 'mousedown', 'mouseup', 'click'];
-                let lastX = window.innerWidth / 2;
-                let lastY = window.innerHeight / 2;
-                
-                events.forEach(event => {
-                    document.addEventListener(event, (e) => {
-                        if (Math.random() < 0.1) {
-                            const nowX = lastX + (Math.random() - 0.5) * 100;
-                            const nowY = lastY + (Math.random() - 0.5) * 100;
-                            lastX = nowX;
-                            lastY = nowY;
-                        }
-                    });
-                });
-            }
+};
             """)
 
             try:
                 print(f"Navigating to: {base_url}")
-                page.goto(base_url, timeout=60000, wait_until="networkidle")
-                print(f"Landed on: {page.url}")
+                # ← FIXED: Use domcontentloaded + manual wait
+                page.goto(base_url, timeout=90000, wait_until="domcontentloaded")
+                
+                # Wait for critical elements or timeout
+                print("Waiting for page load...")
+                page.wait_for_timeout(8000)
+                
+                print(f"Final URL: {page.url}")
+                print(f"Page title: {page.title()}")
 
                 if not is_aliexpress_url(page.url):
-                    print(f"Redirected off AliExpress to {page.url} — skipping.")
+                    print(f"❌ Redirected off AliExpress")
                     browser.close()
                     continue
-
-                random_delay(5.0, 8.0)
 
                 if detect_recaptcha(page):
-                    print("CAPTCHA detected — retrying.")
+                    print("❌ CAPTCHA detected")
                     browser.close()
                     continue
 
-                # ← FIXED: Much more robust title detection with longer timeout
-                print("Waiting for page to fully load...")
-                page.wait_for_timeout(5000)
-
+                # ← FIXED: Ultra-robust title detection
                 title_selectors = [
                     "[data-pl='product-title']",
-                    ".product-title-text",
-                    ".title--wrap--UUHae_g h1",
-                    ".title--wrap--NWOaiSp h1",
+                    ".product-title-text", 
                     "h1",
+                    ".title--wrap--UUHae_g",
+                    ".title--wrap--NWOaiSp",
                     ".product-title-container h1",
-                    "[data-spm-anchor-id] h1",
                     ".sku-title",
-                    ".product-name",
                 ]
 
                 title = ""
-                for selector in title_selectors:
+                for i, selector in enumerate(title_selectors):
                     try:
-                        el = page.wait_for_selector(selector, timeout=10000, state="visible")
+                        print(f"Trying title selector {i+1}: {selector}")
+                        el = page.query_selector(selector)
                         if el:
-                            title = el.text_content().strip()
-                            if title and len(title) > 10 and "verify" not in title.lower():
-                                print(f"✓ Title found via '{selector}': {title[:80]}...")
+                            candidate = el.text_content().strip()
+                            if candidate and len(candidate) > 15 and "verify" not in candidate.lower():
+                                title = candidate
+                                print(f"✓ Title: {title[:60]}...")
                                 break
-                    except Exception:
+                    except Exception as e:
+                        print(f"Selector {i+1} failed: {e}")
                         continue
 
                 if not title:
-                    print("❌ No title found after trying all selectors")
-                    # Save screenshot for debugging
+                    print("❌ No title found - saving debug screenshot")
                     try:
-                        page.screenshot(path=f"debug_attempt_{attempt}.png")
-                        print(f"Screenshot saved: debug_attempt_{attempt}.png")
+                        page.screenshot(path=f"debug_no_title_{attempt}.png")
                     except:
                         pass
                     browser.close()
                     continue
 
-                # Scroll more gently
-                safe_scroll(page, steps=6)
-                random_delay(2.0, 4.0)
+                # Gentle scroll + description activation
+                safe_scroll(page, steps=4)
+                random_delay(3.0, 5.0)
 
-                if detect_recaptcha(page):
-                    print("CAPTCHA after scroll — retrying.")
-                    browser.close()
-                    continue
-
-                # Try to activate description tab
-                desc_selectors = ['#nav-description', '.tab-description', '[data-role="description"]']
-                for selector in desc_selectors:
-                    try:
-                        tab = page.query_selector(selector)
-                        if tab:
-                            tab.scroll_into_view_if_needed()
-                            random_delay(1.0, 2.0)
-                            tab.click(force=True)
-                            print(f"Clicked description tab: {selector}")
-                            page.wait_for_timeout(3000)
-                            break
-                    except:
-                        continue
-
-                random_delay(2.0, 4.0)
-
-                # Extract content
+                # Extract everything
                 description_text = ""
                 images = []
 
+                # Primary extraction
                 try:
                     result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
-                    if result and "error" not in result:
+                    if isinstance(result, dict) and "error" not in result:
                         description_text = result.get("text", "")
                         images = result.get("images", [])
-                        print(f"✓ Extracted: {len(description_text)} chars, {len(images)} images")
                 except Exception as e:
-                    print(f"Shadow DOM extraction failed: {e}")
+                    print(f"Primary extraction failed: {e}")
 
-                # Fallback extraction
+                # Fallback
                 if not description_text:
                     try:
-                        texts = page.evaluate("""
-() => {
-                            const texts = [];
-                            document.querySelectorAll('p, li, .product-description, .detail-content')
-                                .forEach(el => {
-                                    const t = el.innerText.trim();
-                                    if (t.length > 20) texts.push(t);
-                                });
-                            return texts.slice(0, 10).join(' ');
-                        }
+                        description_text = page.evaluate("""
+                            () => {
+                                let text = '';
+                                document.querySelectorAll('p, li, .description, .detail-content')
+                                    .forEach(el => {
+                                        const t = el.innerText.trim();
+                                        if (t.length > 20) text += t + ' ';
+                                    });
+                                return text.trim();
+                            }
                         """)
-                        description_text = texts if texts else ""
                     except:
                         pass
 
-                images = list(dict.fromkeys([normalize_img_url(img) for img in images if "alicdn" in img]))
+                images = list(dict.fromkeys([normalize_img_url(img) for img in images]))
 
                 browser.close()
-
                 return {
                     "title": clean_text(title),
                     "description_text": clean_text(description_text),
@@ -413,16 +332,285 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 }
 
             except Exception as e:
-                print(f"Navigation/Extraction error: {e}")
+                print(f"❌ Fatal error: {e}")
                 try:
-                    page.screenshot(path=f"error_attempt_{attempt}.png")
+                    browser.close()
                 except:
                     pass
-                browser.close()
                 continue
 
-    print(f"All {max_retries} attempts exhausted.")
     return empty_result
+# def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
+#     print("Starting scrape...")
+
+#     base_url = url.split('#')[0].strip()
+#     if not base_url.startswith("http"):
+#         base_url = "https://" + base_url
+
+#     empty_result = {"title": "", "description_text": "", "images": []}
+
+#     for attempt in range(1, max_retries + 1):
+#         print(f"\n── Attempt {attempt}/{max_retries} ──")
+
+#         if attempt > 1:
+#             rotate_tor_circuit()
+#             random_delay(10.0, 20.0)  # Longer delays between retries
+
+#         with sync_playwright() as p:
+#             browser = p.chromium.launch(
+#                 headless=True,  
+#                 proxy={"server": "socks5://127.0.0.1:9050"},
+#                 args=[
+#                     "--disable-blink-features=AutomationControlled",
+#                     "--disable-features=VizDisplayCompositor",
+#                     "--no-sandbox",
+#                     "--disable-dev-shm-usage",
+#                     "--disable-gpu",
+#                     "--disable-extensions",
+#                     "--disable-plugins",
+#                     "--no-first-run",
+#                     "--no-service-autorun",
+#                     "--password-store=basic",
+#                     "--use-mock-keychain",
+#                 ]
+#             )
+            
+#             context = browser.new_context(
+#                 user_agent=random.choice([
+#                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+#                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+#                     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+#                 ]),
+#                 viewport=random_viewport(),
+#                 locale="en-US",
+#                 timezone_id="America/New_York",
+#                 extra_http_headers={
+#                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+#                     "Accept-Language": "en-US,en;q=0.9",
+#                     "Accept-Encoding": "gzip, deflate, br",
+#                     "Sec-Fetch-Dest": "document",
+#                     "Sec-Fetch-Mode": "navigate",
+#                     "Sec-Fetch-Site": "none",
+#                     "Sec-Fetch-User": "?1",
+#                     "Upgrade-Insecure-Requests": "1",
+#                 },
+#                 java_script_enabled=True,
+#                 bypass_csp=True,
+#                 ignore_https_errors=True,
+#             )
+            
+#             page = context.new_page()
+            
+#             # ← FIXED: More comprehensive stealth script
+#             page.add_init_script("""
+# () => {
+#     // Hide webdriver completely
+#     delete navigator.__proto__.webdriver;
+#     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    
+#     // Mock plugins
+#     Object.defineProperty(navigator, 'plugins', {
+#         get: () => [1, 2, 3, 4, 5],
+#     });
+    
+#     // Mock languages
+#     Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    
+#     // Chrome object
+#     window.chrome = {
+#         runtime: {},
+#         app: {},
+#         loadTimes: function() {},
+#         csi: function() {},
+#     };
+    
+#     // Permissions mock
+#     const originalQuery = window.navigator.permissions.query;
+#     window.navigator.permissions.query = (parameters) => (
+#         parameters.name === 'notifications' ?
+#             Promise.resolve({ state: Notification.permission }) :
+#             originalQuery(parameters)
+#     );
+    
+#     // WebGL fingerprinting
+#     const getParameter = WebGLRenderingContext.prototype.getParameter;
+#     WebGLRenderingContext.prototype.getParameter = function(parameter) {
+#         if (parameter === 37445) return 'Intel Inc. (0x8086)';
+#         if (parameter === 37446) return 'Intel(R) Iris(TM) Xe Graphics';
+#         return getParameter.call(this, parameter);
+#     };
+    
+#     // Screen properties
+#     Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
+#     Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
+    
+#     // Hardware concurrency
+#     Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+    
+#     // Mock touch support
+#     Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
+    
+#     // Clean user agent
+#     Object.defineProperty(navigator, 'userAgent', {
+#         get: () => navigator.userAgent.replace(/Headless|headless/i, 'Chrome'),
+#     });
+# }
+# """)
+
+#             # Simulate human mouse movement
+#             page.add_init_script("""
+# () => {
+#                 const events = ['mousemove', 'mousedown', 'mouseup', 'click'];
+#                 let lastX = window.innerWidth / 2;
+#                 let lastY = window.innerHeight / 2;
+                
+#                 events.forEach(event => {
+#                     document.addEventListener(event, (e) => {
+#                         if (Math.random() < 0.1) {
+#                             const nowX = lastX + (Math.random() - 0.5) * 100;
+#                             const nowY = lastY + (Math.random() - 0.5) * 100;
+#                             lastX = nowX;
+#                             lastY = nowY;
+#                         }
+#                     });
+#                 });
+#             }
+#             """)
+
+#             try:
+#                 print(f"Navigating to: {base_url}")
+#                 page.goto(base_url, timeout=60000, wait_until="networkidle")
+#                 print(f"Landed on: {page.url}")
+
+#                 if not is_aliexpress_url(page.url):
+#                     print(f"Redirected off AliExpress to {page.url} — skipping.")
+#                     browser.close()
+#                     continue
+
+#                 random_delay(5.0, 8.0)
+
+#                 if detect_recaptcha(page):
+#                     print("CAPTCHA detected — retrying.")
+#                     browser.close()
+#                     continue
+
+#                 # ← FIXED: Much more robust title detection with longer timeout
+#                 print("Waiting for page to fully load...")
+#                 page.wait_for_timeout(5000)
+
+#                 title_selectors = [
+#                     "[data-pl='product-title']",
+#                     ".product-title-text",
+#                     ".title--wrap--UUHae_g h1",
+#                     ".title--wrap--NWOaiSp h1",
+#                     "h1",
+#                     ".product-title-container h1",
+#                     "[data-spm-anchor-id] h1",
+#                     ".sku-title",
+#                     ".product-name",
+#                 ]
+
+#                 title = ""
+#                 for selector in title_selectors:
+#                     try:
+#                         el = page.wait_for_selector(selector, timeout=10000, state="visible")
+#                         if el:
+#                             title = el.text_content().strip()
+#                             if title and len(title) > 10 and "verify" not in title.lower():
+#                                 print(f"✓ Title found via '{selector}': {title[:80]}...")
+#                                 break
+#                     except Exception:
+#                         continue
+
+#                 if not title:
+#                     print("❌ No title found after trying all selectors")
+#                     # Save screenshot for debugging
+#                     try:
+#                         page.screenshot(path=f"debug_attempt_{attempt}.png")
+#                         print(f"Screenshot saved: debug_attempt_{attempt}.png")
+#                     except:
+#                         pass
+#                     browser.close()
+#                     continue
+
+#                 # Scroll more gently
+#                 safe_scroll(page, steps=6)
+#                 random_delay(2.0, 4.0)
+
+#                 if detect_recaptcha(page):
+#                     print("CAPTCHA after scroll — retrying.")
+#                     browser.close()
+#                     continue
+
+#                 # Try to activate description tab
+#                 desc_selectors = ['#nav-description', '.tab-description', '[data-role="description"]']
+#                 for selector in desc_selectors:
+#                     try:
+#                         tab = page.query_selector(selector)
+#                         if tab:
+#                             tab.scroll_into_view_if_needed()
+#                             random_delay(1.0, 2.0)
+#                             tab.click(force=True)
+#                             print(f"Clicked description tab: {selector}")
+#                             page.wait_for_timeout(3000)
+#                             break
+#                     except:
+#                         continue
+
+#                 random_delay(2.0, 4.0)
+
+#                 # Extract content
+#                 description_text = ""
+#                 images = []
+
+#                 try:
+#                     result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
+#                     if result and "error" not in result:
+#                         description_text = result.get("text", "")
+#                         images = result.get("images", [])
+#                         print(f"✓ Extracted: {len(description_text)} chars, {len(images)} images")
+#                 except Exception as e:
+#                     print(f"Shadow DOM extraction failed: {e}")
+
+#                 # Fallback extraction
+#                 if not description_text:
+#                     try:
+#                         texts = page.evaluate("""
+# () => {
+#                             const texts = [];
+#                             document.querySelectorAll('p, li, .product-description, .detail-content')
+#                                 .forEach(el => {
+#                                     const t = el.innerText.trim();
+#                                     if (t.length > 20) texts.push(t);
+#                                 });
+#                             return texts.slice(0, 10).join(' ');
+#                         }
+#                         """)
+#                         description_text = texts if texts else ""
+#                     except:
+#                         pass
+
+#                 images = list(dict.fromkeys([normalize_img_url(img) for img in images if "alicdn" in img]))
+
+#                 browser.close()
+
+#                 return {
+#                     "title": clean_text(title),
+#                     "description_text": clean_text(description_text),
+#                     "images": images,
+#                 }
+
+#             except Exception as e:
+#                 print(f"Navigation/Extraction error: {e}")
+#                 try:
+#                     page.screenshot(path=f"error_attempt_{attempt}.png")
+#                 except:
+#                     pass
+#                 browser.close()
+#                 continue
+
+#     print(f"All {max_retries} attempts exhausted.")
+#     return empty_result
 # import re
 # import time
 # import random
