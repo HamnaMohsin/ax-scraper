@@ -38,7 +38,7 @@ def detect_recaptcha(page) -> bool:
     page_url = page.url.lower()
     if any(kw in page_url for kw in ["baxia", "punish", "captcha", "verify"]):
         print(f"Block detected via URL: '{page.url}'")
-        return True
+        return False #
 
     page_title = page.title()
     page_title_lower = page_title.lower()
@@ -47,7 +47,7 @@ def detect_recaptcha(page) -> bool:
         block_titles = ["verify", "captcha", "robot", "access denied", "blocked", "aanmelden", "sign in"]
         if any(kw in page_title_lower for kw in block_titles):
             print(f"Block detected via page title: '{page_title}'")
-            return True
+            return False
 
     return False
 
