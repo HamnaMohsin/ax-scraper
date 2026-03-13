@@ -97,16 +97,21 @@ def detect_recaptcha(page) -> bool:
 
 def safe_scroll(page, steps: int = 12) -> bool:
     """
-    Scroll gradually. Returns False if the page closed mid-scroll
+    Scroll gradually with human-like delays. Returns False if the page closed mid-scroll
     (happens when AliExpress fires a mid-page redirect).
     """
-    for _ in range(steps):
+    for i in range(steps):
         try:
             if page.is_closed():
                 print("Page closed during scroll — likely a redirect.")
                 return False
-            page.mouse.wheel(0, random.randint(200, 400))
-            page.wait_for_timeout(random.randint(200, 400))
+            
+            # Occasionally pause longer (human behavior)
+            if i % 4 == 0:
+                page.wait_for_timeout(random.randint(800, 1200))
+            
+            page.mouse.wheel(0, random.randint(300, 600))
+            page.wait_for_timeout(random.randint(300, 800))
         except Exception as e:
             print(f"Scroll interrupted: {e}")
             return False
@@ -262,10 +267,10 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             )
             context = browser.new_context(
                 user_agent=random.choice([
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 ]),
                 viewport=random_viewport(),
                 locale="en-US",
@@ -273,8 +278,22 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     "America/New_York",
                     "America/Chicago",
                     "America/Los_Angeles",
+                    "Europe/London",
+                    "Europe/Berlin",
                 ]),
-                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                extra_http_headers={
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "DNT": "1",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-User": "?1",
+                    "Cache-Control": "max-age=0",
+                },
                 java_script_enabled=True,
                 bypass_csp=True,
             )
@@ -289,6 +308,11 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             )
 
             # ── Navigate ──────────────────────────────────────────────────────
+            # Add referrer to appear more legitimate
+            if attempt == 1:
+                # First visit: come from Google
+                page.add_init_script("window.document.referrer = 'https://www.google.com/'")
+            
             try:
                 page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
             except Exception as e:
@@ -304,16 +328,16 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 browser.close()
                 continue
 
-            random_delay(3.0, 6.0)
+            random_delay(4.0, 8.0)  # Increased delay for human-like behavior
 
             if detect_recaptcha(page):
                 print("CAPTCHA detected — retrying.")
                 browser.close()
                 continue
 
-            # Wait for initial JS render
-            page.wait_for_timeout(8000)
-            random_delay(1.0, 3.0)
+            # Wait for initial JS render (longer to avoid bot detection)
+            page.wait_for_timeout(10000)
+            random_delay(2.0, 5.0)
 
             # ── Scroll — wrapped so a mid-redirect crash is handled cleanly ──
             scroll_ok = safe_scroll(page, steps=12)
@@ -380,7 +404,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 nav_desc = page.query_selector('#nav-description')
                 if nav_desc:
                     nav_desc.scroll_into_view_if_needed()
-                    random_delay(1.0, 2.0)
+                    random_delay(1.5, 3.0)
                     nav_desc.click(force=True)
                     print("Clicked #nav-description — waiting for XHR...")
 
@@ -400,7 +424,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     except Exception:
                         print("XHR wait timed out — attempting extraction anyway...")
 
-                    random_delay(1.0, 2.0)
+                    random_delay(1.5, 3.0)
                 else:
                     print("#nav-description not found — description XHR won't fire.")
             except Exception as e:
