@@ -17,24 +17,45 @@ def rotate_tor_circuit():
     try:
         from stem import Signal
         from stem.control import Controller
+        import requests
+        
+        # Get IP before
+        proxies = {'http': 'socks5h://127.0.0.1:9050', 'https': 'socks5h://127.0.0.1:9050'}
+        ip_before = requests.get('https://check.torproject.org/api/ip', proxies=proxies).json()['IP']
+        print(f"IP before rotation: {ip_before}")
+        
+        # Rotate circuit
         with Controller.from_port(port=9051) as controller:
             controller.authenticate()
+            
+            # Also close all existing circuits
+            for circuit in controller.get_circuits():
+                if circuit.status != 'BUILT':
+                    continue
+                controller.close_circuit(circuit.id)
+                print(f"Closed circuit: {circuit.id}")
+            
             controller.signal(Signal.NEWNYM)
-            print("Tor circuit rotated — new exit IP assigned.")
-            
-            # CRITICAL: Wait longer for circuit to fully rebuild
-            # AliExpress is aggressive, need full circuit refresh
-            time.sleep(15)  # Increased from 5 to 15 seconds
-            
-            # Force DNS to use new circuit
-            import socket
-            socket.setdefaulttimeout(10)
-            
+            print("NEWNYM signal sent")
+        
+        # Wait longer
+        time.sleep(15)
+        
+        # Verify IP changed
+        ip_after = requests.get('https://check.torproject.org/api/ip', proxies=proxies).json()['IP']
+        print(f"IP after rotation: {ip_after}")
+        
+        if ip_before == ip_after:
+            print("⚠ WARNING: IP did not change!")
+            return False
+        else:
+            print("✓ IP changed successfully")
             return True
+            
     except Exception as e:
-        print(f"Failed to rotate Tor circuit: {e}")
+        print(f"Rotation error: {e}")
         return False
-
+        
 def is_aliexpress_url(url: str) -> bool:
     """Accept any regional AliExpress domain: .com, .us, .co.uk, .it, etc."""
     return "aliexpress." in url.lower()
@@ -218,9 +239,23 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
 
     for attempt in range(1, max_retries + 1):
+        context = browser.new_context(
+            user_agent=random.choice([...]),
+            viewport=random_viewport(),
+            locale="en-US",
+            timezone_id=random.choice([...]),
+            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+            java_script_enabled=True,
+            bypass_csp=True,
+            # Add these
+            ignore_https_errors=True,
+            accept_downloads=False,
+            service_workers="block",
+        )
         print(f"\n── Attempt {attempt}/{max_retries} ──")
 
         if attempt > 1:
+            random_delay(10.0, 20.0)
             rotate_tor_circuit()
             random_delay(8.0, 15.0)
 
