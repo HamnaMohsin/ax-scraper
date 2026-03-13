@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def random_delay(min_sec: float = 1.0, max_sec: float = 3.0):
+def random_delay(min_sec: float = 0.5, max_sec: float = 1.5):  # Reduced delays
     delay = random.uniform(min_sec, max_sec)
     print(f"Waiting {delay:.1f}s...")
     time.sleep(delay)
@@ -21,7 +21,7 @@ def rotate_tor_circuit():
             controller.authenticate()
             controller.signal(Signal.NEWNYM)
             print("Tor circuit rotated — new exit IP assigned.")
-            time.sleep(5)
+            time.sleep(2)  # Reduced from 5s
     except Exception as e:
         print(f"Failed to rotate Tor circuit: {e}")
 
@@ -36,61 +36,49 @@ def dismiss_cookie_banner(page):
     that overlays the page and blocks all interaction including title rendering.
     Must be dismissed before any content can be extracted.
     """
+    # More aggressive selectors
     cookie_selectors = [
-        # Primary AliExpress cookie consent buttons
-        "button.comet-btn.comet-btn-primary",  # Updated primary button selector
-        "button.comet-btn[type='submit']",      # Submit button style
-        "button.gdpr-btn--accept",              # GDPR accept button
-        "button.cookies-agree-btn",              # Cookie agreement button
-        
-        # Text-based selectors (more reliable)
-        "button:has-text('Accept')",
-        "button:has-text('Accept All')",
-        "button:has-text('Accept Cookies')",
-        "button:has-text('Agree')",
-        "button:has-text('I Accept')",
-        "button:has-text('Akzeptieren')",   # German
-        "button:has-text('Alle akzeptieren')", # German - All accept
-        "button:has-text('Accepteren')",    # Dutch
-        "button:has-text('Alle accepteren')",  # Dutch - All accept
-        "button:has-text('Accepter')",      # French
-        "button:has-text('Tout accepter')",    # French - All accept
-        "button:has-text('Accetta')",       # Italian
-        "button:has-text('Accetta tutto')",     # Italian - All accept
-        
-        # Common container selectors
+        # Primary AliExpress cookie buttons
+        "button.comet-btn.comet-btn-primary",
+        "button[class*='accept']",
+        "button[class*='accept-all']",
         "button[data-role='accept']",
         "button[id*='accept']",
-        "button[class*='accept']",
+        
+        # Text-based (fastest)
+        "button:has-text('Accept All')",
+        "button:has-text('Accept')",
+        "button:has-text('Akzeptieren')",
+        "button:has-text('Accepteren')",
+        "button:has-text('Accepter')",
+        "button:has-text('Accetta')",
+        
+        # Container buttons
         ".gdpr-container button",
-        ".cookie-consent button",
         "#gdpr-new-container button",
     ]
     
-    # Try immediate dismissal
     for sel in cookie_selectors:
         try:
-            # Wait briefly for the button to be visible
-            btn = page.wait_for_selector(sel, state="visible", timeout=3000)
-            if btn:
+            # Quick check without waiting
+            btn = page.query_selector(sel)
+            if btn and btn.is_visible():
                 btn.click(force=True)
                 print(f"Cookie banner dismissed via '{sel}'")
-                # Wait for banner to disappear
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(500)  # Reduced from 1500ms
                 return True
         except Exception:
             continue
     
-    # If no button found, try JavaScript dismissal
+    # Try JavaScript as fallback
     try:
         page.evaluate("""
             () => {
-                // Try to find and click any accept button
-                const buttons = document.querySelectorAll('button');
-                for (const btn of buttons) {
+                const btns = document.querySelectorAll('button');
+                for (const btn of btns) {
                     const text = btn.innerText.toLowerCase();
-                    if (text.includes('accept') || text.includes('akzeptieren') || 
-                        text.includes('accepteren') || text.includes('agree')) {
+                    if (text.includes('accept') || text.includes('akzept') || 
+                        text.includes('accep')) {
                         btn.click();
                         return true;
                     }
@@ -98,80 +86,50 @@ def dismiss_cookie_banner(page):
                 return false;
             }
         """)
-        print("Cookie banner dismissed via JavaScript")
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(500)
         return True
     except Exception:
         pass
     
     return False
 
+
 def detect_recaptcha(page) -> bool:
-    indicators = [
-        "iframe[src*='recaptcha']",
-        "iframe[src*='google.com/recaptcha']",
-        ".g-recaptcha",
-        "#captcha-verify",
-        ".baxia-punish",
-        "[id*='captcha']",
-        # Cookie wall indicators (blocking content)
-        ".gdpr-container",
-        "#gdpr-new-container",
-        ".cookie-consent",
-    ]
-    
-    for selector in indicators:
-        try:
-            el = page.query_selector(selector)
-            if el and el.is_visible():
-                print(f"Block detected via selector: {selector}")
-                return True
-        except Exception:
-            pass
-
-    # Check if page is showing help/legal text instead of product
-    body_text = page.evaluate("() => document.body?.innerText?.toLowerCase() || ''")
-    blocked_keywords = [
-        "hilfe", "help", "hulp",  # Help in German/English/Dutch
-        "cookie", "gdpr", "datenschutz", "privacy",
-        "anmelden", "sign in", "inloggen",
-        "rückgabe", "return", "retour",
-        "streitigkeiten", "disputes", "geschillen"
-    ]
-    
-    # If body contains many blocked keywords but no product info
-    if body_text:
-        keyword_count = sum(1 for kw in blocked_keywords if kw in body_text)
-        if keyword_count >= 3 and "product" not in body_text and "item" not in body_text:
-            print(f"Page showing legal/help content ({keyword_count} keywords) - likely blocked")
-            return True
-
+    # Fast checks first
     page_url = page.url.lower()
     if any(kw in page_url for kw in ["baxia", "punish", "captcha", "verify"]):
         print(f"Block detected via URL: '{page.url}'")
         return True
+    
+    # Quick selector checks
+    fast_indicators = [".g-recaptcha", "#captcha-verify", ".baxia-punish"]
+    for selector in fast_indicators:
+        try:
+            if page.query_selector(selector):
+                print(f"reCAPTCHA/block detected via selector: {selector}")
+                return True
+        except Exception:
+            pass
 
     return False
 
 
-def safe_scroll(page, steps: int = 12) -> bool:
+def safe_scroll(page, steps: int = 6) -> bool:  # Reduced steps
     for _ in range(steps):
         try:
             if page.is_closed():
-                print("Page closed during scroll — likely a redirect.")
                 return False
-            page.mouse.wheel(0, random.randint(200, 400))
-            page.wait_for_timeout(random.randint(200, 400))
-        except Exception as e:
-            print(f"Scroll interrupted: {e}")
+            page.mouse.wheel(0, random.randint(100, 200))
+            page.wait_for_timeout(random.randint(50, 100))  # Faster scroll
+        except Exception:
             return False
     return True
 
 
 def random_viewport():
     return {
-        "width": random.choice([1280, 1366, 1440, 1536, 1600]),
-        "height": random.choice([720, 768, 864, 900]),
+        "width": random.choice([1280, 1366, 1440]),
+        "height": random.choice([720, 768]),
     }
 
 
@@ -194,80 +152,41 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-# ── Shadow DOM extraction ──────────────────────────────────────────────────────
-#
-# Confirmed DOM structure:
-#   #product-description
-#     └── div  ← shadow host (:scope > div)
-#         └── #shadow-root (open)
-#             └── div#product-description.product-description
-#                 └── [content varies by seller layout]
-#
-# isCollectable(): element is a leaf if zero children OR all children are <BR>.
-# This handles Layout B where <p> tags contain text nodes + <br> children.
-
+# Optimized shadow DOM extraction
 SHADOW_DOM_EXTRACT_JS = """
 () => {
     const container = document.querySelector('#product-description');
     if (!container) return { error: 'no #product-description' };
 
     const host = container.querySelector(':scope > div');
-    if (!host)            return { error: 'no child div in #product-description' };
-    if (!host.shadowRoot) return { error: 'no shadowRoot on child div' };
+    if (!host || !host.shadowRoot) return { error: 'no shadowRoot' };
 
     const root = host.shadowRoot;
-
-    [
-        'style', 'script',
-        '.a-price', '.a-offscreen', '.a-icon-alt',
-        '.comparison-table', '.premium-aplus-module-5',
-        '.apm-brand-story-carousel-container',
-        '.vse-player-container',
-        '.add-to-cart',
-        '.aplus-carousel-actions',
-        '.aplus-carousel-index',
-        '.aplus-review-right-padding',
-    ].forEach(sel => root.querySelectorAll(sel).forEach(el => el.remove()));
-
-    const JUNK = new Set([
-        'hero-video', 'product description', 'add to cart',
-        'find more moko cases', 'customer reviews', 'price',
-        'compatibility', 'material', 'features',
-        'multi-color options', 'viewing & typing angles',
-    ]);
-
+    
+    // Quick text extraction
     const texts = [];
-    const seen  = new Set();
+    const seen = new Set();
+    
+    // Get all text from common elements
+    root.querySelectorAll('p, span, div, li, h1, h2, h3, h4, h5').forEach(el => {
+        if (el.children.length === 0 || Array.from(el.children).every(c => c.tagName === 'BR')) {
+            const text = (el.innerText || el.textContent || '').trim();
+            if (text && text.length > 10 && !seen.has(text)) {
+                seen.add(text);
+                texts.push(text);
+            }
+        }
+    });
 
-    function isCollectable(el) {
-        if (el.children.length === 0) return true;
-        return Array.from(el.children).every(c => c.tagName === 'BR');
-    }
-
-    for (const el of root.querySelectorAll('p,h1,h2,h3,h4,h5,li,span,td,div')) {
-        if (!isCollectable(el)) continue;
-
-        const raw = (el.innerText || el.textContent || '');
-        const t   = raw.replace(/\n+/g, ' ').trim();
-
-        if (!t || t.length < 6) continue;
-        if (/^[\d\s\.\,\$\€\£\¥\%\+\-\&nbsp;]+$/.test(t)) continue;
-        if (JUNK.has(t.toLowerCase())) continue;
-        if (seen.has(t)) continue;
-
-        seen.add(t);
-        texts.push(t);
-    }
-
-    const images  = [];
+    // Quick image extraction
+    const images = [];
     const seenSrc = new Set();
     root.querySelectorAll('img').forEach(img => {
         let src = img.getAttribute('src') || img.getAttribute('data-src') || '';
         if (!src) return;
         src = src.trim();
         if (src.startsWith('//')) src = 'https:' + src;
-        const s = src.toLowerCase();
-        if ((s.includes('alicdn.com') || s.includes('aliexpress-media.com')) && !seenSrc.has(src)) {
+        if ((src.includes('alicdn.com') || src.includes('aliexpress-media.com')) && !seenSrc.has(src)) {
             seenSrc.add(src);
             images.push(src);
         }
@@ -278,57 +197,28 @@ SHADOW_DOM_EXTRACT_JS = """
 """
 
 # ── Stealth script ─────────────────────────────────────────────────────────────
-# All 8 properties AliExpress bot detection checks on page load.
-
 STEALTH_JS = """
 (() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    Object.defineProperty(navigator, 'plugins', {
-        get: () => [
-            { name: 'Chrome PDF Plugin',  filename: 'internal-pdf-viewer',             description: 'Portable Document Format' },
-            { name: 'Chrome PDF Viewer',  filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-            { name: 'Native Client',      filename: 'internal-nacl-plugin',             description: '' },
-        ],
-    });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3] });
     Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => (
-        parameters.name === 'notifications'
-            ? Promise.resolve({ state: Notification.permission })
-            : originalQuery(parameters)
-    );
-    const getParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-        if (parameter === 37445) return 'Intel Inc.';
-        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-        return getParameter.call(this, parameter);
-    };
-    Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
-    Object.defineProperty(screen, 'pixelDepth',  { get: () => 24 });
-    Object.defineProperty(navigator, 'userAgent', {
-        get: () => navigator.userAgent.replace('HeadlessChrome', 'Chrome'),
-    });
+    window.chrome = { runtime: {} };
 })();
 """
 
 TITLE_SELECTORS = [
     "[data-pl='product-title']",
     ".title--wrap--UUHae_g h1",
-    ".title--wrap--NWOaiSp h1",
     ".product-title-text",
     "#root h1",
 ]
 
-BLOCKED_TITLES = {
-    "aliexpress", "", "aanmelden", "sign in",
-    "log in", "login", "verify", "robot",
-}
+BLOCKED_TITLES = {"aliexpress", "", "aanmelden", "sign in", "login"}
 
 
 # ── Main scraper ───────────────────────────────────────────────────────────────
 
-def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
+def extract_aliexpress_product(url: str, max_retries: int = 2) -> dict:  # Reduced retries
     print("Starting scrape...")
 
     base_url = url.split('#')[0].strip()
@@ -342,9 +232,10 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
         if attempt > 1:
             rotate_tor_circuit()
-            random_delay(8.0, 15.0)
+            random_delay(3.0, 5.0)  # Reduced delay
 
         with sync_playwright() as p:
+            # Launch with faster settings
             browser = p.chromium.launch(
                 headless=True,
                 proxy={"server": "socks5://127.0.0.1:9050"},
@@ -354,240 +245,124 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
                     "--no-zygote",
-                    # NOTE: --single-process intentionally excluded (causes SIGSEGV)
                 ]
             )
+            
             context = browser.new_context(
                 user_agent=random.choice([
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
                 ]),
                 viewport=random_viewport(),
                 locale="en-US",
-                timezone_id=random.choice([
-                    "America/New_York",
-                    "America/Chicago",
-                    "America/Los_Angeles",
-                ]),
+                timezone_id="America/New_York",
                 extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
                 java_script_enabled=True,
                 bypass_csp=True,
             )
+            
             page = context.new_page()
             page.add_init_script(STEALTH_JS)
 
-            
-           # ── Navigate ──────────────────────────────────────────────────────
+            # ── Fast navigation ─────────────────────────────────────────────
             try:
-                context.clear_cookies()
-                print("Cookies cleared")
-                # Use wait_until="commit" to get to page faster
-                response = page.goto(base_url, timeout=60000, wait_until="commit")
+                # Use commit to start interaction faster
+                page.goto(base_url, timeout=30000, wait_until="commit")  # Reduced timeout
                 
-                # IMMEDIATELY check for and dismiss cookie banner
-                # Don't wait for domcontentloaded first - banner blocks it
+                # IMMEDIATELY dismiss cookie banner
                 dismiss_cookie_banner(page)
                 
-                # Now wait for content to load
-                page.wait_for_load_state("domcontentloaded", timeout=10000)
+                # Wait for DOM to be ready
+                page.wait_for_load_state("domcontentloaded", timeout=5000)
                 
             except Exception as e:
                 print(f"Navigation failed: {e}")
                 browser.close()
                 continue
-            
+
             print(f"Landed on: {page.url}")
-            
+
             if not is_aliexpress_url(page.url):
-                print(f"Redirected off AliExpress to {page.url} — skipping.")
+                print(f"Redirected off AliExpress — skipping.")
                 browser.close()
                 continue
-            
-            # Additional banner dismissal attempts (sometimes banners appear after load)
-            dismiss_cookie_banner(page)
-            random_delay(1.0, 2.0)
-            
-            # Check for CAPTCHA
+
+            # Quick check for blocks
             if detect_recaptcha(page):
-                print("CAPTCHA detected — retrying.")
-                browser.close()
-                continue
-                        
-
-            # ── Wait for JS render ─────────────────────────────────────────────
-            # Wait for title to appear instead of fixed timeout
-            try:
-                page.wait_for_function("""
-                    () => {
-                        // Check if cookie banner is gone
-                        const bannerGone = !document.querySelector('.gdpr-container, .cookie-consent');
-                        // Check if title exists
-                        const titleSelectors = ['[data-pl="product-title"]', '.title--wrap--UUHae_g h1'];
-                        const hasTitle = titleSelectors.some(sel => {
-                            const el = document.querySelector(sel);
-                            return el && el.innerText && el.innerText.length > 10;
-                        });
-                        return bannerGone && hasTitle;
-                    }
-                """, timeout=20000)
-                print("Title detected - page loaded successfully")
-            except Exception:
-                print("Timeout waiting for title - checking current state...")
-
-            # ── Diagnostic ────────────────────────────────────────────────────
-            try:
-                print(f"Page title tag: '{page.title()}'")
-                body_preview = page.evaluate(
-                    "() => document.body?.innerText?.slice(0, 300) || 'no body'"
-                )
-                print(f"Body preview: {repr(body_preview)}")
-            except Exception as e:
-                print(f"Diagnostic error: {e}")
-
-            # ── Scroll ────────────────────────────────────────────────────────
-            scroll_ok = safe_scroll(page, steps=12)
-            if not scroll_ok:
-                print("Scroll failed — page likely redirected. Retrying...")
-                try:
-                    browser.close()
-                except Exception:
-                    pass
-                continue
-
-            random_delay(1.0, 2.0)
-
-            if page.is_closed():
-                print("Page closed after scroll.")
+                print("Block detected — retrying.")
                 browser.close()
                 continue
 
-            if detect_recaptcha(page):
-                print("CAPTCHA detected after scroll — retrying.")
-                browser.close()
-                continue
-
-            # ── Extract title ─────────────────────────────────────────────────
-            def safe_text(sel: str) -> str:
-                try:
-                    el = page.query_selector(sel)
-                    return el.text_content().strip() if el else ""
-                except Exception:
-                    return ""
-
+            # ── Smart wait for title ────────────────────────────────────────
+            # Wait for title to appear (max 8 seconds)
             title = ""
-            for sel in TITLE_SELECTORS:
-                candidate = safe_text(sel)
-                if candidate and candidate.lower().strip() not in BLOCKED_TITLES:
-                    title = candidate
-                    print(f"Title via '{sel}': {title[:70]}")
+            start_time = time.time()
+            while time.time() - start_time < 8:
+                # Check for title
+                for sel in TITLE_SELECTORS:
+                    try:
+                        el = page.query_selector(sel)
+                        if el:
+                            candidate = el.text_content().strip()
+                            if candidate and candidate.lower() not in BLOCKED_TITLES:
+                                title = candidate
+                                print(f"Title found in {time.time() - start_time:.1f}s: {title[:50]}")
+                                break
+                    except Exception:
+                        pass
+                
+                if title:
                     break
-
+                
+                # Check if we're blocked
+                if detect_recaptcha(page):
+                    print("Block detected while waiting for title")
+                    break
+                
+                # Short wait before checking again
+                page.wait_for_timeout(500)
+            
             if not title:
                 print("Title not found — page likely blocked.")
                 browser.close()
                 continue
 
-            # ── Click #nav-description to trigger description XHR ─────────────
-            # Without this click shadow root contains only CSS (~3634 chars).
-            # Real description content only loads after this click fires XHR.
+            # ── Quick scroll ─────────────────────────────────────────────────
+            safe_scroll(page, steps=4)  # Reduced scrolling
+            random_delay(0.5, 1.0)
+
+            # ── Click description tab if needed ─────────────────────────────
             description_text = ""
             images = []
 
             try:
                 nav_desc = page.query_selector('#nav-description')
                 if nav_desc:
-                    nav_desc.scroll_into_view_if_needed()
-                    random_delay(1.0, 2.0)
                     nav_desc.click(force=True)
-                    print("Clicked #nav-description — waiting for XHR...")
+                    print("Clicked #nav-description")
+                    # Wait briefly for content
+                    page.wait_for_timeout(2000)
+            except Exception:
+                pass
 
-                    try:
-                        page.wait_for_function(
-                            """() => {
-                                const host = document.querySelector(
-                                    '#product-description > div'
-                                );
-                                if (!host || !host.shadowRoot) return false;
-                                return (host.shadowRoot.textContent || '').trim().length > 4500;
-                            }""",
-                            timeout=15000,
-                        )
-                        print("Description content loaded.")
-                    except Exception:
-                        print("XHR wait timed out — attempting extraction anyway...")
-
-                    random_delay(1.0, 2.0)
-                else:
-                    print("#nav-description not found — description XHR won't fire.")
-            except Exception as e:
-                print(f"Could not click #nav-description: {e}")
-
-            # ── Shadow DOM extraction ─────────────────────────────────────────
+            # ── Extract data ────────────────────────────────────────────────
             try:
                 result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
                 if result and "error" not in result:
                     description_text = result.get("text", "").strip()
                     images = result.get("images", [])
-                    print(f"Shadow DOM: {len(description_text)} chars, {len(images)} images")
-                elif result and "error" in result:
-                    print(f"Shadow DOM JS returned: {result['error']}")
+                    print(f"Extracted: {len(description_text)} chars, {len(images)} images")
             except Exception as e:
-                print(f"Shadow DOM evaluate error: {e}")
-
-            # ── Fallback: plain DOM ───────────────────────────────────────────
-            if not description_text and not images:
-                print("Shadow DOM empty — trying plain DOM fallback...")
-                try:
-                    container = page.query_selector("#product-description")
-                    if container:
-                        for el in container.query_selector_all("p, span, li, h3, h4, div"):
-                            try:
-                                only_br = el.evaluate(
-                                    "e => e.children.length === 0 || "
-                                    "Array.from(e.children).every(c => c.tagName === 'BR')"
-                                )
-                                text = el.text_content().strip()
-                                if only_br and text and len(text) >= 6:
-                                    if not re.match(r'^[\d\s\.\,\$\€\£\¥\%\+\-]+$', text):
-                                        description_text += text + " "
-                            except Exception:
-                                pass
-
-                        for img in container.query_selector_all("img"):
-                            src = img.get_attribute("src") or img.get_attribute("data-src") or ""
-                            src = normalize_img_url(src)
-                            s = src.lower()
-                            if "alicdn.com" in s or "aliexpress-media.com" in s:
-                                images.append(src)
-
-                        if description_text:
-                            dollar_ratio = description_text.count("$") / max(len(description_text), 1)
-                            if dollar_ratio > 0.02:
-                                print("Plain DOM text looks like price data — discarding.")
-                                description_text = ""
-                except Exception as e:
-                    print(f"Plain DOM fallback error: {e}")
-
-            images = list(dict.fromkeys(images))
-
-            if not description_text:
-                print("No description text (seller may use image-only description).")
-            if not images:
-                print("No description images extracted.")
+                print(f"Extraction error: {e}")
 
             browser.close()
 
             return {
-                "title":            clean_text(title),
+                "title": clean_text(title),
                 "description_text": clean_text(description_text),
-                "images":           images,
+                "images": images,
             }
 
-    print(f"All {max_retries} attempts exhausted.")
+    print(f"All attempts exhausted.")
     return empty_result
 # import re
 # import time
