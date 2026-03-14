@@ -145,9 +145,9 @@ SHADOW_DOM_EXTRACT_JS = """
     const seen  = new Set();
 
     function isCollectable(el) {
-        if (el.children.length === 0) return true;
-        return Array.from(el.children).every(c => c.tagName === 'BR');
-    }
+    if (el.children.length === 0) return true;
+    return Array.from(el.children).every(c => c.tagName === 'BR' || c.tagName === 'IMG');
+}
 
     for (const el of root.querySelectorAll('p,h1,h2,h3,h4,h5,li,span,td,div')) {
         if (!isCollectable(el)) continue;
@@ -407,7 +407,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                             try:
                                 only_br = el.evaluate(
                                     "e => e.children.length === 0 || "
-                                    "Array.from(e.children).every(c => c.tagName === 'BR')"
+                                    "Array.from(e.children).every(c => c.tagName === 'BR' || c.tagName === 'IMG')"
                                 )
                                 text = el.text_content().strip()
                                 if only_br and text and len(text) >= 6:
