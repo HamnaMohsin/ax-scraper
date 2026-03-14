@@ -162,7 +162,8 @@ SHADOW_DOM_EXTRACT_JS = """
     for (const el of root.querySelectorAll('p,h1,h2,h3,h4,h5,li,span,td,div')) {
         function isCollectable(el) {
         if (el.children.length === 0) return true;
-        return Array.from(el.children).every(c => c.tagName === 'BR');}
+        return Array.from(el.children).every(c => c.tagName === 'BR' || c.tagName === 'IMG');
+    }
         if (!isCollectable(el)) continue;
 
         const t = (el.innerText || el.textContent || '').trim();
@@ -383,9 +384,12 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     if container:
                         for el in container.query_selector_all("p, span, li, h3, h4, div"):
                             try:
-                                child_count = el.evaluate("e => e.children.length")
+                                only_br_or_img = el.evaluate(
+                                        "e => e.children.length === 0 || "
+                                        "Array.from(e.children).every(c => c.tagName === 'BR' || c.tagName === 'IMG')"
+                                    )
                                 text = el.text_content().strip()
-                                if child_count == 0 and text and len(text) >= 6:
+                                if only_br_or_img and text and len(text) >= 6:
                                     if not re.match(r'^[\d\s\.\,\$\€\£\¥\%\+\-]+$', text):
                                         description_text += text + " "
                             except Exception:
