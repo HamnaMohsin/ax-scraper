@@ -233,10 +233,10 @@ def extract_aliexpress_product(url: str, max_retries: int = 1) -> dict:
 
     empty_result = {"title": "", "description_text": "", "images": []}
 
-    #for attempt in range(1, max_retries + 1):
-    print(f"\n── Attempt {attempt}/{max_retries} ──")
+    for attempt in range(1, max_retries + 1):
+        print(f"\n── Attempt {attempt}/{max_retries} ──")
 
-        
+        if attempt > 1:
             rotate_tor_circuit()
             random_delay(8.0, 15.0)
 
@@ -298,8 +298,6 @@ def extract_aliexpress_product(url: str, max_retries: int = 1) -> dict:
                 continue
 
             # ── Wait for title element before scrolling ────────────────────────
-            # React on .us domain renders slower than flat 8s timer allows.
-            # wait_for_selector blocks until element actually appears — up to 25s.
             title_appeared = False
             for sel in TITLE_SELECTORS:
                 try:
