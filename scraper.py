@@ -296,9 +296,21 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             random_delay(3.0, 6.0)
 
             if detect_recaptcha(page):
-                print("CAPTCHA detected — retrying.")
+                print("CAPTCHA detected after scroll — retrying.")
                 browser.close()
                 continue
+            
+            # ── Diagnostic ────────────────────────────────────────────────────
+            try:
+                print(f"PAGE TITLE TAG: '{page.title()}'")
+                body = page.evaluate("() => document.body?.innerText?.slice(0, 400) || 'no body'")
+                print(f"BODY PREVIEW: {repr(body)}")
+                h1s = page.evaluate("() => Array.from(document.querySelectorAll('h1')).map(e => e.textContent.trim().slice(0,80))")
+                print(f"H1s ON PAGE: {h1s}")
+            except Exception as e:
+                print(f"Diagnostic error: {e}")
+            
+            # ── Extract title
 
             page.wait_for_timeout(8000)
             random_delay(1.0, 3.0)
