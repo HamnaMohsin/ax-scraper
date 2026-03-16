@@ -104,9 +104,6 @@ def clean_text(text: str) -> str:
 
 
 # ── Shadow DOM extraction ──────────────────────────────────────────────────────
-# isCollectable defined OUTSIDE the loop (fixes JS hoisting issue).
-# Allows elements whose only children are <br> or <img> tags —
-# handles <p> tags with inline images and line breaks.
 
 SHADOW_DOM_EXTRACT_JS = """
 () => {
@@ -246,7 +243,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
-                # No proxy — using server's direct IP (Tor exit IPs are blocklisted by AliExpress)
+                # No proxy — Tor exit IPs are blocklisted by AliExpress
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
@@ -295,12 +292,14 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
 
             random_delay(3.0, 6.0)
 
-           if detect_recaptcha(page):
-                print("CAPTCHA detected after scroll — retrying.")
+            if detect_recaptcha(page):
+                print("CAPTCHA detected — retrying.")
                 browser.close()
-                continue            
-            # ── Extract title
+                continue
 
+            # ── Wait for title element before scrolling ────────────────────────
+            # React on .us domain renders slower than flat 8s timer allows.
+            # wait_for_selector blocks until element actually appears — up to 25s.
             title_appeared = False
             for sel in TITLE_SELECTORS:
                 try:
@@ -310,12 +309,14 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     break
                 except Exception:
                     continue
-            
+
             if not title_appeared:
                 print("Title element never appeared — page blocked or too slow.")
                 browser.close()
                 continue
+
             # ── Scroll ────────────────────────────────────────────────────────
+            random_delay(1.0, 2.0)
             scroll_ok = safe_scroll(page, steps=12)
             if not scroll_ok:
                 print("Scroll failed — page likely redirected. Retrying...")
