@@ -236,14 +236,14 @@ def extract_aliexpress_product(url: str, max_retries: int = 1) -> dict:
     for attempt in range(1, max_retries + 1):
         print(f"\n── Attempt {attempt}/{max_retries} ──")
 
-        if attempt > 1:
-            #rotate_tor_circuit()
-            random_delay(8.0, 15.0)
+        
+        rotate_tor_circuit()
+        random_delay(8.0, 15.0)
 
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
-                #proxy={"server": "socks5://127.0.0.1:9050"},
+                proxy={"server": "socks5://127.0.0.1:9050"},
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
