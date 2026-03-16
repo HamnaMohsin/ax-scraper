@@ -19,17 +19,13 @@ def rotate_tor_circuit():
         from stem.control import Controller
         with Controller.from_port(port=9051) as controller:
             controller.authenticate()
-
-            # Check if circuit is established before sending NEWNYM
-            # Tor ignores NEWNYM if cooldown hasn't passed or circuit isn't ready
             circuit_status = controller.get_info("status/circuit-established")
             if circuit_status != "1":
                 print(f"Tor circuit not ready (status={circuit_status}) — skipping rotation.")
                 return
-
             controller.signal(Signal.NEWNYM)
             print("Tor circuit rotated — new exit IP assigned.")
-            time.sleep(10)  # Tor enforces a 10s minimum between NEWNYM signals
+            time.sleep(10)
     except Exception as e:
         print(f"Failed to rotate Tor circuit: {e}")
 
@@ -96,7 +92,7 @@ def normalize_img_url(src: str) -> str:
     if not src:
         return ""
     src = src.strip()
-    if src.startswith("//"):
+    if src.startsWith("//"):
         return "https:" + src
     if src.startswith("/"):
         return "https://www.aliexpress.com" + src
@@ -244,9 +240,9 @@ def extract_aliexpress_product(url: str, max_retries: int = 1) -> dict:
     for attempt in range(1, max_retries + 1):
         print(f"\n── Attempt {attempt}/{max_retries} ──")
 
-        
-        rotate_tor_circuit()
-        random_delay(8.0, 15.0)
+        if attempt > 1:
+            rotate_tor_circuit()
+            random_delay(8.0, 15.0)
 
         with sync_playwright() as p:
             browser = p.chromium.launch(
@@ -283,36 +279,52 @@ def extract_aliexpress_product(url: str, max_retries: int = 1) -> dict:
             page = context.new_page()
             page.add_init_script(STEALTH_JS)
 
-            # ── Pre-visit homepage to establish session cookies ────────────────
-            # AliExpress serves degraded content to cookieless sessions.
-            # A homepage visit sets the required session cookies before
-            # navigating to the product page.
+            # ── Step 1: Hit product URL to discover regional domain ────────────
+            # AliExpress redirects aliexpress.com → aliexpress.us / .de / .it etc.
+            # We need to know the regional domain BEFORE visiting homepage,
+            # because cookies are domain-scoped — .com cookies don't work on .us
             try:
-                print("Pre-visiting homepage...")
-                page.goto("https://www.aliexpress.com", timeout=60000, wait_until="domcontentloaded")
-                random_delay(3.0, 5.0)
-                print(f"Homepage loaded: '{page.title()[:50]}'")
+                print("Step 1: Detecting regional domain...")
+                page.goto(base_url, timeout=60000, wait_until="domcontentloaded")
+                regional_url = page.url
+                # Extract base domain: https://nl.aliexpress.com → https://nl.aliexpress.com
+                from urllib.parse import urlparse
+                parsed = urlparse(regional_url)
+                regional_homepage = f"{parsed.scheme}://{parsed.netloc}"
+                print(f"Regional domain: {regional_homepage}")
             except Exception as e:
-                print(f"Homepage pre-visit failed: {e}")
+                print(f"Regional domain detection failed: {e}")
+                browser.close()
+                continue
 
-            # ── Navigate to product ───────────────────────────────────────────
+            if not is_aliexpress_url(page.url):
+                print(f"Redirected off AliExpress — skipping.")
+                browser.close()
+                continue
+
+            # ── Step 2: Visit regional homepage to set correct cookies ─────────
+            # Now we visit the SAME regional domain's homepage so cookies
+            # are scoped correctly for the product page reload
             try:
-                # networkidle waits for all XHR to settle — ensures React has
-                # fully hydrated the product data before we start waiting for title
-                page.goto(base_url, timeout=120000, wait_until="networkidle")
+                print(f"Step 2: Pre-visiting regional homepage {regional_homepage}...")
+                page.goto(regional_homepage, timeout=60000, wait_until="domcontentloaded")
+                random_delay(3.0, 5.0)
+                print(f"Regional homepage loaded: '{page.title()[:60]}'")
             except Exception as e:
-                print(f"Navigation failed: {e}")
+                print(f"Regional homepage visit failed: {e}")
+
+            # ── Step 3: Navigate to product with cookies established ───────────
+            try:
+                print("Step 3: Loading product page with session cookies...")
+                page.goto(regional_url, timeout=120000, wait_until="domcontentloaded")
+            except Exception as e:
+                print(f"Product navigation failed: {e}")
                 browser.close()
                 continue
 
             print(f"Landed on: {page.url}")
 
-            if not is_aliexpress_url(page.url):
-                print(f"Redirected off AliExpress to {page.url} — skipping.")
-                browser.close()
-                continue
-
-            random_delay(2.0, 4.0)
+            random_delay(3.0, 5.0)
 
             if detect_recaptcha(page):
                 print("CAPTCHA detected — retrying.")
@@ -320,14 +332,12 @@ def extract_aliexpress_product(url: str, max_retries: int = 1) -> dict:
                 continue
 
             # ── Wait for title element ─────────────────────────────────────────
-            # Single broad h1 selector — faster than looping 5 selectors × 25s
             print("Waiting for title element...")
             try:
                 page.wait_for_selector("h1", timeout=20000, state="visible")
-                print("h1 element visible.")
+                print("h1 visible.")
             except Exception:
                 print("Title element never appeared — page blocked or too slow.")
-                # Print diagnostic before giving up
                 try:
                     print(f"Page title tag: '{page.title()}'")
                     body = page.evaluate("() => document.body?.innerText?.slice(0, 200) || 'empty'")
