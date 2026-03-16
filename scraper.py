@@ -243,7 +243,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 1) -> dict:
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
-                # No proxy — Tor exit IPs are blocklisted by AliExpress
+                proxy={"server": "socks5://127.0.0.1:9050"},
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
