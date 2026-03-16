@@ -4,11 +4,13 @@ on:
   push:
     branches: [main]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   deploy:
     name: SSH Deploy
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -23,7 +25,7 @@ jobs:
       - name: Pull latest code
         run: |
           ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
-            "cd /opt/ax-scraper && git pull origin main"
+            "cd /opt/ax-scraper && git stash && git pull origin main"
 
       - name: Install dependencies
         run: |
