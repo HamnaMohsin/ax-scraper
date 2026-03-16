@@ -1,12 +1,7 @@
 name: Deploy to GCP
-
 on:
   push:
     branches: [main]
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   deploy:
     name: SSH Deploy
@@ -14,29 +9,24 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
-
       - name: Pull latest code
         run: |
           ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
-            "cd /opt/ax-scraper && git stash && git pull origin main"
-
+            "cd /opt/ax-scraper && git pull origin main"
       - name: Install dependencies
         run: |
           ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
             "cd /opt/ax-scraper && source venv/bin/activate && pip install -r requirements.txt --quiet"
-
       - name: Restart service
         run: |
           ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} \
             "sudo systemctl restart ax-scraper"
-
       - name: Verify service is running
         run: |
           sleep 3
