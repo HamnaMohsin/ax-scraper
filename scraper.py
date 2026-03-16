@@ -277,7 +277,8 @@ def extract_aliexpress_product(url: str, max_retries: int = 1) -> dict:
 
             # ── Navigate ──────────────────────────────────────────────────────
             try:
-                page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
+                #page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
+                page.goto(base_url, timeout=120000, wait_until="networkidle")
             except Exception as e:
                 print(f"Navigation failed: {e}")
                 browser.close()
