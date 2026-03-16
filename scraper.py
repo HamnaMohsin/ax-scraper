@@ -224,7 +224,7 @@ BLOCKED_TITLES = {
 
 # ── Main scraper ───────────────────────────────────────────────────────────────
 
-def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
+def extract_aliexpress_product(url: str, max_retries: int = 1) -> dict:
     print("Starting scrape...")
 
     base_url = url.split('#')[0].strip()
