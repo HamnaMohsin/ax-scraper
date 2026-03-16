@@ -236,7 +236,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 1) -> dict:
     for attempt in range(1, max_retries + 1):
         print(f"\n── Attempt {attempt}/{max_retries} ──")
 
-        if attempt > 1:
+        
             rotate_tor_circuit()
             random_delay(8.0, 15.0)
 
