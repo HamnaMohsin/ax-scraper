@@ -19,9 +19,17 @@ def rotate_tor_circuit():
         from stem.control import Controller
         with Controller.from_port(port=9051) as controller:
             controller.authenticate()
+
+            # Check if circuit is established before sending NEWNYM
+            # Tor ignores NEWNYM if cooldown hasn't passed or circuit isn't ready
+            circuit_status = controller.get_info("status/circuit-established")
+            if circuit_status != "1":
+                print(f"Tor circuit not ready (status={circuit_status}) — skipping rotation.")
+                return
+
             controller.signal(Signal.NEWNYM)
             print("Tor circuit rotated — new exit IP assigned.")
-            time.sleep(5)
+            time.sleep(10)  # Tor enforces a 10s minimum between NEWNYM signals
     except Exception as e:
         print(f"Failed to rotate Tor circuit: {e}")
 
