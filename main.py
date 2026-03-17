@@ -138,7 +138,7 @@ def _upsert(db: Session, url: str, data: dict) -> ProductFetched:
 
 def _scrape_and_save(db: Session, url: str) -> dict:
     """Scrape only — no LLM, no categorization. Resets exported_at."""
-    data = extract_aliexpress_product(url)#max_retries=3
+    data = extract_aliexpress_product(url,max_retries=3)
     if not data.get("title"):
         return {"url": url, "success": False, "error": "Scrape failed or blocked"}
 
@@ -257,7 +257,7 @@ def scrape_full(request: ScrapeRequest, db: Session = Depends(get_db)):
 
     for url in urls:
         try:
-            data = extract_aliexpress_product(url)#, max_retries=3
+            data = extract_aliexpress_product(url, max_retries=3)
             if not data.get("title"):
                 fail_count += 1
                 results.append({"url": url, "success": False, "error": "Scrape failed or blocked"})
