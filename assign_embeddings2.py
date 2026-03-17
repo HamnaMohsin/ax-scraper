@@ -75,7 +75,15 @@ def find_best_category(query_embedding, stored_data) -> dict:
         "similarity_score": best_score
     }
 
-
+def get_leaf_category(category_name: str) -> str:
+    """
+    Extract the last segment from a slash-separated category path.
+    'FURNITURE/HEALTH & WELLNESS/MASSAGE CHAIRS' → 'MASSAGE CHAIRS'
+    """
+    if not category_name:
+        return ""
+    return category_name.strip().split("/")[-1].strip()
+ 
 def categorize_product(title: str, description: str) -> dict:
     print("Categorizing product...")
 
@@ -91,9 +99,14 @@ def categorize_product(title: str, description: str) -> dict:
     # Step 4: Cosine similarity search
     result = find_best_category(query_embedding, df)
 
+    # Step 5: Extract leaf category for cleaner response
+    full_category_path = result["category_path"]
+    leaf_category = get_leaf_category(full_category_path)
+    
+    # ✅ FIX: Return consistent key names with leaf category for file naming
     return {
-        "llm_predicted_category": predicted_category_text,
-        "matched_category_id":    result["category_id"],
-        "matched_category_path":  result["category_path"],
+        "llm_predicted_category": predicted_category_text,        # Full path from LLM
+        "category_id":            result["category_id"],          # Category code (e.g., "0G0901")
+        "category_path":          leaf_category,                  # Leaf only (e.g., "MASSAGE CHAIRS") for file naming
         "similarity_score":       result["similarity_score"]
     }
