@@ -19,6 +19,7 @@ from schemas import (
     ProductFetchedOut,
     ProductRefinedOut,
     CategoryAssignmentOut,
+    CategoryStandaloneOut,
     ProductFullOut,
 )
 from scraper       import extract_aliexpress_product
@@ -367,14 +368,16 @@ def assign_cat(product_id: int, db: Session = Depends(get_db)):
     return CategoryAssignmentOut.model_validate(cat_row)
 
 
-@app.post("/categorize")
+# ✅ FIXED: /categorize endpoint now uses proper response schema
+@app.post("/categorize", response_model=CategoryStandaloneOut)
 def categorize_standalone(request: CategorizeRequest):
     """Standalone category lookup — does not touch the DB."""
     result = assign_category(request.title, request.description)
     return {
-        "category_id":   result.get("category_id"),
-        "category_path": result.get("category_path"),
-        "similarity_score": result.get("similarity_score"),
+        "llm_predicted_category": result.get("llm_predicted_category"),
+        "category_id":            result.get("category_id"),
+        "category_path":          result.get("category_path"),
+        "similarity_score":       result.get("similarity_score"),
     }
 
 
@@ -430,11 +433,11 @@ def delete_product(product_id: int, db: Session = Depends(get_db)):
     db.delete(p)
     db.commit()
     return {"message": f"Product {product_id} deleted (cascaded to all tables)"}
+
+
 @app.get("/products/{product_id}", response_model=ProductFullOut)
 def get_product(product_id: int, db: Session = Depends(get_db)):
     p = db.query(ProductFetched).filter_by(product_id=product_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
-
-
