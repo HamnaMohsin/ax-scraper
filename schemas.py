@@ -21,7 +21,6 @@ class ProductFetchedOut(BaseModel):
     description: Optional[str] = None
     images:      Optional[list] = None
     exported_at: Optional[datetime] = None
-
     model_config = {"from_attributes": True}
 
 
@@ -30,7 +29,6 @@ class ProductRefinedOut(BaseModel):
     enhanced_title:        Optional[str] = None
     enhanced_description:  Optional[str] = None
     description_marketing: Optional[str] = None
-
     model_config = {"from_attributes": True}
 
 
@@ -40,7 +38,16 @@ class CategoryAssignmentOut(BaseModel):
     assigned_category:      Optional[str] = None
     category_id:            Optional[str] = None
     similarity_score:       Optional[float] = None
+    model_config = {"from_attributes": True}
 
+
+# ✅ NEW: Standalone category response (for /categorize endpoint — no product_id)
+class CategoryStandaloneOut(BaseModel):
+    """Response schema for standalone /categorize endpoint."""
+    llm_predicted_category: Optional[str] = None
+    category_id:            Optional[str] = None
+    category_path:          Optional[str] = None
+    similarity_score:       Optional[float] = None
     model_config = {"from_attributes": True}
 
 
@@ -53,16 +60,13 @@ class ProductFullOut(BaseModel):
     description:            Optional[str] = None
     images:                 Optional[list] = None
     exported_at:            Optional[datetime] = None
-
     # from product_refined
     enhanced_title:         Optional[str] = None
     enhanced_description:   Optional[str] = None
     description_marketing:  Optional[str] = None
-
     # from category_assignment
     llm_predicted_category: Optional[str] = None
     assigned_category:      Optional[str] = None
     category_id:            Optional[str] = None
     similarity_score:       Optional[float] = None
-
     model_config = {"from_attributes": True}
