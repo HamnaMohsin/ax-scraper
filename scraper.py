@@ -1,6 +1,7 @@
 """
-Simple AliExpress Scraper - Final Version with Better Selectors
+Simple AliExpress Scraper - Final Version with Geo-Redirect Fix
 Uses multiple selectors and JavaScript to find description
+Handles regional redirects (.us, .uk, etc.)
 """
 
 import re
@@ -20,8 +21,9 @@ def clean_text(text: str) -> str:
 
 def extract_aliexpress_product(url: str) -> dict:
     """
-    Extract AliExpress product - Final version.
+    Extract AliExpress product - Final version with geo-redirect fix.
     Uses multiple selectors and JavaScript to find all content.
+    Handles regional redirects (.us, .uk, etc.)
     
     Returns:
         {
@@ -48,28 +50,62 @@ def extract_aliexpress_product(url: str) -> dict:
             print("⏳ Loading page...")
             page.goto(base_url, timeout=60000, wait_until="domcontentloaded")
             
-            print(f"✅ Loaded: {page.url}")
+            actual_url = page.url
+            print(f"✅ Loaded: {actual_url}")
+            
+            # ── NEW: Detect and fix geo-redirect ───────────────────────────────────
+            if actual_url != base_url and any(domain in actual_url for domain in [".us", ".uk", ".de", ".fr"]):
+                print(f"⚠️  Geo-redirect detected: {base_url} → {actual_url}")
+                print("🔄 Forcing original domain...")
+                
+                try:
+                    # Extract original domain from base_url
+                    original_domain = "/".join(base_url.split("/")[:3])  # https://www.aliexpress.com
+                    # Extract product ID
+                    product_id = base_url.split("/item/")[1].split(".")[0].split("?")[0]
+                    # Reconstruct original URL
+                    original_url = f"{original_domain}/item/{product_id}.html"
+                    
+                    print(f"🔄 Retrying with: {original_url}")
+                    page.goto(original_url, timeout=60000, wait_until="domcontentloaded")
+                    print(f"✅ Reloaded: {page.url}")
+                except Exception as e:
+                    print(f"⚠️  Could not force original domain: {e}")
+            # ─────────────────────────────────────────────────────────────────────────
             
             # Wait for page to fully render
             print("⏳ Waiting for content to render...")
             time.sleep(3)
 
-            # Wait for product title (correct selector)
+            # Wait for product title with FALLBACK selectors
             print("⏳ Waiting for title...")
-            try:
-                page.wait_for_selector('[data-pl="product-title"]', timeout=10000, state="visible")
-            except Exception as e:
-                print(f"❌ Title not found: {e}")
-                browser.close()
-                return empty_result
-
-            # Extract title using correct selector
-            print("📝 Extracting title...")
-            title_elem = page.query_selector('[data-pl="product-title"]')
-            title = title_elem.text_content().strip() if title_elem else ""
+            title = ""
+            # ── NEW: Multiple title selectors with fallbacks ─────────────────────────
+            title_selectors = [
+                '[data-pl="product-title"]',         # Main selector
+                'h1[data-pl="product-title"]',       # With h1 tag
+                '.productTitle_N8TgC',                # US version
+                '.product-title-text',
+                'h1.product-title',
+                '[class*="product-title"]',          # Any class with product-title
+            ]
+            
+            for selector in title_selectors:
+                try:
+                    elem = page.query_selector(selector)
+                    if elem:
+                        text = elem.text_content().strip()
+                        # Skip if it's just "Aliexpress" (logo) or too short
+                        if text and text.lower() != "aliexpress" and len(text) > 10:
+                            title = text
+                            print(f"✅ Title found with: {selector}")
+                            break
+                except Exception as e:
+                    pass
+            # ─────────────────────────────────────────────────────────────────────────
             
             if not title:
-                print("❌ Title is empty")
+                print(f"❌ Title not found after trying {len(title_selectors)} selectors")
                 browser.close()
                 return empty_result
             
@@ -134,7 +170,9 @@ def extract_aliexpress_product(url: str) -> dict:
                             if ((text.includes('Product Features') || 
                                  text.includes('Product Advantages') ||
                                  text.includes('Multi-functional') ||
-                                 text.includes('Adjustment Design')) &&
+                                 text.includes('Adjustment Design') ||
+                                 text.includes('Description') ||
+                                 text.includes('Details')) &&
                                 text.length > 500) {
                                 
                                 // Extract all text from this element
