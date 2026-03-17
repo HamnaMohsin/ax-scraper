@@ -277,7 +277,7 @@ def scrape_full(request: ScrapeRequest, db: Session = Depends(get_db)):
                 "images":           product.images,
             })
         except Exception as e:
-            fail_count += 1f
+            fail_count += 1
             results.append({"url": url, "success": False, "error": str(e)})
 
     return {"total": len(urls), "success": success_count, "failed": fail_count, "results": results}
