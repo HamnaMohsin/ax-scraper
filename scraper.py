@@ -12,14 +12,13 @@ def clean_text(text: str) -> str:
 
 
 def human_scroll(page):
-    """Scroll slowly to trigger lazy loading"""
     print("⏳ Human-like scrolling...")
     for _ in range(10):
         page.evaluate("window.scrollBy(0, 500)")
         time.sleep(1)
 
 
-def extract_aliexpress_product(url: str) -> dict:
+def extract_aliexpress_product(url: str, retries=2) -> dict:
     print(f"🔍 Scraping: {url}")
 
     empty_result = {
@@ -29,150 +28,181 @@ def extract_aliexpress_product(url: str) -> dict:
         "store_name": ""
     }
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-infobars",
-                "--start-maximized",
-                "--disable-dev-shm-usage",
-            ]
-        )
-        page = browser.new_page(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1366, "height": 768}
-        )
-        page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined
-        })
-        """)
-
+    for attempt in range(retries + 1):
         try:
-            page.goto(url, timeout=90000, wait_until="domcontentloaded")
-            page.wait_for_load_state("networkidle")
-            time.sleep(2)
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-infobars",
+                        "--start-maximized"
+                    ]
+                )
 
-            # -----------------------
-            # TITLE
-            # -----------------------
-            page.wait_for_selector('[data-pl="product-title"]', timeout=10000)
-            title = page.locator('[data-pl="product-title"]').inner_text().strip()
-            print(f"✅ Title: {title[:80]}")
+                page = browser.new_page(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                               "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    viewport={"width": 1366, "height": 768},
+                    locale="en-US"
+                )
 
-            # -----------------------
-            # STORE NAME
-            # -----------------------
-            print("🏪 Extracting store...")
-            store_name = ""
-            try:
-                store_elem = page.locator('[class*="storeName"]').first
-                if store_elem:
-                    store_name = store_elem.inner_text().strip()
-                    print(f"✅ Store: {store_name}")
-            except:
-                print("⚠️ Store not found")
+                # Anti-bot
+                page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                })
+                """)
 
-            # -----------------------
-            # SCROLL (LAZY LOAD FIX)
-            # -----------------------
-            human_scroll(page)
+                # -----------------------
+                # LOAD PAGE
+                # -----------------------
+                page.goto(url, timeout=90000, wait_until="networkidle")
+                page.wait_for_load_state("networkidle")
 
-            # -----------------------
-            # DESCRIPTION (ROBUST FIX ✅)
-            # -----------------------
-            print("📝 Extracting description...")
-            description_text = ""
-            description_images = []
+                # Human behavior (IMPORTANT)
+                time.sleep(5)
+                page.mouse.move(100, 200)
+                page.mouse.wheel(0, 500)
 
-            try:
-                # Wait for ANY description block (not strict)
-                page.wait_for_selector("#product-description", timeout=15000)
+                # -----------------------
+                # BLOCK DETECTION
+                # -----------------------
+                content = page.content().lower()
+                if "captcha" in content or "verify" in content:
+                    print("🚫 BLOCKED by AliExpress")
+                    browser.close()
+                    time.sleep(5)
+                    continue  # retry
 
-                locators = page.locator("#product-description")
-                count = locators.count()
-                print(f"🔍 Found {count} description blocks")
+                # -----------------------
+                # TITLE (FIXED ✅)
+                # -----------------------
+                print("⏳ Extracting title...")
+                title = ""
 
-                for i in range(count):
+                title_selectors = [
+                    '[data-pl="product-title"]',
+                    'h1',
+                    '[class*="title"]'
+                ]
+
+                for selector in title_selectors:
                     try:
-                        block = locators.nth(i)
-                        html = block.inner_html()
+                        page.wait_for_selector(selector, timeout=7000)
+                        title = page.locator(selector).first.inner_text().strip()
 
-                        soup = BeautifulSoup(html, "html.parser")
-
-                        # Remove junk
-                        for tag in soup(["script", "style"]):
-                            tag.decompose()
-
-                        text = soup.get_text(" ", strip=True)
-
-                        # ✅ Heuristic: real description is long
-                        if len(text) > 200:
-                            print(f"✅ Using block {i}")
-
-                            description_text = text
-
-                            # Extract CLEAN images
-                            for img in soup.find_all("img"):
-                                src = img.get("src")
-
-                                if (
-                                    src
-                                    and "alicdn" in src
-                                    and not any(x in src for x in [
-                                        "50x50", "27x27", "icon", "logo"
-                                    ])
-                                ):
-                                    description_images.append(src)
-
-                            break
-
-                    except Exception:
-                        continue
-
-            except Exception as e:
-                print(f"❌ Description failed: {e}")
-
-            # -----------------------
-            # IFRAME FALLBACK (IMPORTANT)
-            # -----------------------
-            if not description_text:
-                print("🔁 Trying iframe fallback...")
-
-                for frame in page.frames:
-                    try:
-                        html = frame.content()
-                        soup = BeautifulSoup(html, "html.parser")
-                        text = soup.get_text(" ", strip=True)
-
-                        if len(text) > 300:
-                            print("✅ Description from iframe")
-                            description_text = text
-
-                            for img in soup.find_all("img"):
-                                src = img.get("src")
-                                if src and "alicdn" in src:
-                                    description_images.append(src)
-
+                        if len(title) > 10:
+                            print(f"✅ Title found using: {selector}")
                             break
                     except:
                         continue
 
-            browser.close()
+                if not title:
+                    print("❌ Title not found (retrying...)")
+                    browser.close()
+                    time.sleep(3)
+                    continue
 
-            return {
-                "title": clean_text(title),
-                "description_text": clean_text(description_text),
-                "images": list(set(description_images))[:20],
-                "store_name": clean_text(store_name),
-            }
+                # -----------------------
+                # STORE
+                # -----------------------
+                print("🏪 Extracting store...")
+                store_name = ""
+                try:
+                    store_elem = page.locator('[class*="storeName"]').first
+                    if store_elem:
+                        store_name = store_elem.inner_text().strip()
+                        print(f"✅ Store: {store_name}")
+                except:
+                    print("⚠️ Store not found")
+
+                # -----------------------
+                # SCROLL
+                # -----------------------
+                human_scroll(page)
+
+                # -----------------------
+                # DESCRIPTION
+                # -----------------------
+                print("📝 Extracting description...")
+                description_text = ""
+                description_images = []
+
+                try:
+                    page.wait_for_selector("#product-description", timeout=20000)
+
+                    locators = page.locator("#product-description")
+                    count = locators.count()
+                    print(f"🔍 Found {count} description blocks")
+
+                    for i in range(count):
+                        try:
+                            html = locators.nth(i).inner_html()
+                            soup = BeautifulSoup(html, "html.parser")
+
+                            for tag in soup(["script", "style"]):
+                                tag.decompose()
+
+                            text = soup.get_text(" ", strip=True)
+
+                            if len(text) > 200:
+                                print(f"✅ Using block {i}")
+                                description_text = text
+
+                                for img in soup.find_all("img"):
+                                    src = img.get("src")
+                                    if (
+                                        src
+                                        and "alicdn" in src
+                                        and not any(x in src for x in ["50x50", "icon", "logo"])
+                                    ):
+                                        description_images.append(src)
+
+                                break
+                        except:
+                            continue
+
+                except Exception as e:
+                    print(f"❌ Description failed: {e}")
+
+                # -----------------------
+                # IFRAME FALLBACK
+                # -----------------------
+                if not description_text:
+                    print("🔁 Trying iframe fallback...")
+                    for frame in page.frames:
+                        try:
+                            html = frame.content()
+                            soup = BeautifulSoup(html, "html.parser")
+                            text = soup.get_text(" ", strip=True)
+
+                            if len(text) > 300:
+                                description_text = text
+                                print("✅ Description from iframe")
+
+                                for img in soup.find_all("img"):
+                                    src = img.get("src")
+                                    if src and "alicdn" in src:
+                                        description_images.append(src)
+                                break
+                        except:
+                            continue
+
+                browser.close()
+
+                return {
+                    "title": clean_text(title),
+                    "description_text": clean_text(description_text),
+                    "images": list(set(description_images))[:20],
+                    "store_name": clean_text(store_name),
+                }
 
         except Exception as e:
-            print(f"❌ Error: {e}")
-            browser.close()
-            return empty_result
+            print(f"❌ Attempt {attempt+1} failed: {e}")
+            time.sleep(3)
+
+    return empty_result
