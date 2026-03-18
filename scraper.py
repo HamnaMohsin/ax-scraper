@@ -230,7 +230,6 @@ def extract_aliexpress_product(url: str) -> dict:
         try:
             page.goto(url, timeout=120000)  # 60 → 120 seconds
             page.wait_for_load_state("networkidle", timeout=30000)  # 15 → 30 seconds  
-            page.wait_for_selector('[data-pl="product-title"]', timeout=15000)  # 10 → 15 seconds
             time.sleep(5) 
 
             # -----------------------
