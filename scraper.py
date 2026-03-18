@@ -12,176 +12,81 @@ def clean_text(text: str) -> str:
 
 
 def extract_store_info_popover(page) -> dict:
-    """
-    Extract store info from hidden popover element.
-    The popover is initially hidden with display: none, and appears on hover.
-    """
+    """Extract store info from hidden popover element."""
     store_info = {}
     
     print("📦 Extracting store info from popover...")
     
-    # =====================
-    # STRATEGY 1: Find and hover store element to trigger popover
-    # =====================
-    print("🔍 Strategy 1: Trigger popover via hover...")
-    try:
-        # Look for store link/element that triggers popover
-        # Common selectors for store elements
-        store_selectors = [
-            '[data-spm*="store"]',
-            '[class*="store"]',
-            'a[href*="store"]',
-            '[class*="seller"]',
-            'span:has-text("Store info")',
-            'div.store-detail--storeTitle--isySny7'
-        ]
-        
-        for selector in store_selectors:
-            try:
-                # Check if element exists
-                elem = page.locator(selector).first
-                if elem.count() > 0:
-                    print(f"   Found element: {selector}")
-                    
-                    # Hover to trigger popover
-                    elem.hover()
-                    time.sleep(1)
-                    
-                    # Wait for popover to become visible
-                    popover = page.locator('.comet-v2-popover-wrap').first
-                    if popover.count() > 0:
-                        # Check if visible (not display: none)
-                        is_visible = popover.evaluate("el => window.getComputedStyle(el).display !== 'none'")
-                        
-                        if is_visible or popover.get_attribute("style") and "display: none" in popover.get_attribute("style"):
-                            print("   ⏳ Waiting for popover animation...")
-                            time.sleep(0.5)
-                            
-                            # Try to get the table from popover
-                            popover_body = page.locator('.comet-v2-popover-body').first
-                            if popover_body.count() > 0:
-                                html = popover_body.inner_html()
-                                soup = BeautifulSoup(html, "html.parser")
-                                table = soup.find("table")
-                                
-                                if table:
-                                    rows = table.find_all("tr")
-                                    for row in rows:
-                                        cols = row.find_all("td")
-                                        if len(cols) == 2:
-                                            key = clean_text(cols[0].get_text()).replace(":", "").strip()
-                                            value = clean_text(cols[1].get_text()).strip()
-                                            if key:
-                                                store_info[key] = value
-                                    
-                                    if store_info:
-                                        print(f"✅ Store info from popover: {store_info}")
-                                        return store_info
-            except Exception as e:
-                print(f"   ⚠️ Selector failed: {e}")
-                continue
-                
-    except Exception as e:
-        print(f"❌ Popover hover strategy failed: {e}")
- 
-    # =====================
-    # STRATEGY 2: Find hidden popover in DOM and make it visible
-    # =====================
-    print("🔍 Strategy 2: Find hidden popover and unhide...")
-    try:
-        # The popover exists in DOM but is hidden
-        popover_wrap = page.locator('.comet-v2-popover-wrap').first
-        
-        if popover_wrap.count() > 0:
-            print("   Found popover-wrap in DOM")
-            
-            # Make it visible via JavaScript
-            popover_wrap.evaluate("""
-                el => {
-                    el.style.display = 'block';
-                    el.style.visibility = 'visible';
-                }
-            """)
-            
-            time.sleep(0.5)
-            
-            # Extract from visible popover
-            popover_body = page.locator('.comet-v2-popover-body').first
-            if popover_body.count() > 0:
-                html = popover_body.inner_html()
-                soup = BeautifulSoup(html, "html.parser")
-                table = soup.find("table")
-                
-                if table:
-                    rows = table.find_all("tr")
-                    for row in rows:
-                        cols = row.find_all("td")
-                        if len(cols) == 2:
-                            key = clean_text(cols[0].get_text()).replace(":", "").strip()
-                            value = clean_text(cols[1].get_text()).strip()
-                            if key:
-                                store_info[key] = value
-                    
-                    if store_info:
-                        print(f"✅ Store info from unhidden popover: {store_info}")
-                        return store_info
-                        
-    except Exception as e:
-        print(f"⚠️ Unhide strategy failed: {e}")
- 
-    # =====================
-    # STRATEGY 3: Extract directly from page HTML (popover exists but hidden)
-    # =====================
-    print("🔍 Strategy 3: Extract from page HTML...")
+    # STRATEGY 1: Extract from page HTML directly
+    print("🔍 Strategy 1: Extract from page HTML...")
     try:
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
         
-        # Find the popover section
-        popover_wrap = soup.find('div', class_='comet-v2-popover-wrap')
-        if popover_wrap:
+        # Find popover
+        popover = soup.find('div', class_='comet-v2-popover-wrap')
+        if popover:
             print("   Found popover in page HTML")
+            table = popover.find("table")
             
-            # Look for store info container
-            store_info_div = popover_wrap.find('div', class_=lambda x: x and 'storeInfo' in x)
-            if store_info_div:
-                table = store_info_div.find("table")
-                if table:
-                    rows = table.find_all("tr")
-                    for row in rows:
-                        cols = row.find_all("td")
-                        if len(cols) == 2:
-                            key = clean_text(cols[0].get_text()).replace(":", "").strip()
-                            value = clean_text(cols[1].get_text()).strip()
-                            if key:
-                                store_info[key] = value
-                    
-                    if store_info:
-                        print(f"✅ Store info from HTML: {store_info}")
-                        return store_info
+            if table:
+                rows = table.find_all("tr")
+                for row in rows:
+                    cols = row.find_all("td")
+                    if len(cols) == 2:
+                        key = clean_text(cols[0].get_text()).replace(":", "").strip()
+                        value = clean_text(cols[1].get_text()).strip()
+                        if key:
+                            store_info[key] = value
+                
+                if store_info:
+                    print(f"✅ Store info from HTML: {store_info}")
+                    return store_info
                         
     except Exception as e:
         print(f"⚠️ HTML extraction failed: {e}")
  
-    # =====================
-    # STRATEGY 4: Search for store info div anywhere in page
-    # =====================
-    print("🔍 Strategy 4: Search all store-detail divs...")
+    # STRATEGY 2: Try hover to trigger popover
+    print("🔍 Strategy 2: Trigger popover via hover...")
+    try:
+        store_elem = page.locator('[class*="store"]').first
+        if store_elem.count() > 0:
+            store_elem.hover()
+            time.sleep(1)
+            
+            html = page.content()
+            soup = BeautifulSoup(html, "html.parser")
+            
+            popover = soup.find('div', class_='comet-v2-popover-wrap')
+            if popover and popover.find("table"):
+                table = popover.find("table")
+                for row in table.find_all("tr"):
+                    cols = row.find_all("td")
+                    if len(cols) == 2:
+                        key = clean_text(cols[0].get_text()).replace(":", "").strip()
+                        value = clean_text(cols[1].get_text()).strip()
+                        if key:
+                            store_info[key] = value
+                
+                if store_info:
+                    print(f"✅ Store info from hover: {store_info}")
+                    return store_info
+    except Exception as e:
+        print(f"⚠️ Hover strategy failed: {e}")
+ 
+    # STRATEGY 3: Search all store-detail divs
+    print("🔍 Strategy 3: Search all store-detail divs...")
     try:
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
         
-        # Find any div with store-detail class
         store_divs = soup.find_all('div', class_=lambda x: x and 'store-detail' in x)
-        print(f"   Found {len(store_divs)} store-detail divs")
         
         for store_div in store_divs:
             table = store_div.find("table")
             if table:
-                rows = table.find_all("tr")
                 temp_info = {}
-                
-                for row in rows:
+                for row in table.find_all("tr"):
                     cols = row.find_all("td")
                     if len(cols) == 2:
                         key = clean_text(cols[0].get_text()).replace(":", "").strip()
@@ -189,7 +94,6 @@ def extract_store_info_popover(page) -> dict:
                         if key:
                             temp_info[key] = value
                 
-                # Check if looks like store info
                 if temp_info and any(k in str(temp_info).lower() 
                                     for k in ['store', 'location', 'name']):
                     print(f"✅ Store info found: {temp_info}")
@@ -200,17 +104,22 @@ def extract_store_info_popover(page) -> dict:
  
     print("⚠️ Could not extract store info")
     return store_info
- 
 
 
 def extract_aliexpress_product(url: str) -> dict:
+    """
+    FINAL FIXED VERSION:
+    - Handles URL redirects
+    - Waits for Angular rendering
+    - Handles lazy-loaded content
+    - No duplicate wait_for_selector
+    """
     print(f"🔍 Scraping: {url}")
 
     empty_result = {
         "title": "",
         "description_text": "",
         "images": [],
-        "store_name": "",
         "store_info": {}
     }
 
@@ -219,7 +128,7 @@ def extract_aliexpress_product(url: str) -> dict:
             headless=True,
             args=[
                 '--disable-blink-features=AutomationControlled',
-                '--disable-dev-shm-usage',  # ← KEY for GCP
+                '--disable-dev-shm-usage',
             ]
         )
         page = browser.new_page(
@@ -228,38 +137,86 @@ def extract_aliexpress_product(url: str) -> dict:
         )
 
         try:
-            page.goto(url, timeout=120000)  # 60 → 120 seconds
-            page.wait_for_load_state("networkidle", timeout=30000)  # 15 → 30 seconds  
-            time.sleep(5) 
+            # =====================
+            # NAVIGATION (Handle redirects)
+            # =====================
+            print("📡 Loading page...")
+            page.goto(url, timeout=120000, wait_until="domcontentloaded")
+            page.wait_for_load_state("networkidle", timeout=30000)
+            time.sleep(3)
+            
+            # ✅ KEY: Get actual URL after potential redirect
+            actual_url = page.url
+            if actual_url != url:
+                print(f"⚠️ URL redirected:")
+                print(f"   Original: {url}")
+                print(f"   Actual:   {actual_url}")
+            else:
+                print(f"✅ No redirect")
 
-            # -----------------------
-            # TITLE
-            # -----------------------
+            # =====================
+            # WAIT FOR ANGULAR RENDERING
+            # =====================
+            print("⏳ Waiting for Angular to render...")
             try:
-                page.wait_for_selector('[data-pl="product-title"]', timeout=10000)
-                title = page.locator('[data-pl="product-title"]').inner_text().strip()
-                print(f"✅ Title: {title[:80]}...")
+                # Wait for specific element that indicates page is ready
+                page.wait_for_selector('[data-pl="product-title"]', timeout=20000)
+                print("✅ Page ready")
             except Exception as e:
-                print(f"❌ Title extraction failed: {e}")
-                title = ""
+                print(f"⚠️ Timeout waiting for title selector: {e}")
+                # Continue anyway - try to extract what we can
 
-            # -----------------------
-            # STORE INFO (IMPROVED)
-            # -----------------------
+            # =====================
+            # TITLE
+            # =====================
+            title = ""
+            print("📌 Extracting title...")
+            try:
+                # Try main selector first
+                title_elem = page.locator('[data-pl="product-title"]').first
+                if title_elem.count() > 0:
+                    title = title_elem.inner_text().strip()
+                    print(f"✅ Title: {title[:80]}...")
+                else:
+                    # Fallback to h1
+                    title = page.locator('h1').first.inner_text().strip()
+                    print(f"✅ Title (h1): {title[:80]}...")
+                    
+            except Exception as e:
+                print(f"⚠️ Title extraction: {e}")
+                # Try from HTML
+                try:
+                    soup = BeautifulSoup(page.content(), "html.parser")
+                    h1 = soup.find("h1")
+                    if h1:
+                        title = h1.get_text().strip()
+                        print(f"✅ Title (HTML): {title[:80]}...")
+                except:
+                    pass
+
+            # =====================
+            # STORE INFO
+            # =====================
             store_info = extract_store_info_popover(page)
 
-            # -----------------------
-            # SCROLL
-            # -----------------------
-            print("⏳ Human-like scrolling...")
-            for _ in range(10):
-                page.evaluate("window.scrollBy(0, 500)")
-                time.sleep(0.8)
-            time.sleep(2)
+            # =====================
+            # SCROLL FOR LAZY-LOADED CONTENT
+            # =====================
+            print("⏳ Scrolling to load lazy content...")
+            try:
+                for i in range(5):
+                    page.evaluate("window.scrollBy(0, window.innerHeight)")
+                    time.sleep(0.8)
+                
+                # Scroll back to top
+                page.evaluate("window.scrollTo(0, 0)")
+                time.sleep(1)
+            except Exception as e:
+                print(f"⚠️ Scroll error: {e}")
 
-            # -----------------------
+            # =====================
             # DESCRIPTION
-            # -----------------------
+            # =====================
             print("📝 Extracting description...")
             description_text = ""
             description_html = ""
@@ -273,64 +230,65 @@ def extract_aliexpress_product(url: str) -> dict:
             
             for selector in desc_selectors:
                 try:
-                    page.wait_for_selector(selector, timeout=8000)
+                    # Don't wait too long - might not exist
                     locators = page.locator(selector)
                     count = locators.count()
-                    print(f"🔍 Found {count} desc blocks for {selector}")
                     
-                    for i in range(min(count, 3)):
-                        block = locators.nth(i)
-                        html = block.inner_html()
-                        soup = BeautifulSoup(html, "html.parser")
+                    if count > 0:
+                        print(f"🔍 Found {count} desc blocks for {selector}")
                         
-                        for tag in soup(["script", "style", "iframe"]):
-                            tag.decompose()
+                        for i in range(min(count, 3)):
+                            block = locators.nth(i)
+                            html = block.inner_html()
+                            soup = BeautifulSoup(html, "html.parser")
+                            
+                            for tag in soup(["script", "style", "iframe"]):
+                                tag.decompose()
+                            
+                            text = soup.get_text(" ", strip=True)
+                            
+                            if (len(text) > 300 and 
+                                any(word in text.lower() for word in 
+                                    ['feature', 'spec', 'parameter', 'function', 'include'])):
+                                print(f"✅ Description: {len(text)} chars")
+                                description_text = text
+                                description_html = html
+                                break
                         
-                        text = soup.get_text(" ", strip=True)
-                        
-                        if (len(text) > 300 and 
-                            any(word in text.lower() for word in 
-                                ['feature', 'spec', 'parameter', 'function', 'include', 'package', 'material'])):
-                            print(f"✅ Description block {i}: {len(text)} chars")
-                            description_text = text
-                            description_html = html
+                        if description_text:
                             break
-                    
-                    if description_text:
-                        break
                 except:
                     continue
 
-            # -----------------------
+            # =====================
             # IMAGES
-            # -----------------------
+            # =====================
             print("🖼️ Extracting images...")
             description_images = []
             
-            gallery_selectors = [
-                'img[height>=400][src*="alicdn"]',
-                '.product-gallery img[src*="alicdn"]',
-                '[data-spm*="image"] img',
-                'img[src*="-"][src*="alicdn"]'
-            ]
-            
-            for selector in gallery_selectors:
-                try:
-                    imgs = page.locator(selector).all(max_items=15)
-                    for img in imgs:
-                        src = img.get_attribute("src") or img.get_attribute("data-src")
-                        if src and "alicdn" in src and len(src) > 50:
+            try:
+                # Try multiple image selectors
+                for selector in ['img[src*="alicdn"]', 'img[data-src*="alicdn"]', 'picture img']:
+                    try:
+                        imgs = page.locator(selector).all(max_items=20)
+                        for img in imgs:
+                            src = img.get_attribute("src") or img.get_attribute("data-src")
+                            if src and "alicdn" in src and len(src) > 50:
+                                description_images.append(src)
+                    except:
+                        continue
+                
+                # Also from description HTML
+                if description_html:
+                    soup = BeautifulSoup(description_html, "html.parser")
+                    for img in soup.find_all("img"):
+                        src = img.get("src") or img.get("data-src")
+                        if src and "alicdn" in src:
                             description_images.append(src)
-                except:
-                    continue
-            
-            if description_html:
-                soup = BeautifulSoup(description_html, "html.parser")
-                for img in soup.find_all("img"):
-                    src = img.get("src") or img.get("data-src")
-                    if src and "alicdn" in src and not any(x in src for x in ["50x50", "icon", "logo"]):
-                        description_images.append(src)
-            
+                
+            except Exception as e:
+                print(f"⚠️ Image extraction error: {e}")
+
             description_images = list(set(description_images))[:20]
             print(f"✅ Images: {len(description_images)}")
 
@@ -339,8 +297,9 @@ def extract_aliexpress_product(url: str) -> dict:
             return {
                 "title": clean_text(title),
                 "description_text": clean_text(description_text),
-                "images": list(set(description_images))[:20],
-                "store_info": store_info
+                "images": description_images,
+                "store_info": store_info,
+                "actual_url": actual_url  # Include actual URL for debugging
             }
 
         except Exception as e:
@@ -352,3 +311,14 @@ def extract_aliexpress_product(url: str) -> dict:
             except:
                 pass
             return empty_result
+
+
+if __name__ == "__main__":
+    # Test with original URL (it will redirect)
+    url = "https://www.aliexpress.com/item/1005010735189221.html"
+    result = extract_aliexpress_product(url)
+    print("\n🎉 FINAL RESULT:")
+    print(f"Title: {result.get('title', '')[:80]}")
+    print(f"Store: {result.get('store_info', {})}")
+    print(f"Images: {len(result.get('images', []))} found")
+    print(f"Description: {len(result.get('description_text', ''))} chars")
