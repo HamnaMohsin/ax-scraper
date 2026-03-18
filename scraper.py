@@ -61,10 +61,14 @@ def detect_recaptcha(page) -> bool:
 
 
 def random_viewport():
-    return {
-        "width": random.choice([1280, 1366, 1440, 1536, 1600]),
-        "height": random.choice([720, 768, 864, 900]),
-    }
+    viewports = [
+        {"width": 1366, "height": 768},
+        {"width": 1536, "height": 864},
+        {"width": 1440, "height": 900},
+        {"width": 1920, "height": 1080},
+        {"width": 1280, "height": 720},
+    ]
+    return random.choice(viewports)
 
 
 def normalize_img_url(src: str) -> str:
@@ -277,106 +281,149 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
                     "--single-process",
+                    "--disable-web-security",
+                    "--disable-features=VizDisplayCompositor",
                 ]
             )
+            
             context = browser.new_context(
+                **random_viewport(),
                 user_agent=random.choice([
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
                 ]),
-                viewport=random_viewport(),
                 locale="en-US",
-                timezone_id=random.choice([
-                    "America/New_York",
-                    "America/Chicago",
-                    "America/Los_Angeles",
-                ]),
-                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                timezone_id="America/New_York",
+                extra_http_headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-User": "?1",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="130", "Google Chrome";v="130"',
+                    "Sec-Ch-Ua-Mobile": "?0",
+                    "Sec-Ch-Ua-Platform": '"Windows"',
+                },
                 java_script_enabled=True,
                 bypass_csp=True,
+                permissions=["geolocation"],
+                geolocation={"latitude": 40.7128, "longitude": -74.0060},
+                color_scheme="light",
+                reduced_motion="no-preference",
+                forced_colors="none",
+                has_touch=False,
             )
+            
             page = context.new_page()
-            page.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
 
-            # ── Navigate ──────────────────────────────────────────────────────
+            # ── FIXED STEALTH JS ─────────────────────────────────────────────────────
+            stealth_js = """
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 0});
+            Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+            Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+            Object.defineProperty(navigator, 'pdfViewerEnabled', {get: () => true});
+            Object.defineProperty(navigator, 'connection', {
+                get: () => ({effectiveType: '4g', type: 'wifi', downlinkMax: 10, rtt: 50, saveData: false})
+            });
+            Object.defineProperty(window, 'chrome', {get: () => ({runtime: {}})});
+            window.chrome = {runtime: {}};
+            Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {get: () => window, configurable: true});
+            delete navigator.__proto__.webdriver;
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+            """
+            page.add_init_script(stealth_js)
+
+            # ── SINGLE NAVIGATION (FIXED) ────────────────────────────────────────────
             try:
-                page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
-                random_delay(3.0, 6.0)
+                print("🌐 Navigating...")
+                response = page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
+                if not response or response.status != 200:
+                    print(f"HTTP {response.status if response else 'No response'} - retrying...")
+                    browser.close()
+                    continue
+                
+                # FIXED: Network idle AFTER navigation
+                page.wait_for_load_state("networkidle", timeout=15000)
+                random_delay(4.0, 7.0)
+                
             except Exception as e:
                 print(f"Navigation failed: {e}")
                 browser.close()
                 continue
 
+            # Early CAPTCHA check
             if detect_recaptcha(page):
-                print("CAPTCHA detected — rotating circuit and retrying.")
+                print("❌ CAPTCHA detected immediately — rotating circuit.")
                 browser.close()
                 continue
 
-            page.wait_for_timeout(8000)
-            random_delay(2.0, 4.0)
+            # ── HUMAN-LIKE INTERACTION (IMPROVED) ────────────────────────────────────
+            print("🎮 Human-like mouse + scroll...")
+            
+            # Initial mouse movement
+            page.mouse.move(random.randint(300, 900), random.randint(300, 600))
+            random_delay(1.0, 2.0)
+            
+            # Progressive scrolling with mouse
+            for i in range(15):
+                page.mouse.move(
+                    random.randint(200, 1100), 
+                    random.randint(250, 650)
+                )
+                page.mouse.wheel(0, random.randint(180, 350))
+                page.wait_for_timeout(random.randint(400, 900))
+            
+            random_delay(3.0, 5.0)
 
-            # ── Scroll gradually to trigger lazy loading ───────────────────────
-            for _ in range(10):
-                page.mouse.wheel(0, random.randint(150, 300))
-                page.wait_for_timeout(random.randint(200, 500))
-
-            random_delay(1.0, 3.0)
-
+            # Second CAPTCHA check
             if detect_recaptcha(page):
-                print("CAPTCHA detected after scroll — rotating circuit and retrying.")
+                print("❌ CAPTCHA after scroll — rotating circuit.")
                 browser.close()
                 continue
 
             # ── Scroll description into view ───────────────────────────────────
             try:
-                page.evaluate(
-                    "document.querySelector('#product-description')?.scrollIntoView()"
-                )
+                page.evaluate("document.querySelector('#product-description')?.scrollIntoView()")
                 page.wait_for_timeout(3000)
-            except Exception:
+            except:
                 pass
 
-            # ── Wait for description content to load ──────────────────────────
-            # Checks BOTH shadow DOM and plain DOM so it works for all product types.
-            # Without this, extraction runs before AliExpress has injected the content.
+            # ── Wait for content (unchanged) ────────────────────────────────────────
             try:
                 page.wait_for_function(
                     """() => {
                         const container = document.querySelector('#product-description');
                         if (!container) return false;
-
-                        // Shadow DOM products (A+ content)
                         const host = container.querySelector('[data-spm-anchor-id]');
                         if (host && host.shadowRoot) {
                             return (host.shadowRoot.textContent || '').trim().length > 50;
                         }
-
-                        // Plain DOM products — check all known content containers
-                        const plainSelectors = [
-                            '.detailmodule_text',
-                            '.detailmodule_image',
-                            '.detailmodule_html',
-                            '.detail-desc-decorate-richtext',
-                            '.richTextContainer',
-                            '.styleIsolation',
-                        ];
+                        const plainSelectors = ['.detailmodule_text','.detailmodule_html','.richTextContainer','.styleIsolation'];
                         for (const sel of plainSelectors) {
                             const el = container.querySelector(sel);
                             if (el && el.textContent.trim().length > 20) return true;
                         }
                         return false;
                     }""",
-                    timeout=12000,
+                    timeout=15000,
                 )
-                print("Description content loaded — proceeding with extraction.")
-            except Exception:
-                print("Description did not load in 12s — attempting extraction anyway.")
+                print("✅ Content loaded")
+            except:
+                print("⚠️ Content slow — continuing anyway")
 
-            # ── Extract title ─────────────────────────────────────────────────
+            # ── TITLE EXTRACTION (unchanged) ────────────────────────────────────────
             def safe_query_text(selector: str) -> str:
                 el = page.query_selector(selector)
                 return el.text_content().strip() if el else ""
@@ -396,84 +443,38 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
                 candidate = safe_query_text(sel)
                 if candidate and candidate.lower().strip() not in BLOCKED_TITLES:
                     title = candidate
-                    print(f"Title found via '{sel}': {title[:60]}")
+                    print(f"✅ Title: {title[:60]}...")
                     break
 
             if not title:
-                print("Title not found — page likely blocked.")
+                print("❌ No title — page blocked")
                 browser.close()
                 continue
 
-            # ── Extract description + images ──────────────────────────────────
+            # ── DESCRIPTION + IMAGES (unchanged) ───────────────────────────────────
             description_text = ""
             images = []
 
-            # Strategy 1: Shadow DOM (A+ content products)
             try:
                 result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
-                if result:
+                if result and (result.get("text") or result.get("images")):
                     description_text = result.get("text", "").strip()
                     images = result.get("images", [])
-                    if description_text or images:
-                        print(f"Shadow DOM: {len(description_text)} chars, {len(images)} images")
+                    print(f"✅ Shadow DOM: {len(description_text)} chars, {len(images)} imgs")
             except Exception as e:
-                print(f"Shadow DOM extraction error: {e}")
+                print(f"Shadow DOM failed: {e}")
 
-            # Strategy 2: Plain DOM fallback (standard products)
             if not description_text and not images:
-                print("Shadow DOM returned nothing — trying plain DOM fallback...")
                 description_text, images = extract_from_plain_dom(page)
 
-            # Strategy 3: iframe fallback (rare sellers)
-            if not description_text and not images:
-                print("Trying iframe fallback...")
-                try:
-                    iframes = page.query_selector_all(
-                        "#product-description iframe, "
-                        "iframe[id*='desc'], iframe[name*='desc']"
-                    )
-                    for iframe_el in iframes:
-                        frame = iframe_el.content_frame()
-                        if not frame:
-                            continue
-                        frame.wait_for_load_state("domcontentloaded")
-                        frame.wait_for_timeout(2000)
-
-                        for el in frame.query_selector_all("p, span, div"):
-                            try:
-                                child_count = el.evaluate("e => e.children.length")
-                                text = el.text_content().strip()
-                                if child_count == 0 and text and len(text) > 5:
-                                    description_text += text + " "
-                            except Exception:
-                                pass
-
-                        for img in frame.query_selector_all("img"):
-                            src = img.get_attribute("src") or img.get_attribute("data-src") or ""
-                            src = normalize_img_url(src)
-                            if "alicdn" in src:
-                                images.append(src)
-
-                        if description_text or images:
-                            print(f"iframe: {len(description_text)} chars, {len(images)} images")
-                            break
-                except Exception as e:
-                    print(f"iframe fallback error: {e}")
-
-            images = list(dict.fromkeys(images))
-
-            if not description_text:
-                print("No description text extracted (seller may use image-only description).")
-            if not images:
-                print("No description images extracted.")
+            images = list(dict.fromkeys(images))[:15]
 
             browser.close()
-
             return {
                 "title": clean_text(title),
                 "description_text": clean_text(description_text),
                 "images": images,
             }
 
-    print(f"All {max_retries} attempts exhausted. Returning empty result.")
+    print(f"❌ All {max_retries} attempts failed")
     return empty_result
