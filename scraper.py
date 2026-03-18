@@ -253,37 +253,22 @@ def extract_aliexpress_product(url: str) -> dict:
                 if current_url != url:
                     print(f"⚠️ Redirected to: {current_url}")
                 
-                # CAPTCHA CHECK
+                # CAPTCHA CHECK (early)
                 if is_captcha_page(page):
                     print("⚠️ CAPTCHA detected - rotating IP and retrying...")
                     browser.close()
                     continue
                 
-                # Wait for content
-                print("⏳ Waiting for content to render...")
-                max_wait = 15
-                start_time = time.time()
-                content_loaded = False
+                # SIMPLE WAIT - don't poll content repeatedly!
+                print("⏳ Waiting for page to render...")
+                time.sleep(8)
                 
-                while time.time() - start_time < max_wait:
-                    try:
-                        html = page.content()
-                        if "alicdn" in html and len(html) > 100000:
-                            content_loaded = True
-                            break
-                    except:
-                        pass
-                    time.sleep(0.5)
-                
-                if not content_loaded:
-                    print("⚠️ Content may not have fully loaded, continuing anyway...")
-                
-                # SCROLL
+                # NATURAL SCROLLING
                 print("⏳ Scrolling to load images...")
                 try:
-                    for _ in range(5):
-                        page.mouse.wheel(0, random.randint(200, 400))
-                        page.wait_for_timeout(random.randint(300, 800))
+                    for _ in range(3):  # 3 scrolls (human-like)
+                        page.mouse.wheel(0, random.randint(150, 300))
+                        time.sleep(random.uniform(0.2, 0.6))
                     page.evaluate("window.scrollTo(0, 0)")
                     time.sleep(1)
                 except Exception as e:
@@ -372,7 +357,7 @@ def extract_aliexpress_product(url: str) -> dict:
                     "title": clean_text(title),
                     "description_text": clean_text(description_text),
                     "images": description_images,
-                    "store_info": store_info
+                   # "store_info": store_info
                 }
                 
                 print(f"✅ Extraction successful on attempt {attempt + 1}")
