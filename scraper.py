@@ -21,8 +21,6 @@ def extract_store_info_universal(page) -> dict:
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
         
-        # Try multiple ways to find store info (covers both domain versions)
-        
         # Method 1: Popover
         popover = soup.find('div', class_='comet-v2-popover-wrap')
         if popover:
@@ -125,11 +123,10 @@ def extract_title_universal(page) -> str:
     return ""
 
 
-def extract_aliexpress_with_retry(url: str) -> dict:
+def extract_aliexpress_product(url: str) -> dict:
     """
-    Extract with retry logic:
-    1. First try with waitUntil="domcontentloaded" (before redirect completes)
-    2. If fails, try normally (accept redirect)
+    Extract AliExpress product data.
+    Handles redirects and works with both .com and .us domains.
     """
     
     print(f"🔍 Scraping: {url}")
@@ -156,32 +153,28 @@ def extract_aliexpress_with_retry(url: str) -> dict:
 
         try:
             # =====================
-            # NAVIGATION - Try to stop redirect
+            # NAVIGATION
             # =====================
             print("📡 Loading page...")
             
-            # Try method 1: Stop at domcontentloaded (before redirect)
-            print("   Attempt 1: Loading without full network idle...")
+            # Stop at domcontentloaded (before redirect completes)
             page.goto(url, timeout=120000, wait_until="domcontentloaded")
-            time.sleep(2)  # Let initial content render
+            time.sleep(2)
             
-            # Check if we're still on original URL
             current_url = page.url
             if current_url == url:
-                print(f"✅ No redirect detected - still on {url}")
+                print(f"✅ No redirect")
             else:
                 print(f"⚠️ Redirected to: {current_url}")
-                # Wait a bit more for new page to render
-                time.sleep(3)
             
-            # Make sure content is loaded
+            # Try to wait for network if possible
             try:
-                page.wait_for_load_state("networkidle", timeout=20000)
+                page.wait_for_load_state("networkidle", timeout=15000)
             except:
-                print("   Network didn't go idle, continuing anyway...")
+                print("   Network didn't go idle, continuing...")
 
             # =====================
-            # SCROLL BEFORE EXTRACTING (for lazy content)
+            # SCROLL BEFORE EXTRACTING (trigger lazy loading)
             # =====================
             print("⏳ Scrolling to trigger lazy loading...")
             try:
@@ -190,20 +183,22 @@ def extract_aliexpress_with_retry(url: str) -> dict:
                     time.sleep(0.5)
                 page.evaluate("window.scrollTo(0, 0)")
                 time.sleep(1)
-            except:
-                print("   Scroll skipped")
+            except Exception as e:
+                print(f"   Scroll error: {e}")
 
             # =====================
-            # EXTRACT DATA (universal selectors)
+            # TITLE (Universal selectors)
             # =====================
-            
-            # Title
             title = extract_title_universal(page)
             
-            # Store info
+            # =====================
+            # STORE INFO (Universal extraction)
+            # =====================
             store_info = extract_store_info_universal(page)
             
-            # Description
+            # =====================
+            # DESCRIPTION
+            # =====================
             print("📝 Extracting description...")
             description_text = ""
             
@@ -233,7 +228,9 @@ def extract_aliexpress_with_retry(url: str) -> dict:
                 except:
                     continue
 
-            # Images
+            # =====================
+            # IMAGES
+            # =====================
             print("🖼️ Extracting images...")
             description_images = []
             
@@ -258,8 +255,7 @@ def extract_aliexpress_with_retry(url: str) -> dict:
                 "title": clean_text(title),
                 "description_text": clean_text(description_text),
                 "images": description_images,
-                "store_info": store_info,
-                "url": current_url
+                "store_info": store_info
             }
 
         except Exception as e:
@@ -271,14 +267,3 @@ def extract_aliexpress_with_retry(url: str) -> dict:
             except:
                 pass
             return empty_result
-
-
-if __name__ == "__main__":
-    url = "https://www.aliexpress.com/item/1005010735189221.html"
-    result = extract_aliexpress_with_retry(url)
-    print("\n🎉 FINAL RESULT:")
-    print(f"URL: {result.get('url', '')}")
-    print(f"Title: {result.get('title', '')[:80]}")
-    print(f"Store: {result.get('store_info', {})}")
-    print(f"Images: {len(result.get('images', []))} found")
-    print(f"Description: {len(result.get('description_text', ''))} chars")
