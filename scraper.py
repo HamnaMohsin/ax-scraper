@@ -41,18 +41,39 @@ def extract_aliexpress_product(url: str) -> dict:
     with sync_playwright() as p:
         try:
             # Launch browser
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                    "--start-maximized",
+                    "--disable-dev-shm-usage", 
+                ]
+            )
+            #page = browser.new_page()
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1366, "height": 768}
+            )
+            page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            })
+            """)
             # Navigate to URL
             print("⏳ Loading page...")
-            page.goto(base_url, timeout=60000, wait_until="domcontentloaded")
+            page.goto(base_url, timeout=90000, wait_until="domcontentloaded")
             
             print(f"✅ Loaded: {page.url}")
             
             # Wait for page to fully render
             print("⏳ Waiting for content to render...")
-            time.sleep(3)
+            page.wait_for_load_state("networkidle")
+            time.sleep(2)
 
             # Wait for product title (correct selector)
             print("⏳ Waiting for title...")
@@ -213,7 +234,7 @@ def extract_aliexpress_product(url: str) -> dict:
 
             browser.close()
 
-            # Verify we got something
+            # Verify we got somethinghttps://github.com/HamnaMohsin/ax-scraper/blob/main/scraper.py
             if not title:
                 print("❌ No title extracted")
                 return empty_result
