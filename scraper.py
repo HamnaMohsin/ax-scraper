@@ -11,55 +11,23 @@ def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def extract_store_info_popover(page) -> dict:
-    """Extract store info from hidden popover element."""
+def extract_store_info_universal(page) -> dict:
+    """Extract store info - works for both .com and .us domains"""
     store_info = {}
     
-    print("📦 Extracting store info from popover...")
+    print("📦 Extracting store info...")
     
-    # STRATEGY 1: Extract from page HTML directly
-    print("🔍 Strategy 1: Extract from page HTML...")
     try:
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
         
-        # Find popover
+        # Try multiple ways to find store info (covers both domain versions)
+        
+        # Method 1: Popover
         popover = soup.find('div', class_='comet-v2-popover-wrap')
         if popover:
-            print("   Found popover in page HTML")
             table = popover.find("table")
-            
             if table:
-                rows = table.find_all("tr")
-                for row in rows:
-                    cols = row.find_all("td")
-                    if len(cols) == 2:
-                        key = clean_text(cols[0].get_text()).replace(":", "").strip()
-                        value = clean_text(cols[1].get_text()).strip()
-                        if key:
-                            store_info[key] = value
-                
-                if store_info:
-                    print(f"✅ Store info from HTML: {store_info}")
-                    return store_info
-                        
-    except Exception as e:
-        print(f"⚠️ HTML extraction failed: {e}")
- 
-    # STRATEGY 2: Try hover to trigger popover
-    print("🔍 Strategy 2: Trigger popover via hover...")
-    try:
-        store_elem = page.locator('[class*="store"]').first
-        if store_elem.count() > 0:
-            store_elem.hover()
-            time.sleep(1)
-            
-            html = page.content()
-            soup = BeautifulSoup(html, "html.parser")
-            
-            popover = soup.find('div', class_='comet-v2-popover-wrap')
-            if popover and popover.find("table"):
-                table = popover.find("table")
                 for row in table.find_all("tr"):
                     cols = row.find_all("td")
                     if len(cols) == 2:
@@ -67,53 +35,103 @@ def extract_store_info_popover(page) -> dict:
                         value = clean_text(cols[1].get_text()).strip()
                         if key:
                             store_info[key] = value
-                
-                if store_info:
-                    print(f"✅ Store info from hover: {store_info}")
-                    return store_info
-    except Exception as e:
-        print(f"⚠️ Hover strategy failed: {e}")
- 
-    # STRATEGY 3: Search all store-detail divs
-    print("🔍 Strategy 3: Search all store-detail divs...")
-    try:
-        html = page.content()
-        soup = BeautifulSoup(html, "html.parser")
         
-        store_divs = soup.find_all('div', class_=lambda x: x and 'store-detail' in x)
-        
-        for store_div in store_divs:
-            table = store_div.find("table")
-            if table:
-                temp_info = {}
-                for row in table.find_all("tr"):
-                    cols = row.find_all("td")
-                    if len(cols) == 2:
-                        key = clean_text(cols[0].get_text()).replace(":", "").strip()
-                        value = clean_text(cols[1].get_text()).strip()
-                        if key:
-                            temp_info[key] = value
-                
-                if temp_info and any(k in str(temp_info).lower() 
-                                    for k in ['store', 'location', 'name']):
-                    print(f"✅ Store info found: {temp_info}")
-                    return temp_info
+        # Method 2: Any store-detail div
+        if not store_info:
+            for div in soup.find_all('div', class_=lambda x: x and 'store' in str(x).lower()):
+                table = div.find("table")
+                if table:
+                    for row in table.find_all("tr"):
+                        cols = row.find_all("td")
+                        if len(cols) == 2:
+                            key = clean_text(cols[0].get_text()).replace(":", "").strip()
+                            value = clean_text(cols[1].get_text()).strip()
+                            if key:
+                                store_info[key] = value
                     
+                    if store_info:
+                        break
+        
+        # Method 3: Search for seller/store name directly
+        if not store_info:
+            for elem in soup.find_all(['span', 'div', 'a']):
+                text = elem.get_text().strip()
+                if 'store' in text.lower() and len(text) > 5:
+                    parent = elem.find_parent('div')
+                    if parent:
+                        table = parent.find("table")
+                        if table:
+                            for row in table.find_all("tr"):
+                                cols = row.find_all("td")
+                                if len(cols) == 2:
+                                    key = clean_text(cols[0].get_text()).replace(":", "").strip()
+                                    value = clean_text(cols[1].get_text()).strip()
+                                    if key:
+                                        store_info[key] = value
+                    
+                    if store_info:
+                        break
+        
+        if store_info:
+            print(f"✅ Store info: {store_info}")
+        else:
+            print("⚠️ Could not extract store info")
+            
     except Exception as e:
-        print(f"⚠️ Div search failed: {e}")
- 
-    print("⚠️ Could not extract store info")
+        print(f"⚠️ Store info extraction error: {e}")
+    
     return store_info
 
 
-def extract_aliexpress_product(url: str) -> dict:
+def extract_title_universal(page) -> str:
+    """Extract title - works for both .com and .us domains"""
+    
+    print("📌 Extracting title...")
+    
+    # Try multiple selectors (different for each domain)
+    selectors_to_try = [
+        ('[data-pl="product-title"]', "product-title selector"),
+        ('h1', "h1 heading"),
+        ('[class*="product-name"]', "product-name class"),
+        ('[class*="title"]', "generic title class"),
+        ('span[class*="title"]', "span with title class"),
+    ]
+    
+    for selector, description in selectors_to_try:
+        try:
+            elem = page.locator(selector).first
+            if elem.count() > 0:
+                title = elem.inner_text().strip()
+                if title and len(title) > 5:  # Valid title
+                    print(f"✅ Title ({description}): {title[:80]}...")
+                    return title
+        except:
+            continue
+    
+    # Fallback: Extract from HTML
+    try:
+        soup = BeautifulSoup(page.content(), "html.parser")
+        
+        # Try to find any reasonable title
+        for tag in soup.find_all(['h1', 'h2', 'span', 'div']):
+            text = tag.get_text().strip()
+            if text and 15 < len(text) < 200:  # Reasonable title length
+                print(f"✅ Title (HTML fallback): {text[:80]}...")
+                return text
+    except:
+        pass
+    
+    print("⚠️ Could not extract title")
+    return ""
+
+
+def extract_aliexpress_with_retry(url: str) -> dict:
     """
-    FINAL FIXED VERSION:
-    - Handles URL redirects
-    - Waits for Angular rendering
-    - Handles lazy-loaded content
-    - No duplicate wait_for_selector
+    Extract with retry logic:
+    1. First try with waitUntil="domcontentloaded" (before redirect completes)
+    2. If fails, try normally (accept redirect)
     """
+    
     print(f"🔍 Scraping: {url}")
 
     empty_result = {
@@ -138,156 +156,98 @@ def extract_aliexpress_product(url: str) -> dict:
 
         try:
             # =====================
-            # NAVIGATION (Handle redirects)
+            # NAVIGATION - Try to stop redirect
             # =====================
             print("📡 Loading page...")
-            page.goto(url, timeout=120000, wait_until="domcontentloaded")
-            page.wait_for_load_state("networkidle", timeout=30000)
-            time.sleep(3)
             
-            # ✅ KEY: Get actual URL after potential redirect
-            actual_url = page.url
-            if actual_url != url:
-                print(f"⚠️ URL redirected:")
-                print(f"   Original: {url}")
-                print(f"   Actual:   {actual_url}")
+            # Try method 1: Stop at domcontentloaded (before redirect)
+            print("   Attempt 1: Loading without full network idle...")
+            page.goto(url, timeout=120000, wait_until="domcontentloaded")
+            time.sleep(2)  # Let initial content render
+            
+            # Check if we're still on original URL
+            current_url = page.url
+            if current_url == url:
+                print(f"✅ No redirect detected - still on {url}")
             else:
-                print(f"✅ No redirect")
-
-            # =====================
-            # WAIT FOR ANGULAR RENDERING
-            # =====================
-            print("⏳ Waiting for Angular to render...")
+                print(f"⚠️ Redirected to: {current_url}")
+                # Wait a bit more for new page to render
+                time.sleep(3)
+            
+            # Make sure content is loaded
             try:
-                # Wait for specific element that indicates page is ready
-                page.wait_for_selector('[data-pl="product-title"]', timeout=20000)
-                print("✅ Page ready")
-            except Exception as e:
-                print(f"⚠️ Timeout waiting for title selector: {e}")
-                # Continue anyway - try to extract what we can
+                page.wait_for_load_state("networkidle", timeout=20000)
+            except:
+                print("   Network didn't go idle, continuing anyway...")
 
             # =====================
-            # TITLE
+            # SCROLL BEFORE EXTRACTING (for lazy content)
             # =====================
-            title = ""
-            print("📌 Extracting title...")
+            print("⏳ Scrolling to trigger lazy loading...")
             try:
-                # Try main selector first
-                title_elem = page.locator('[data-pl="product-title"]').first
-                if title_elem.count() > 0:
-                    title = title_elem.inner_text().strip()
-                    print(f"✅ Title: {title[:80]}...")
-                else:
-                    # Fallback to h1
-                    title = page.locator('h1').first.inner_text().strip()
-                    print(f"✅ Title (h1): {title[:80]}...")
-                    
-            except Exception as e:
-                print(f"⚠️ Title extraction: {e}")
-                # Try from HTML
-                try:
-                    soup = BeautifulSoup(page.content(), "html.parser")
-                    h1 = soup.find("h1")
-                    if h1:
-                        title = h1.get_text().strip()
-                        print(f"✅ Title (HTML): {title[:80]}...")
-                except:
-                    pass
-
-            # =====================
-            # STORE INFO
-            # =====================
-            store_info = extract_store_info_popover(page)
-
-            # =====================
-            # SCROLL FOR LAZY-LOADED CONTENT
-            # =====================
-            print("⏳ Scrolling to load lazy content...")
-            try:
-                for i in range(5):
+                for i in range(3):
                     page.evaluate("window.scrollBy(0, window.innerHeight)")
-                    time.sleep(0.8)
-                
-                # Scroll back to top
+                    time.sleep(0.5)
                 page.evaluate("window.scrollTo(0, 0)")
                 time.sleep(1)
-            except Exception as e:
-                print(f"⚠️ Scroll error: {e}")
+            except:
+                print("   Scroll skipped")
 
             # =====================
-            # DESCRIPTION
+            # EXTRACT DATA (universal selectors)
             # =====================
+            
+            # Title
+            title = extract_title_universal(page)
+            
+            # Store info
+            store_info = extract_store_info_universal(page)
+            
+            # Description
             print("📝 Extracting description...")
             description_text = ""
-            description_html = ""
-
+            
             desc_selectors = [
                 "#product-description",
-                '[class*="product-description"]',
-                '[class*="detail-content"]',
-                '.product-detail__description'
+                '[class*="description"]',
+                '[id*="description"]',
+                '[class*="detail"]',
             ]
             
             for selector in desc_selectors:
                 try:
-                    # Don't wait too long - might not exist
-                    locators = page.locator(selector)
-                    count = locators.count()
-                    
-                    if count > 0:
-                        print(f"🔍 Found {count} desc blocks for {selector}")
+                    elem = page.locator(selector).first
+                    if elem.count() > 0:
+                        html = elem.inner_html()
+                        soup = BeautifulSoup(html, "html.parser")
                         
-                        for i in range(min(count, 3)):
-                            block = locators.nth(i)
-                            html = block.inner_html()
-                            soup = BeautifulSoup(html, "html.parser")
-                            
-                            for tag in soup(["script", "style", "iframe"]):
-                                tag.decompose()
-                            
-                            text = soup.get_text(" ", strip=True)
-                            
-                            if (len(text) > 300 and 
-                                any(word in text.lower() for word in 
-                                    ['feature', 'spec', 'parameter', 'function', 'include'])):
-                                print(f"✅ Description: {len(text)} chars")
-                                description_text = text
-                                description_html = html
-                                break
+                        for tag in soup(["script", "style", "iframe"]):
+                            tag.decompose()
                         
-                        if description_text:
+                        text = soup.get_text(" ", strip=True)
+                        
+                        if len(text) > 100:  # Reasonable description
+                            print(f"✅ Description: {len(text)} chars")
+                            description_text = text
                             break
                 except:
                     continue
 
-            # =====================
-            # IMAGES
-            # =====================
+            # Images
             print("🖼️ Extracting images...")
             description_images = []
             
             try:
-                # Try multiple image selectors
-                for selector in ['img[src*="alicdn"]', 'img[data-src*="alicdn"]', 'picture img']:
-                    try:
-                        imgs = page.locator(selector).all(max_items=20)
-                        for img in imgs:
-                            src = img.get_attribute("src") or img.get_attribute("data-src")
-                            if src and "alicdn" in src and len(src) > 50:
-                                description_images.append(src)
-                    except:
-                        continue
-                
-                # Also from description HTML
-                if description_html:
-                    soup = BeautifulSoup(description_html, "html.parser")
-                    for img in soup.find_all("img"):
-                        src = img.get("src") or img.get("data-src")
-                        if src and "alicdn" in src:
+                # Look for any img with alicdn source
+                imgs = page.locator('img').all(max_items=50)
+                for img in imgs:
+                    src = img.get_attribute("src") or img.get_attribute("data-src")
+                    if src and "alicdn" in src and len(src) > 50:
+                        # Filter out thumbnails
+                        if not any(x in src for x in ["50x50", "icon", "logo"]):
                             description_images.append(src)
-                
-            except Exception as e:
-                print(f"⚠️ Image extraction error: {e}")
+            except:
+                pass
 
             description_images = list(set(description_images))[:20]
             print(f"✅ Images: {len(description_images)}")
@@ -299,7 +259,7 @@ def extract_aliexpress_product(url: str) -> dict:
                 "description_text": clean_text(description_text),
                 "images": description_images,
                 "store_info": store_info,
-                "actual_url": actual_url  # Include actual URL for debugging
+                "url": current_url
             }
 
         except Exception as e:
@@ -314,10 +274,10 @@ def extract_aliexpress_product(url: str) -> dict:
 
 
 if __name__ == "__main__":
-    # Test with original URL (it will redirect)
     url = "https://www.aliexpress.com/item/1005010735189221.html"
-    result = extract_aliexpress_product(url)
+    result = extract_aliexpress_with_retry(url)
     print("\n🎉 FINAL RESULT:")
+    print(f"URL: {result.get('url', '')}")
     print(f"Title: {result.get('title', '')[:80]}")
     print(f"Store: {result.get('store_info', {})}")
     print(f"Images: {len(result.get('images', []))} found")
