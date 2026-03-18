@@ -293,62 +293,86 @@ def extract_aliexpress_product(url: str) -> dict:
                 description_element = None
                 
                 try:
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(500)
+                    # Try to click description tab to ensure it's active
+                    print("   Clicking description tab...")
+                    try:
+                        page.keyboard.press("Escape")
+                        page.wait_for_timeout(300)
+                        
+                        # Look for description tab button
+                        desc_tab_selectors = [
+                            'button:has-text("Description")',
+                            'div[role="tab"]:has-text("Description")',
+                            'a:has-text("Description")',
+                        ]
+                        
+                        for tab_selector in desc_tab_selectors:
+                            try:
+                                tab = page.locator(tab_selector).first
+                                if tab.count() > 0:
+                                    tab.click(force=True, timeout=2000)
+                                    page.wait_for_timeout(1500)
+                                    print("   ✓ Clicked description tab")
+                                    break
+                            except:
+                                continue
+                    except:
+                        pass
                     
                     html = page.content()
                     soup = BeautifulSoup(html, "html.parser")
                     
-                    # Exact selectors provided
+                    # Look for description content ONLY (not entire page)
+                    # Description content is usually in a smaller container with specific patterns
                     desc_selectors = [
                         "#product-description",
                         '[class*="product-description"]',
                         '[class*="detail-content"]',
                         '.product-detail__description',
-                        # Additional selectors for description tab/content
-                        '[class*="Description"]',
-                        '[id*="Description"]',
+                        '[class*="description-content"]',
                         'div[data-spm*="description"]',
-                        '[class*="detail"]',
-                        'div.detail-content',
                     ]
                     
                     for selector in desc_selectors:
                         try:
                             elements = soup.select(selector)
-                            print(f"🔍 Found {len(elements)} elements matching '{selector}'")
                             
                             for elem in elements:
                                 text = elem.get_text(" ", strip=True)
                                 text_len = len(text)
-                                print(f"   Element text length: {text_len} chars")
                                 
-                                # Accept description if > 100 chars and not just navigation/UI
-                                if text_len > 100 and not any(x in text.lower() for x in ['login', 'password', 'cart', 'shipping']):
-                                    print(f"✅ Description found: {text_len} chars")
+                                # Description should be 200-5000 chars (not 50000+)
+                                # Avoid if contains review/cart keywords
+                                if (200 < text_len < 5000 and 
+                                    not any(x in text.lower() for x in ['add to cart', 'add to compare', 'buy now', 'reviews', 'ratings'])):
+                                    print(f"🔍 Found potential description ({selector}): {text_len} chars")
+                                    print(f"   Preview: {text[:100]}...")
                                     description_text = text
-                                    description_element = elem  # Keep reference for image extraction
+                                    description_element = elem
                                     break
-                        except Exception as e:
-                            print(f"⚠️ Selector {selector} failed: {e}")
+                        except:
+                            continue
                         
                         if description_text:
                             break
                     
-                    # If still no description, try broader search
+                    # If still no description, look for actual description paragraphs
                     if not description_text:
-                        print("🔍 Trying broader search for description...")
+                        print("🔍 Searching for description paragraphs...")
                         for div in soup.find_all('div'):
                             text = div.get_text(" ", strip=True)
-                            if (500 < len(text) < 50000 and 
-                                any(x in text.lower() for x in ['feature', 'spec', 'material', 'size', 'color', 'weight'])):
-                                print(f"✅ Description found (broad search): {len(text)} chars")
+                            # Description is usually 300-3000 chars, contains product info words, doesn't have review/cart text
+                            if (300 < len(text) < 3000 and
+                                any(x in text.lower() for x in ['feature', 'material', 'size', 'color', 'weight', 'waterproof', 'battery']) and
+                                not any(x in text.lower() for x in ['add to cart', 'buy now', 'reviews (', 'ratings', 'seller info', 'shipping'])):
+                                print(f"✅ Description found: {len(text)} chars")
+                                print(f"   Preview: {text[:80]}...")
                                 description_text = text
                                 description_element = div
                                 break
                             
                 except Exception as e:
-                    print(f"⚠️ Description extraction: {e}")
+                    print(f"⚠️ Description extraction error: {e}")
                 
                 # EXTRACT IMAGES FROM DESCRIPTION ONLY
                 print("🖼️ Extracting images from description...")
