@@ -1,6 +1,6 @@
 """
-Simple AliExpress Scraper - Blocks Geo-Redirect at Network Level
-Intercepts HTTP redirects and stays on original domain
+Simple AliExpress Scraper - Final Version
+Works on both .com and .us domains (selectors are identical!)
 """
 
 import re
@@ -20,8 +20,8 @@ def clean_text(text: str) -> str:
 
 def extract_aliexpress_product(url: str) -> dict:
     """
-    Extract AliExpress product - Blocks geo-redirects at network level.
-    Intercepts HTTP redirects and stays on original .com domain.
+    Extract AliExpress product - Works on both .com and .us domains.
+    Selectors are identical, so just accept the geo-redirect and scrape!
     
     Returns:
         {
@@ -41,52 +41,8 @@ def extract_aliexpress_product(url: str) -> dict:
     with sync_playwright() as p:
         try:
             # Launch browser
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                ]
-            )
-            
-            # Create context with headers to prevent geo-redirect
-            context = browser.new_context(
-                extra_http_headers={
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "CF-IPCountry": "PK",  # Cloudflare country header
-                },
-                viewport={"width": 1366, "height": 768},
-            )
-            
-            page = context.new_page()
-            
-            # ── NEW: Intercept and block redirects to regional domains ──────────────
-            def handle_route(route):
-                """Intercept all requests and block regional domain redirects."""
-                request = route.request
-                
-                # Allow requests to original domain only
-                if "aliexpress.com" in request.url and ".us" not in request.url:
-                    route.continue_()
-                elif "aliexpress.us" in request.url or "aliexpress.uk" in request.url:
-                    # Block regional domain requests, redirect to .com
-                    # Extract product ID from redirect URL
-                    try:
-                        product_id = base_url.split("/item/")[1].split(".")[0].split("?")[0]
-                        original_domain = base_url.split("/item/")[0]
-                        new_url = f"{original_domain}/item/{product_id}.html"
-                        
-                        print(f"🚫 Blocking redirect to: {request.url[:60]}...")
-                        print(f"✅ Allowing: {new_url[:60]}...")
-                        route.continue_(url=new_url)
-                    except:
-                        route.continue_()
-                else:
-                    route.continue_()
-            
-            # Set up route handler
-            page.route("**/*", handle_route)
-            # ──────────────────────────────────────────────────────────────────────────
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
 
             # Navigate to URL
             print("⏳ Loading page...")
@@ -95,64 +51,28 @@ def extract_aliexpress_product(url: str) -> dict:
             actual_url = page.url
             print(f"✅ Loaded: {actual_url}")
             
+            # Note: Geo-redirect is fine, selectors work on both .com and .us
+            
             # Wait for page to fully render
             print("⏳ Waiting for content to render...")
             time.sleep(3)
 
-            # Wait for product title with multiple fallbacks
+            # Wait for product title
             print("⏳ Waiting for title...")
-            title = ""
-            
-            title_selectors = [
-                '[data-pl="product-title"]',
-                'h1[data-pl="product-title"]',
-                '.productTitle_N8TgC',
-                '.product-title-text',
-                'h1.product-title',
-                '[class*="product-title"]',
-                'h1',  # Generic h1 as last resort
-            ]
-            
-            for selector in title_selectors:
-                try:
-                    elem = page.query_selector(selector)
-                    if elem:
-                        text = elem.text_content().strip()
-                        # Skip if it's just "Aliexpress" (logo) or too short
-                        if text and text.lower() != "aliexpress" and len(text) > 10:
-                            title = text
-                            print(f"✅ Title found with: {selector}")
-                            break
-                except Exception as e:
-                    pass
+            try:
+                page.wait_for_selector('[data-pl="product-title"]', timeout=15000, state="visible")
+            except Exception as e:
+                print(f"❌ Title not found: {e}")
+                browser.close()
+                return empty_result
+
+            # Extract title
+            print("📝 Extracting title...")
+            title_elem = page.query_selector('[data-pl="product-title"]')
+            title = title_elem.text_content().strip() if title_elem else ""
             
             if not title:
-                print(f"❌ Title not found after trying {len(title_selectors)} selectors")
-                print("⏳ Trying JavaScript extraction...")
-                try:
-                    title = page.evaluate("""
-                    () => {
-                        // Try to find any h1 that's not "Aliexpress"
-                        const h1s = document.querySelectorAll('h1');
-                        for (let h of h1s) {
-                            const text = h.textContent.trim();
-                            if (text && text.toLowerCase() !== 'aliexpress' && text.length > 10) {
-                                return text;
-                            }
-                        }
-                        // Try data-pl attribute
-                        const elem = document.querySelector('[data-pl="product-title"]');
-                        if (elem) return elem.textContent.trim();
-                        return '';
-                    }
-                    """)
-                    if title:
-                        print(f"✅ Title found via JavaScript: {title[:70]}")
-                except Exception as e:
-                    print(f"❌ JavaScript extraction failed: {e}")
-            
-            if not title:
-                print("❌ Could not extract title")
+                print("❌ Title is empty")
                 browser.close()
                 return empty_result
             
@@ -167,6 +87,7 @@ def extract_aliexpress_product(url: str) -> dict:
             print("📝 Extracting description...")
             description_text = ""
             
+            # Selectors work on both .com and .us
             selectors_to_try = [
                 "#product-description",
                 ".product-description",
@@ -177,17 +98,25 @@ def extract_aliexpress_product(url: str) -> dict:
                 "[class*='detailmodule']",
             ]
             
+            desc_elem = None
+            
             for selector in selectors_to_try:
                 try:
                     elem = page.query_selector(selector)
                     if elem:
                         text_content = elem.text_content().strip()
                         if len(text_content) > 50:
-                            description_text = text_content
+                            desc_elem = elem
                             print(f"✅ Found description with: {selector}")
                             break
                 except Exception as e:
                     pass
+            
+            if desc_elem:
+                try:
+                    description_text = desc_elem.text_content().strip()
+                except Exception as e:
+                    print(f"⚠️  Direct extraction failed: {e}")
             
             # If still no description, try JavaScript search
             if not description_text or len(description_text) < 100:
@@ -195,7 +124,7 @@ def extract_aliexpress_product(url: str) -> dict:
                 try:
                     js_description = page.evaluate("""
                     () => {
-                        // Try to find divs with description keywords
+                        // Try to find divs with "Product Features" or "Product Advantages" text
                         const allDivs = document.querySelectorAll('div, article, section');
                         
                         for (let elem of allDivs) {
@@ -232,7 +161,7 @@ def extract_aliexpress_product(url: str) -> dict:
                             }
                         }
                         
-                        // Fallback: get all body text
+                        // Fallback: just get body text
                         return document.body.innerText;
                     }
                     """)
@@ -247,7 +176,9 @@ def extract_aliexpress_product(url: str) -> dict:
             if description_text:
                 description_text = re.sub(r'\s+', ' ', description_text).strip()
                 
+                # Limit to 4000 chars (but keep full content if it's product description)
                 if len(description_text) > 4000:
+                    # Try to find a good cutoff point (end of sentences)
                     desc_cut = description_text[:4000]
                     last_period = desc_cut.rfind('.')
                     if last_period > 3000:
@@ -273,6 +204,7 @@ def extract_aliexpress_product(url: str) -> dict:
                     
                     if img_url:
                         img_url = img_url.strip()
+                        # Filter for AliExpress CDN images
                         if ("alicdn" in img_url or "aliexpress" in img_url) and img_url not in images:
                             images.append(img_url)
             except Exception as e:
@@ -282,6 +214,7 @@ def extract_aliexpress_product(url: str) -> dict:
 
             browser.close()
 
+            # Verify we got something
             if not title:
                 print("❌ No title extracted")
                 return empty_result
@@ -289,7 +222,7 @@ def extract_aliexpress_product(url: str) -> dict:
             return {
                 "title":            clean_text(title),
                 "description_text": clean_text(description_text) if description_text else "",
-                "images":           images[:20],
+                "images":           images[:20],  # Limit to 20 images
             }
 
         except Exception as e:
