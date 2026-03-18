@@ -3,7 +3,15 @@ import time
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 
+import socket
 
+def renew_tor_ip():
+    s = socket.socket()
+    s.connect(("127.0.0.1", 9051))
+    s.send(b'AUTHENTICATE "16:4354C3BD169FBAF860E4618301A9915833DB1B9603D2899D19E3660279"\r\n')
+    s.send(b'SIGNAL NEWNYM\r\n')
+    s.send(b'QUIT\r\n')
+    s.close()
 def clean_text(text: str) -> str:
     if not text:
         return ""
@@ -33,6 +41,9 @@ def extract_aliexpress_product(url: str, retries=2) -> dict:
             with sync_playwright() as p:
                 browser = p.chromium.launch(
                     headless=True,
+                    proxy={
+                        "server": "socks5://127.0.0.1:9050"
+                    }
                     args=[
                         "--no-sandbox",
                         "--disable-setuid-sandbox",
@@ -56,7 +67,8 @@ def extract_aliexpress_product(url: str, retries=2) -> dict:
                     get: () => undefined
                 })
                 """)
-
+                renew_tor_ip()
+                time.sleep(5)
                 # -----------------------
                 # LOAD PAGE
                 # -----------------------
@@ -64,7 +76,7 @@ def extract_aliexpress_product(url: str, retries=2) -> dict:
                 page.wait_for_load_state("networkidle")
 
                 # Human behavior (IMPORTANT)
-                time.sleep(5)
+                time.sleep(10)
                 page.mouse.move(100, 200)
                 page.mouse.wheel(0, 500)
 
@@ -73,10 +85,19 @@ def extract_aliexpress_product(url: str, retries=2) -> dict:
                 # -----------------------
                 content = page.content().lower()
                 if "captcha" in content or "verify" in content:
-                    print("🚫 BLOCKED by AliExpress")
+                    print("🚫 BLOCKED by AliExpress → rotating IP...")
+                
                     browser.close()
+                
+                    try:
+                        renew_tor_ip()
+                        print("🔁 New TOR IP requested")
+                    except Exception as e:
+                        print(f"⚠️ TOR rotation failed: {e}")
+                
                     time.sleep(5)
-                    continue  # retry
+                
+                    continue  # 🔁 retry with new IP
 
                 # -----------------------
                 # TITLE (FIXED ✅)
