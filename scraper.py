@@ -8,7 +8,7 @@ import socket
 def renew_tor_ip():
     s = socket.socket()
     s.connect(("127.0.0.1", 9051))
-    s.send(b'AUTHENTICATE "16:4354C3BD169FBAF860E4618301A9915833DB1B9603D2899D19E3660279"\r\n')
+    s.send(b'AUTHENTICATE\r\n')
     s.send(b'SIGNAL NEWNYM\r\n')
     s.send(b'QUIT\r\n')
     s.close()
@@ -43,7 +43,7 @@ def extract_aliexpress_product(url: str, retries=2) -> dict:
                     headless=True,
                     proxy={
                         "server": "socks5://127.0.0.1:9050"
-                    }
+                    },
                     args=[
                         "--no-sandbox",
                         "--disable-setuid-sandbox",
