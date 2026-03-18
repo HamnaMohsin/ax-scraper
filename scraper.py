@@ -375,14 +375,21 @@ def extract_aliexpress_product(url: str) -> dict:
                 # SUCCESS
                 browser.close()
                 
+                # DEBUG: Show what we're returning
+                print(f"\n🔍 DEBUG RETURN VALUES:")
+                print(f"   title: {len(title)} chars - {title[:50] if title else 'EMPTY'}")
+                print(f"   description_text: {len(description_text)} chars - {description_text[:50] if description_text else 'EMPTY'}")
+                print(f"   description_images: {len(description_images)} images")
+                print(f"   store_info: {store_info}")
+                
                 result = {
-                    "title": clean_text(title),
-                    "description_text": clean_text(description_text),
+                    "title": title,  # Don't clean title
+                    "description_text": description_text,  # Don't clean, already extracted as text
                     "images": description_images,
                     "store_info": store_info
                 }
                 
-                print(f"✅ Extraction successful on attempt {attempt + 1}")
+                print(f"✅ Extraction successful on attempt {attempt + 1}\n")
                 return result
                 
             except PlaywrightTimeoutError as e:
