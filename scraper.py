@@ -1,6 +1,6 @@
 """
-Simple AliExpress Scraper - Final Version
-Works on both .com and .us domains (selectors are identical!)
+Simple AliExpress Scraper - Final Version with Better Selectors
+Uses multiple selectors and JavaScript to find description
 """
 
 import re
@@ -20,8 +20,8 @@ def clean_text(text: str) -> str:
 
 def extract_aliexpress_product(url: str) -> dict:
     """
-    Extract AliExpress product - Works on both .com and .us domains.
-    Selectors are identical, so just accept the geo-redirect and scrape!
+    Extract AliExpress product - Final version.
+    Uses multiple selectors and JavaScript to find all content.
     
     Returns:
         {
@@ -48,25 +48,22 @@ def extract_aliexpress_product(url: str) -> dict:
             print("⏳ Loading page...")
             page.goto(base_url, timeout=60000, wait_until="domcontentloaded")
             
-            actual_url = page.url
-            print(f"✅ Loaded: {actual_url}")
-            
-            # Note: Geo-redirect is fine, selectors work on both .com and .us
+            print(f"✅ Loaded: {page.url}")
             
             # Wait for page to fully render
             print("⏳ Waiting for content to render...")
             time.sleep(3)
 
-            # Wait for product title
+            # Wait for product title (correct selector)
             print("⏳ Waiting for title...")
             try:
-                page.wait_for_selector('[data-pl="product-title"]', timeout=15000, state="visible")
+                page.wait_for_selector('[data-pl="product-title"]', timeout=10000, state="visible")
             except Exception as e:
                 print(f"❌ Title not found: {e}")
                 browser.close()
                 return empty_result
 
-            # Extract title
+            # Extract title using correct selector
             print("📝 Extracting title...")
             title_elem = page.query_selector('[data-pl="product-title"]')
             title = title_elem.text_content().strip() if title_elem else ""
@@ -83,11 +80,11 @@ def extract_aliexpress_product(url: str) -> dict:
             page.evaluate("window.scrollBy(0, window.innerHeight * 2)")
             time.sleep(2)
 
-            # Extract description
+            # Extract description using multiple methods
             print("📝 Extracting description...")
             description_text = ""
             
-            # Selectors work on both .com and .us
+            # List of selectors to try, in order
             selectors_to_try = [
                 "#product-description",
                 ".product-description",
@@ -99,14 +96,17 @@ def extract_aliexpress_product(url: str) -> dict:
             ]
             
             desc_elem = None
+            used_selector = None
             
             for selector in selectors_to_try:
                 try:
                     elem = page.query_selector(selector)
                     if elem:
+                        # Check if it has meaningful content
                         text_content = elem.text_content().strip()
-                        if len(text_content) > 50:
+                        if len(text_content) > 50:  # Has enough text
                             desc_elem = elem
+                            used_selector = selector
                             print(f"✅ Found description with: {selector}")
                             break
                 except Exception as e:
@@ -114,6 +114,7 @@ def extract_aliexpress_product(url: str) -> dict:
             
             if desc_elem:
                 try:
+                    # Method 1: Direct text extraction
                     description_text = desc_elem.text_content().strip()
                 except Exception as e:
                     print(f"⚠️  Direct extraction failed: {e}")
@@ -133,9 +134,7 @@ def extract_aliexpress_product(url: str) -> dict:
                             if ((text.includes('Product Features') || 
                                  text.includes('Product Advantages') ||
                                  text.includes('Multi-functional') ||
-                                 text.includes('Adjustment Design') ||
-                                 text.includes('Description') ||
-                                 text.includes('Details')) &&
+                                 text.includes('Adjustment Design')) &&
                                 text.length > 500) {
                                 
                                 // Extract all text from this element
@@ -204,7 +203,7 @@ def extract_aliexpress_product(url: str) -> dict:
                     
                     if img_url:
                         img_url = img_url.strip()
-                        # Filter for AliExpress CDN images
+                        # Filter for AliExpress CDN images and reasonable sizes
                         if ("alicdn" in img_url or "aliexpress" in img_url) and img_url not in images:
                             images.append(img_url)
             except Exception as e:
