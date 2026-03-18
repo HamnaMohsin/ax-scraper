@@ -289,14 +289,8 @@ def extract_aliexpress_product(url: str) -> dict:
                 # EXTRACT DESCRIPTION
                 print("📝 Loading description...")
                 description_text = ""
-                
-                # Exact selectors provided
-                desc_selectors = [
-                    "#product-description",
-                    '[class*="product-description"]',
-                    '[class*="detail-content"]',
-                    '.product-detail__description'
-                ]
+                description_images = []
+                description_element = None
                 
                 try:
                     page.keyboard.press("Escape")
@@ -305,6 +299,20 @@ def extract_aliexpress_product(url: str) -> dict:
                     html = page.content()
                     soup = BeautifulSoup(html, "html.parser")
                     
+                    # Exact selectors provided
+                    desc_selectors = [
+                        "#product-description",
+                        '[class*="product-description"]',
+                        '[class*="detail-content"]',
+                        '.product-detail__description',
+                        # Additional selectors for description tab/content
+                        '[class*="Description"]',
+                        '[id*="Description"]',
+                        'div[data-spm*="description"]',
+                        '[class*="detail"]',
+                        'div.detail-content',
+                    ]
+                    
                     for selector in desc_selectors:
                         try:
                             elements = soup.select(selector)
@@ -312,43 +320,57 @@ def extract_aliexpress_product(url: str) -> dict:
                             
                             for elem in elements:
                                 text = elem.get_text(" ", strip=True)
-                                print(f"   Element text length: {len(text)} chars")
+                                text_len = len(text)
+                                print(f"   Element text length: {text_len} chars")
                                 
-                                if len(text) > 200:
-                                    print(f"✅ Description found: {len(text)} chars")
+                                # Accept description if > 100 chars and not just navigation/UI
+                                if text_len > 100 and not any(x in text.lower() for x in ['login', 'password', 'cart', 'shipping']):
+                                    print(f"✅ Description found: {text_len} chars")
                                     description_text = text
+                                    description_element = elem  # Keep reference for image extraction
                                     break
                         except Exception as e:
                             print(f"⚠️ Selector {selector} failed: {e}")
                         
                         if description_text:
                             break
+                    
+                    # If still no description, try broader search
+                    if not description_text:
+                        print("🔍 Trying broader search for description...")
+                        for div in soup.find_all('div'):
+                            text = div.get_text(" ", strip=True)
+                            if (500 < len(text) < 50000 and 
+                                any(x in text.lower() for x in ['feature', 'spec', 'material', 'size', 'color', 'weight'])):
+                                print(f"✅ Description found (broad search): {len(text)} chars")
+                                description_text = text
+                                description_element = div
+                                break
                             
                 except Exception as e:
                     print(f"⚠️ Description extraction: {e}")
                 
-                # EXTRACT IMAGES
-                print("🖼️ Extracting images...")
-                description_images = []
+                # EXTRACT IMAGES FROM DESCRIPTION ONLY
+                print("🖼️ Extracting images from description...")
                 
                 try:
-                    html = page.content()
-                    soup = BeautifulSoup(html, "html.parser")
-                    
-                    # Find all images
-                    for img in soup.find_all('img'):
-                        src = img.get('src') or img.get('data-src') or img.get('data-original')
-                        if src and isinstance(src, str) and "alicdn" in src and len(src) > 50:
-                            # Skip tiny thumbnails
-                            if not any(x in src.lower() for x in ["20x20", "50x50", "icon", "logo", "avatar", "100x100"]):
-                                description_images.append(src)
-                                print(f"   Found image: {src[:80]}...")
+                    if description_element is not None:
+                        # Find images only within the description element
+                        for img in description_element.find_all('img'):
+                            src = img.get('src') or img.get('data-src') or img.get('data-original')
+                            if src and isinstance(src, str) and "alicdn" in src and len(src) > 50:
+                                # Skip tiny thumbnails
+                                if not any(x in src.lower() for x in ["20x20", "50x50", "icon", "logo", "avatar", "100x100"]):
+                                    description_images.append(src)
+                                    print(f"   Found image in description: {src[:80]}...")
+                    else:
+                        print("   ⚠️ No description element found, cannot extract images from description")
                     
                 except Exception as e:
-                    print(f"⚠️ Image extraction error: {e}")
+                    print(f"⚠️ Description image extraction error: {e}")
                 
                 description_images = list(set(description_images))[:20]
-                print(f"✅ Images: {len(description_images)} found")
+                print(f"✅ Images from description: {len(description_images)} found")
                 
                 # SUCCESS
                 browser.close()
@@ -357,7 +379,7 @@ def extract_aliexpress_product(url: str) -> dict:
                     "title": clean_text(title),
                     "description_text": clean_text(description_text),
                     "images": description_images,
-                   # "store_info": store_info
+                    "store_info": store_info
                 }
                 
                 print(f"✅ Extraction successful on attempt {attempt + 1}")
