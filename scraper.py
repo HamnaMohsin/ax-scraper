@@ -215,16 +215,23 @@ def extract_aliexpress_product(url: str) -> dict:
     }
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',  # ← KEY for GCP
+            ]
+        )
         page = browser.new_page(
             viewport={'width': 1366, 'height': 768},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         )
 
         try:
-            page.goto(url, timeout=60000, wait_until="domcontentloaded")
-            page.wait_for_load_state("networkidle", timeout=15000)
-            time.sleep(4)
+            page.goto(url, timeout=120000)  # 60 → 120 seconds
+            page.wait_for_load_state("networkidle", timeout=30000)  # 15 → 30 seconds  
+            page.wait_for_selector('[data-pl="product-title"]', timeout=15000)  # 10 → 15 seconds
+            time.sleep(5) 
 
             # -----------------------
             # TITLE
