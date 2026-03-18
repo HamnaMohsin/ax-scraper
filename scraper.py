@@ -102,21 +102,37 @@ def extract_store_info_universal(page) -> dict:
                         if key:
                             store_info[key] = value
         
-        # Method 2: Any store-detail div
+        # Method 2: Direct search in HTML for store data
         if not store_info:
-            for div in soup.find_all('div', class_=lambda x: x and 'store' in str(x).lower()):
-                table = div.find("table")
-                if table:
-                    for row in table.find_all("tr"):
-                        cols = row.find_all("td")
-                        if len(cols) == 2:
-                            key = clean_text(cols[0].get_text()).replace(":", "").strip()
-                            value = clean_text(cols[1].get_text()).strip()
-                            if key:
-                                store_info[key] = value
-                    
-                    if store_info:
-                        break
+            # Look for store name patterns
+            store_patterns = [
+                r'Store no[.:]?\s*(\d+)',
+                r'store-num["\']?\s*:\s*["\']?(\d+)',
+                r'"storeNum":\s*(\d+)',
+            ]
+            
+            for pattern in store_patterns:
+                match = re.search(pattern, html, re.IGNORECASE)
+                if match:
+                    store_info['Store no.'] = match.group(1)
+        
+        # Method 3: Any table with store-like content
+        if not store_info:
+            for table in soup.find_all('table'):
+                temp_info = {}
+                for row in table.find_all("tr"):
+                    cols = row.find_all("td")
+                    if len(cols) == 2:
+                        key = clean_text(cols[0].get_text()).replace(":", "").strip()
+                        value = clean_text(cols[1].get_text()).strip()
+                        if key and value:
+                            temp_info[key] = value
+                
+                # Check if looks like store info
+                if temp_info and any(k.lower() in str(temp_info).lower() 
+                                    for k in ['store', 'location', 'name', 'seller']):
+                    store_info = temp_info
+                    break
         
         if store_info:
             print(f"✅ Store info: {store_info}")
@@ -133,8 +149,11 @@ def extract_title_universal(page) -> str:
     # Try multiple selectors
     selectors_to_try = [
         ('[data-pl="product-title"]', "product-title"),
-        ('h1', "h1 heading"),
+        ('h1[class*="title"]', "h1 with title class"),
+        ('h1', "generic h1"),
         ('[class*="product-name"]', "product-name"),
+        ('[class*="ProductTitle"]', "ProductTitle"),
+        ('span[class*="Title"]', "span Title"),
         ('[class*="title"]', "generic title"),
     ]
     
@@ -143,23 +162,48 @@ def extract_title_universal(page) -> str:
             elem = page.locator(selector).first
             if elem.count() > 0:
                 title = elem.inner_text().strip()
-                if title and len(title) > 5:
+                if title and len(title) > 10 and title.lower() != "aliexpress":
                     print(f"✅ Title ({description}): {title[:80]}...")
                     return title
         except:
             continue
     
-    # Fallback: Extract from HTML
+    # Fallback: Parse HTML for any reasonable title
     try:
-        soup = BeautifulSoup(page.content(), "html.parser")
+        html = page.content()
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # Look for title tag first
+        title_elem = soup.find('title')
+        if title_elem:
+            text = title_elem.get_text().strip()
+            if text and len(text) > 10 and 'aliexpress' in text.lower():
+                print(f"✅ Title (from <title>): {text[:80]}...")
+                return text
+        
+        # Look for og:title meta tag
+        og_title = soup.find('meta', attrs={'property': 'og:title'})
+        if og_title:
+            text = og_title.get('content', '').strip()
+            if text and len(text) > 10:
+                print(f"✅ Title (from og:title): {text[:80]}...")
+                return text
+        
+        # Find by searching for elements with product-like text
         for tag in soup.find_all(['h1', 'h2', 'span', 'div']):
             text = tag.get_text().strip()
-            if text and 15 < len(text) < 200:
-                print(f"✅ Title (HTML fallback): {text[:80]}...")
-                return text
+            if (text and 
+                20 < len(text) < 300 and 
+                text.lower() != "aliexpress" and
+                not text.startswith("http")):
+                # Check if looks like a product title (has some special chars or multiple words)
+                if any(char in text for char in ['$', '€', '¥', '"', "'"]) or len(text.split()) > 3:
+                    print(f"✅ Title (HTML scan): {text[:80]}...")
+                    return text
     except:
         pass
     
+    print("⚠️ Could not extract title")
     return ""
 
 
@@ -239,20 +283,34 @@ def extract_aliexpress_product(url: str) -> dict:
                     browser.close()
                     continue
                 
-                # Wait for page to load
-                try:
-                    page.wait_for_timeout(8000)
-                except:
-                    pass
+                # Wait for page to load with explicit content checks
+                print("⏳ Waiting for content to render...")
+                max_wait = 15
+                start_time = time.time()
+                content_loaded = False
+                
+                while time.time() - start_time < max_wait:
+                    try:
+                        # Check if product content has loaded
+                        html = page.content()
+                        if "alicdn" in html and len(html) > 100000:  # Product page is large
+                            content_loaded = True
+                            break
+                    except:
+                        pass
+                    time.sleep(0.5)
+                
+                if not content_loaded:
+                    print("⚠️ Content may not have fully loaded, continuing anyway...")
                 
                 # =====================
                 # SCROLL TO TRIGGER LAZY LOADING
                 # =====================
-                print("⏳ Scrolling to load content...")
+                print("⏳ Scrolling to load images...")
                 try:
-                    for _ in range(3):
-                        page.mouse.wheel(0, random.randint(150, 300))
-                        page.wait_for_timeout(random.randint(200, 600))
+                    for _ in range(5):
+                        page.mouse.wheel(0, random.randint(200, 400))
+                        page.wait_for_timeout(random.randint(300, 800))
                     page.evaluate("window.scrollTo(0, 0)")
                     time.sleep(1)
                 except Exception as e:
@@ -277,71 +335,122 @@ def extract_aliexpress_product(url: str) -> dict:
                 store_info = extract_store_info_universal(page)
                 
                 # =====================
-                # CLICK DESCRIPTION TAB
+                # EXTRACT DESCRIPTION
                 # =====================
                 print("📝 Loading description...")
                 description_text = ""
                 
                 try:
-                    # Dismiss any overlays
+                    # Try to click description tab if it exists
                     page.keyboard.press("Escape")
                     page.wait_for_timeout(500)
                     
-                    # Try to find and click description tab
-                    desc_tab = page.locator('div[class*="description"]').first
+                    # Look for description tab and click
+                    desc_tab_selectors = [
+                        'div[class*="description"]',
+                        'button[class*="description"]',
+                        '[data-spm*="description"]',
+                    ]
                     
-                    if desc_tab.count() > 0:
+                    for selector in desc_tab_selectors:
                         try:
-                            desc_tab.click(force=True)
-                            page.wait_for_timeout(2000)
+                            elem = page.locator(selector).first
+                            if elem.count() > 0:
+                                elem.click(force=True, timeout=2000)
+                                page.wait_for_timeout(2000)
+                                break
                         except:
-                            pass
+                            continue
                     
-                    # Extract description from anywhere in the page
+                    # Extract description from multiple places
                     desc_selectors = [
                         "#product-description",
                         '[class*="description"]',
                         '[id*="description"]',
+                        '[class*="detail"]',
+                        '[class*="Description"]',
                     ]
                     
+                    html = page.content()
+                    soup = BeautifulSoup(html, "html.parser")
+                    
+                    # Method 1: Find description divs
                     for selector in desc_selectors:
-                        try:
-                            elem = page.locator(selector).first
-                            if elem.count() > 0:
-                                html = elem.inner_html()
-                                soup = BeautifulSoup(html, "html.parser")
-                                
-                                for tag in soup(["script", "style", "iframe"]):
-                                    tag.decompose()
-                                
-                                text = soup.get_text(" ", strip=True)
-                                
-                                if len(text) > 100:
-                                    print(f"✅ Description: {len(text)} chars")
-                                    description_text = text
-                                    break
-                        except:
-                            continue
+                        for elem in soup.select(selector):
+                            text = elem.get_text(" ", strip=True)
+                            if len(text) > 200:  # Real description
+                                print(f"✅ Description: {len(text)} chars")
+                                description_text = text
+                                break
+                        if description_text:
+                            break
+                    
+                    # Method 2: Look for text blocks with product keywords
+                    if not description_text:
+                        for div in soup.find_all('div'):
+                            text = div.get_text(" ", strip=True)
+                            if (len(text) > 300 and 
+                                any(kw in text.lower() for kw in 
+                                    ['feature', 'spec', 'parameter', 'include', 'material', 'size'])):
+                                print(f"✅ Description (keyword match): {len(text)} chars")
+                                description_text = text
+                                break
                             
                 except Exception as e:
                     print(f"⚠️ Description extraction: {e}")
                 
                 # =====================
-                # EXTRACT IMAGES
+                # EXTRACT IMAGES (comprehensive)
                 # =====================
                 print("🖼️ Extracting images...")
                 description_images = []
                 
                 try:
-                    imgs = page.locator('img').all(max_items=50)
-                    for img in imgs:
-                        src = img.get_attribute("src") or img.get_attribute("data-src")
-                        if src and "alicdn" in src and len(src) > 50:
-                            if not any(x in src for x in ["50x50", "icon", "logo"]):
+                    # From page content HTML
+                    html = page.content()
+                    soup = BeautifulSoup(html, "html.parser")
+                    
+                    # Method 1: Direct img tags
+                    for img in soup.find_all('img'):
+                        src = img.get('src') or img.get('data-src') or img.get('data-original')
+                        if src and isinstance(src, str) and "alicdn" in src and len(src) > 50:
+                            if not any(x in src.lower() for x in ["50x50", "icon", "logo", "avatar"]):
                                 description_images.append(src)
-                except:
-                    pass
+                    
+                    # Method 2: Picture tags (responsive images)
+                    for picture in soup.find_all('picture'):
+                        for source in picture.find_all('source'):
+                            srcset = source.get('srcset')
+                            if srcset and "alicdn" in srcset:
+                                # Extract first image from srcset
+                                img_url = srcset.split()[0].strip(',')
+                                if img_url and len(img_url) > 50:
+                                    description_images.append(img_url)
+                        # Also check img inside picture
+                        img = picture.find('img')
+                        if img:
+                            src = img.get('src') or img.get('data-src')
+                            if src and "alicdn" in src and len(src) > 50:
+                                description_images.append(src)
+                    
+                    # Method 3: Background images in style
+                    for elem in soup.find_all(style=True):
+                        style = elem.get('style', '')
+                        urls = re.findall(r'url\([\'"]?(.*?)[\'"]?\)', style)
+                        for url in urls:
+                            if "alicdn" in url and len(url) > 50:
+                                description_images.append(url)
+                    
+                    # Method 4: Data attributes
+                    for elem in soup.find_all(attrs={"data-src": True}):
+                        src = elem.get('data-src')
+                        if src and "alicdn" in src and len(src) > 50:
+                            description_images.append(src)
+                    
+                except Exception as e:
+                    print(f"⚠️ Image extraction error: {e}")
                 
+                # Remove duplicates and limit
                 description_images = list(set(description_images))[:20]
                 print(f"✅ Images: {len(description_images)}")
                 
