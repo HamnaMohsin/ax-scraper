@@ -287,7 +287,7 @@ def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
             )
             
             context = browser.new_context(
-                **random_viewport(),
+                viewport=random_viewport(),
                 user_agent=random.choice([
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
