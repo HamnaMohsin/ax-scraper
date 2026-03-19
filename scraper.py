@@ -250,20 +250,20 @@ def extract_aliexpress_product(url: str) -> dict:
                 if current_url != url:
                     print(f"⚠️ Redirected to: {current_url}")
                 
-                # CAPTCHA CHECK (early)
+                # CAPTCHA CHECK
                 if is_captcha_page(page):
                     print("⚠️ CAPTCHA detected - rotating IP and retrying...")
                     browser.close()
                     continue
                 
-                # SIMPLE WAIT - don't poll content repeatedly!
+                # Wait for page to load
                 print("⏳ Waiting for page to render...")
                 time.sleep(8)
                 
-                # NATURAL SCROLLING
+                # SCROLL
                 print("⏳ Scrolling to load images...")
                 try:
-                    for _ in range(3):  # 3 scrolls (human-like)
+                    for _ in range(3):
                         page.mouse.wheel(0, random.randint(150, 300))
                         time.sleep(random.uniform(0.2, 0.6))
                     page.evaluate("window.scrollTo(0, 0)")
@@ -283,14 +283,13 @@ def extract_aliexpress_product(url: str) -> dict:
                 # EXTRACT STORE INFO
                 store_info = extract_store_info_universal(page)
                 
-                # EXTRACT DESCRIPTION
+                # EXTRACT DESCRIPTION using inner_html (working method)
                 print("📝 Loading description...")
                 description_text = ""
                 description_images = []
-                description_element = None
                 
                 try:
-                    # Click the Description tab using multiple selector options
+                    # Try to click description tab
                     print("   Clicking Description tab...")
                     try:
                         page.keyboard.press("Escape")
@@ -314,7 +313,7 @@ def extract_aliexpress_product(url: str) -> dict:
                                     if 'description' in text:
                                         print(f"   ✓ Found Description button ({desc})")
                                         btn.click(force=True, timeout=2000)
-                                        page.wait_for_timeout(3000)  # Increased: give description time to load
+                                        page.wait_for_timeout(3000)
                                         print("   ✓ Clicked Description tab")
                                         clicked = True
                                         break
@@ -329,139 +328,56 @@ def extract_aliexpress_product(url: str) -> dict:
                     except Exception as e:
                         print(f"   ⚠️ Description tab click error: {e}")
                     
-                    # Wait for #product-description to be visible
-                    try:
-                        page.wait_for_selector("#product-description", timeout=5000)
-                        print("   ✓ #product-description is visible")
-                    except:
-                        print("   ⚠️ #product-description not immediately visible, continuing...")
+                    # Get the MAIN description container using Playwright's inner_html
+                    desc_container = page.locator('#product-description').first
                     
-                    html = page.content()
-                    soup = BeautifulSoup(html, "html.parser")
-                    
-                    # Multiple selectors for description container
-                    desc_selectors = [
-                        ('div#product-description', "#product-description"),
-                        ('div[id="product-description"]', "[id=product-description]"),
-                        ('div[class*="product-description"]', "product-description class"),
-                    ]
-                    
-                    print("🔍 Looking for description container...")
-                    product_desc = None
-                    for selector, desc in desc_selectors:
-                        try:
-                            if selector.startswith('div#'):
-                                product_desc = soup.find('div', id='product-description')
-                            else:
-                                product_desc = soup.select_one(selector)
-                            
-                            if product_desc:
-                                print(f"   ✓ Found description container ({desc})")
-                                break
-                        except:
-                            continue
-                    
-                    if product_desc:
-                        description_element = product_desc
+                    if desc_container.count() > 0:
+                        print("   ✓ Found #product-description container")
                         
-                        # Wait for content to actually load
-                        print("   Waiting for description content to load...")
-                        page.wait_for_timeout(3000)  # Extra wait after finding element
+                        # GET HTML FROM RENDERED PAGE (critical for dynamically loaded content)
+                        desc_html = desc_container.inner_html(timeout=5000)
+                        soup_desc = BeautifulSoup(desc_html, "html.parser")
                         
-                        # Get fresh HTML after wait
-                        html = page.content()
-                        soup = BeautifulSoup(html, "html.parser")
-                        product_desc = soup.find('div', id='product-description')
+                        # Clean and extract text
+                        for tag in soup_desc(["script", "style"]):
+                            tag.decompose()
+                        description_text = soup_desc.get_text(" ", strip=True)
+                        description_text = re.sub(r'\s+', ' ', description_text).strip()
+                        print(f"   ✓ Text: {len(description_text)} chars")
                         
-                        if not product_desc:
-                            print("   ⚠️ Description element disappeared after wait")
-                            product_desc = description_element
+                        # GET ALL IMAGES from description (recursive - all nesting levels)
+                        # Use Playwright's locator for rendered images
+                        imgs = desc_container.locator('img').all()
+                        for img in imgs:
+                            src = (img.get_attribute("src") or 
+                                  img.get_attribute("data-src") or 
+                                  img.get_attribute("data-lazy-src"))
+                            if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
+                                clean_src = src.split('?')[0]  # Remove query params
+                                description_images.append(clean_src)
                         
-                        # Remove script and style tags first
-                        for unwanted in product_desc(['script', 'style']):
-                            unwanted.decompose()
+                        # Also get from HTML parsing (catches lazy-loaded images)
+                        for img in soup_desc.find_all("img"):
+                            src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
+                            if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
+                                clean_src = src.split('?')[0]
+                                description_images.append(clean_src)
                         
-                        # Get all text
-                        full_text = product_desc.get_text(" ", strip=True)
+                        # Dedupe + quality filter
+                        unique_desc_images = list(set(description_images))
+                        quality_images = [img for img in unique_desc_images 
+                                        if len(img) > 50 and not any(bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50'])]
                         
-                        if not full_text:
-                            print("   🔍 DEBUG: Found element but text is empty")
-                            print(f"   HTML length: {len(product_desc.get_text())} chars")
-                            print(f"   Element HTML preview: {str(product_desc)[:200]}...")
-                        
-                        # Remove excessive whitespace
-                        description_text = re.sub(r'\s+', ' ', full_text).strip()
-                        
-                        if description_text:
-                            print(f"   ✓ Extracted description: {len(description_text)} chars")
-                            print(f"   Preview: {description_text[:100]}...")
-                        else:
-                            print("   ⚠️ Description text is empty after extraction")
+                        description_images = quality_images[:15]
+                        print(f"   ✓ Images: {len(description_images)} from description")
                     else:
-                        print("⚠️ Description container not found")
+                        print("   ❌ #product-description not found")
                     
                 except Exception as e:
                     print(f"⚠️ Description extraction error: {e}")
                 
-                # EXTRACT IMAGES FROM DESCRIPTION
-                print("🖼️ Extracting images from description...")
-                
-                try:
-                    if description_element is not None:
-                        # Try multiple image selection strategies
-                        img_selectors = [
-                            ('img.detail-desc-decorate-image', "detail-desc-decorate-image class"),
-                            ('img[slate-data-type="image"]', "[slate-data-type=image]"),
-                            ('img', "all img tags"),
-                        ]
-                        
-                        for selector, desc in img_selectors:
-                            try:
-                                if selector == 'img':
-                                    all_imgs = description_element.find_all(selector)
-                                elif selector.startswith('img.'):
-                                    all_imgs = description_element.find_all('img', class_=selector.replace('img.', ''))
-                                else:
-                                    all_imgs = description_element.select(selector)
-                                
-                                if all_imgs:
-                                    print(f"   Found {len(all_imgs)} imgs ({desc})")
-                                    
-                                    for img in all_imgs:
-                                        src = img.get('src') or img.get('data-src') or img.get('data-original')
-                                        
-                                        if src and isinstance(src, str) and "alicdn" in src and len(src) > 50:
-                                            # Skip very small images
-                                            if not any(x in src.lower() for x in ["20x20", "50x50", "100x100"]):
-                                                description_images.append(src)
-                            except:
-                                continue
-                        
-                        # Remove duplicates
-                        description_images = list(set(description_images))
-                        
-                        if description_images:
-                            print(f"   ✓ Extracted {len(description_images)} unique images")
-                            for img_url in description_images[:5]:
-                                print(f"      {img_url[:80]}...")
-                    else:
-                        print("   ⚠️ No description element found")
-                    
-                except Exception as e:
-                    print(f"⚠️ Image extraction error: {e}")
-                
-                description_images = description_images[:20]  # Limit to 20
-                print(f"✅ Images: {len(description_images)} total")
-                
                 # SUCCESS
                 browser.close()
-                
-                # DEBUG: Show what we're returning
-                print(f"\n🔍 DEBUG RETURN VALUES:")
-                print(f"   title: {len(title)} chars - {title[:50] if title else 'EMPTY'}")
-                print(f"   description_text: {len(description_text)} chars - {description_text[:50] if description_text else 'EMPTY'}")
-                print(f"   description_images: {len(description_images)} images")
-                print(f"   store_info: {store_info}")
                 
                 result = {
                     "title": title,
@@ -470,6 +386,11 @@ def extract_aliexpress_product(url: str) -> dict:
                     "store_info": store_info
                 }
                 
+                print(f"\n🔍 DEBUG RETURN VALUES:")
+                print(f"   title: {len(title)} chars")
+                print(f"   description_text: {len(description_text)} chars")
+                print(f"   images: {len(description_images)} images")
+                print(f"   store_info: {store_info}")
                 print(f"✅ Extraction successful on attempt {attempt + 1}\n")
                 return result
                 
