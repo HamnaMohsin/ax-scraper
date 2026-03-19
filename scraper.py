@@ -378,51 +378,74 @@ def extract_aliexpress_product(url: str) -> dict:
                             desc_html = desc_container.inner_html(timeout=5000)
                             print(f"   📊 inner_html size (retry): {len(desc_html)} chars")
                         
-                        # EXTRACT TEXT
+                        # EXTRACT TEXT using Playwright (not BeautifulSoup)
                         try:
-                            if desc_html and len(desc_html) > 50:
-                                soup_desc = BeautifulSoup(desc_html, "html.parser")
-                                
-                                # Method 1: Extract from specific content classes
-                                print(f"   🔍 Extracting text from detail-desc elements...")
-                                
-                                titles = []
-                                contents = []
-                                
-                                # Get titles
-                                for title_elem in soup_desc.find_all('p', class_='detail-desc-decorate-title'):
-                                    title_text = title_elem.get_text(strip=True)
-                                    if title_text:
-                                        titles.append(title_text)
-                                
-                                # Get content
-                                for content_elem in soup_desc.find_all('p', class_='detail-desc-decorate-content'):
-                                    content_text = content_elem.get_text(strip=True)
-                                    if content_text:
-                                        contents.append(content_text)
-                                
-                                print(f"   Found {len(titles)} titles, {len(contents)} content blocks")
-                                
-                                # Combine extracted text
-                                if titles or contents:
-                                    description_text = " ".join(titles + contents)
-                                    description_text = re.sub(r'\s+', ' ', description_text).strip()
-                                    print(f"   ✓ Text extracted: {len(description_text)} chars")
-                                else:
-                                    # Fallback: get all text
-                                    print(f"   ⚠️ Specific classes not found, trying generic get_text()...")
-                                    for tag in soup_desc(["script", "style"]):
-                                        tag.decompose()
-                                    description_text = soup_desc.get_text(" ", strip=True)
-                                    description_text = re.sub(r'\s+', ' ', description_text).strip()
-                                    print(f"   ✓ Text extracted (fallback): {len(description_text)} chars")
+                            print(f"   🎯 Method 1: Using Playwright inner_text()...")
+                            # Get rendered text directly from Playwright
+                            inner_text = desc_container.inner_text(timeout=5000).strip()
+                            print(f"      Got {len(inner_text)} chars")
+                            
+                            if inner_text and len(inner_text) > 100:
+                                description_text = inner_text
+                                print(f"   ✓ Text extracted via Playwright: {len(description_text)} chars")
                             else:
-                                print(f"   ⚠️ inner_html too small, trying inner_text...")
-                                description_text = desc_container.inner_text(timeout=5000)
-                                print(f"   ✓ Text via inner_text: {len(description_text)} chars")
+                                print(f"   ⚠️ Playwright inner_text too short ({len(inner_text)})")
+                                
+                                # Method 2: Use page.evaluate() to run JavaScript
+                                print(f"   🎯 Method 2: Using JavaScript (page.evaluate)...")
+                                try:
+                                    # JavaScript to extract text from description elements
+                                    js_text = page.evaluate("""() => {
+                                        // Get all text content from description
+                                        const desc = document.getElementById('product-description');
+                                        if (!desc) return '';
+                                        
+                                        // Get all paragraph text
+                                        const paragraphs = Array.from(desc.querySelectorAll('p'));
+                                        const text = paragraphs.map(p => p.textContent.trim()).filter(t => t).join(' ');
+                                        return text;
+                                    }""")
+                                    
+                                    if js_text and len(js_text) > 100:
+                                        description_text = js_text
+                                        print(f"   ✓ Text extracted via JavaScript: {len(description_text)} chars")
+                                    else:
+                                        print(f"   ⚠️ JavaScript returned {len(js_text) if js_text else 0} chars")
+                                except Exception as e:
+                                    print(f"   ❌ JavaScript evaluation failed: {e}")
+                                
+                                # Method 3: Try full page search
+                                if not description_text or len(description_text) < 100:
+                                    print(f"   🎯 Method 3: Searching entire page...")
+                                    # Get text from entire page
+                                    all_text = page.inner_text()
+                                    
+                                    # Look for description-related keywords
+                                    if 'Games' in all_text and 'watch' in all_text.lower():
+                                        # Extract from the page content
+                                        lines = all_text.split('\n')
+                                        description_parts = []
+                                        
+                                        for i, line in enumerate(lines):
+                                            # Find lines with description content
+                                            if any(keyword in line for keyword in ['Games', 'Flashlight', 'Battery', 'Camera', 'Theme', 'Sleep', 'Tools', 'Language']):
+                                                # Get this line and next few lines as content
+                                                description_parts.append(line)
+                                                if i + 1 < len(lines):
+                                                    description_parts.append(lines[i + 1])
+                                        
+                                        if description_parts:
+                                            description_text = ' '.join(description_parts)
+                                            description_text = re.sub(r'\s+', ' ', description_text).strip()
+                                            print(f"   ✓ Text found on page: {len(description_text)} chars")
+                        
                         except Exception as e:
                             print(f"   ❌ Text extraction error: {e}")
-                            description_text = ""
+                        
+                        if description_text:
+                            print(f"   ✅ Final description length: {len(description_text)} chars")
+                        else:
+                            print(f"   ⚠️ No description text extracted")
                         
                         # EXTRACT IMAGES (INDEPENDENT of text extraction)
                         try:
