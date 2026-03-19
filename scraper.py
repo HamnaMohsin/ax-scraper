@@ -91,7 +91,7 @@ def is_captcha_page(page) -> bool:
 
 
 def extract_store_info_universal(page) -> dict:
-    """Extract store info - try multiple selectors"""
+    """Extract store info - try multiple selectors with debugging"""
     store_info = {}
     
     print("📦 Extracting store info...")
@@ -100,57 +100,89 @@ def extract_store_info_universal(page) -> dict:
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
         
-        # Multiple selectors for store info container
-        store_selectors = [
-            ('div.store-detail--storeDesc--zjMyBuV', "store-detail--storeDesc"),
-            ('div[class*="store-detail"]', "store-detail class"),
-            ('div[class*="storeDesc"]', "storeDesc class"),
-            ('div[data-spm*="store"]', "data-spm store"),
-        ]
+        # Search 1: Direct class selector
+        print("   🔍 Search 1: Looking for store-detail elements...")
+        store_elem = soup.find('div', class_=lambda x: x and 'store-detail' in x)
         
-        for selector, desc in store_selectors:
-            try:
-                if selector.startswith('div.'):
-                    store_elem = soup.find('div', class_=selector.replace('div.', '').split('[')[0])
-                else:
-                    store_elem = soup.select_one(selector)
-                
-                if store_elem:
-                    print(f"   ✓ Found store info ({desc})")
-                    
-                    # Debug: Show what we found
-                    store_html = str(store_elem)[:300]
-                    print(f"   Element preview: {store_html}...")
-                    
-                    # Find table
-                    table = store_elem.find('table')
-                    if table:
-                        print(f"   ✓ Found table in store element")
-                        for row in table.find_all('tr'):
-                            cols = row.find_all('td')
-                            if len(cols) == 2:
-                                key = clean_text(cols[0].get_text()).replace(":", "").strip()
-                                value = clean_text(cols[1].get_text()).strip()
-                                if key and value:
-                                    store_info[key] = value
-                                    print(f"   {key}: {value}")
-                    else:
-                        print(f"   ⚠️ No table found in store element")
-                        # Try to extract text as fallback
-                        text = store_elem.get_text(" ", strip=True)
-                        print(f"   Element text: {text[:100]}...")
-                    
+        if store_elem:
+            print(f"   ✓ Found store element")
+            
+            # Look for table
+            table = store_elem.find('table')
+            if table:
+                print(f"   ✓ Found table with store info")
+                for row in table.find_all('tr'):
+                    cols = row.find_all('td')
+                    if len(cols) >= 2:
+                        key = clean_text(cols[0].get_text()).replace(":", "").strip()
+                        value = clean_text(cols[1].get_text()).strip()
+                        if key and value:
+                            store_info[key] = value
+                            print(f"      {key}: {value}")
+            else:
+                print(f"   ⚠️ No table found in store element")
+                # Show what's actually in the element
+                elem_text = store_elem.get_text(" ", strip=True)[:200]
+                print(f"   Element content: {elem_text}...")
+        
+        # Search 2: If table method failed, try broader search
+        if not store_info:
+            print("   🔍 Search 2: Broader search for store information...")
+            
+            # Look for any div with store-related content
+            all_divs = soup.find_all('div', class_=lambda x: x and any(s in str(x).lower() for s in ['store', 'seller', 'shop']))
+            print(f"   Found {len(all_divs)} potential store divs")
+            
+            for div in all_divs[:5]:  # Check first 5
+                # Look for table in each
+                tbl = div.find('table')
+                if tbl:
+                    print(f"   ✓ Found table in div")
+                    for row in tbl.find_all('tr'):
+                        cols = row.find_all('td')
+                        if len(cols) >= 2:
+                            key = clean_text(cols[0].get_text()).replace(":", "").strip()
+                            value = clean_text(cols[1].get_text()).strip()
+                            if key and value:
+                                store_info[key] = value
+                                print(f"      {key}: {value}")
                     if store_info:
-                        return store_info
-            except Exception as e:
-                print(f"   ⚠️ Selector {desc} error: {e}")
-                continue
+                        break
+        
+        # Search 3: Look for span/div elements with store info text
+        if not store_info:
+            print("   🔍 Search 3: Looking for store info in text elements...")
+            
+            # Search for "Store no." or "store no" pattern
+            all_text = soup.get_text()
+            if 'store no' in all_text.lower():
+                print("   📝 Store info text found on page but table structure not matching")
+                
+                # Try to find the container with store info
+                containers = soup.find_all(['div', 'span'], class_=lambda x: x and any(s in str(x).lower() for s in ['store', 'seller', 'shop', 'info']))
+                
+                for container in containers:
+                    text = container.get_text()
+                    if 'store' in text.lower() or 'seller' in text.lower():
+                        # Try to parse key-value pairs
+                        lines = [line.strip() for line in text.split('\n') if line.strip()]
+                        for i, line in enumerate(lines):
+                            if ':' in line or (i + 1 < len(lines) and line.endswith(('Store', 'no.', 'Location', 'since'))):
+                                if ':' in line:
+                                    parts = line.split(':', 1)
+                                    key = parts[0].strip()
+                                    value = parts[1].strip() if len(parts) > 1 else ""
+                                    if key and value and len(key) < 50:
+                                        store_info[key] = value
+                                        print(f"      {key}: {value}")
         
         if not store_info:
-            print("   ⚠️ No store info found")
+            print("   ⚠️ Could not extract store information")
             
     except Exception as e:
-        print(f"⚠️ Store info extraction error: {e}")
+        print(f"⚠️ Store extraction error: {e}")
+        import traceback
+        traceback.print_exc()
     
     return store_info
 
@@ -334,42 +366,59 @@ def extract_aliexpress_product(url: str) -> dict:
                     if desc_container.count() > 0:
                         print("   ✓ Found #product-description container")
                         
-                        # GET HTML FROM RENDERED PAGE (critical for dynamically loaded content)
+                        # GET HTML FROM RENDERED PAGE
                         desc_html = desc_container.inner_html(timeout=5000)
-                        soup_desc = BeautifulSoup(desc_html, "html.parser")
+                        print(f"   📊 inner_html size: {len(desc_html)} chars")
                         
-                        # Clean and extract text
-                        for tag in soup_desc(["script", "style"]):
-                            tag.decompose()
-                        description_text = soup_desc.get_text(" ", strip=True)
-                        description_text = re.sub(r'\s+', ' ', description_text).strip()
-                        print(f"   ✓ Text: {len(description_text)} chars")
+                        # EXTRACT TEXT
+                        try:
+                            if desc_html and len(desc_html) > 50:
+                                soup_desc = BeautifulSoup(desc_html, "html.parser")
+                                # Clean and extract text
+                                for tag in soup_desc(["script", "style"]):
+                                    tag.decompose()
+                                description_text = soup_desc.get_text(" ", strip=True)
+                                description_text = re.sub(r'\s+', ' ', description_text).strip()
+                                print(f"   ✓ Text extracted: {len(description_text)} chars")
+                            else:
+                                print(f"   ⚠️ inner_html too small, trying inner_text...")
+                                description_text = desc_container.inner_text(timeout=5000)
+                                print(f"   ✓ Text via inner_text: {len(description_text)} chars")
+                        except Exception as e:
+                            print(f"   ❌ Text extraction error: {e}")
+                            description_text = ""
                         
-                        # GET ALL IMAGES from description (recursive - all nesting levels)
-                        # Use Playwright's locator for rendered images
-                        imgs = desc_container.locator('img').all()
-                        for img in imgs:
-                            src = (img.get_attribute("src") or 
-                                  img.get_attribute("data-src") or 
-                                  img.get_attribute("data-lazy-src"))
-                            if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
-                                clean_src = src.split('?')[0]  # Remove query params
-                                description_images.append(clean_src)
-                        
-                        # Also get from HTML parsing (catches lazy-loaded images)
-                        for img in soup_desc.find_all("img"):
-                            src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-                            if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
-                                clean_src = src.split('?')[0]
-                                description_images.append(clean_src)
-                        
-                        # Dedupe + quality filter
-                        unique_desc_images = list(set(description_images))
-                        quality_images = [img for img in unique_desc_images 
-                                        if len(img) > 50 and not any(bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50'])]
-                        
-                        description_images = quality_images[:15]
-                        print(f"   ✓ Images: {len(description_images)} from description")
+                        # EXTRACT IMAGES (INDEPENDENT of text extraction)
+                        try:
+                            # Method 1: Playwright locator for rendered images
+                            imgs = desc_container.locator('img').all()
+                            for img in imgs:
+                                src = (img.get_attribute("src") or 
+                                      img.get_attribute("data-src") or 
+                                      img.get_attribute("data-lazy-src"))
+                                if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
+                                    clean_src = src.split('?')[0]
+                                    description_images.append(clean_src)
+                            
+                            # Method 2: HTML parsing (catches lazy-loaded)
+                            if desc_html and len(desc_html) > 50:
+                                soup_desc = BeautifulSoup(desc_html, "html.parser")
+                                for img in soup_desc.find_all("img"):
+                                    src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
+                                    if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
+                                        clean_src = src.split('?')[0]
+                                        description_images.append(clean_src)
+                            
+                            # Dedupe + quality filter
+                            unique_desc_images = list(set(description_images))
+                            quality_images = [img for img in unique_desc_images 
+                                            if len(img) > 50 and not any(bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50'])]
+                            
+                            description_images = quality_images[:15]
+                            print(f"   ✓ Images: {len(description_images)} extracted")
+                        except Exception as e:
+                            print(f"   ❌ Image extraction error: {e}")
+                            description_images = []
                     else:
                         print("   ❌ #product-description not found")
                     
