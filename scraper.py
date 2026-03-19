@@ -118,9 +118,14 @@ def extract_store_info_universal(page) -> dict:
                 if store_elem:
                     print(f"   ✓ Found store info ({desc})")
                     
+                    # Debug: Show what we found
+                    store_html = str(store_elem)[:300]
+                    print(f"   Element preview: {store_html}...")
+                    
                     # Find table
                     table = store_elem.find('table')
                     if table:
+                        print(f"   ✓ Found table in store element")
                         for row in table.find_all('tr'):
                             cols = row.find_all('td')
                             if len(cols) == 2:
@@ -129,10 +134,16 @@ def extract_store_info_universal(page) -> dict:
                                 if key and value:
                                     store_info[key] = value
                                     print(f"   {key}: {value}")
+                    else:
+                        print(f"   ⚠️ No table found in store element")
+                        # Try to extract text as fallback
+                        text = store_elem.get_text(" ", strip=True)
+                        print(f"   Element text: {text[:100]}...")
                     
                     if store_info:
                         return store_info
-            except:
+            except Exception as e:
+                print(f"   ⚠️ Selector {desc} error: {e}")
                 continue
         
         if not store_info:
@@ -303,7 +314,7 @@ def extract_aliexpress_product(url: str) -> dict:
                                     if 'description' in text:
                                         print(f"   ✓ Found Description button ({desc})")
                                         btn.click(force=True, timeout=2000)
-                                        page.wait_for_timeout(1500)
+                                        page.wait_for_timeout(3000)  # Increased: give description time to load
                                         print("   ✓ Clicked Description tab")
                                         clicked = True
                                         break
@@ -353,12 +364,30 @@ def extract_aliexpress_product(url: str) -> dict:
                     if product_desc:
                         description_element = product_desc
                         
+                        # Wait for content to actually load
+                        print("   Waiting for description content to load...")
+                        page.wait_for_timeout(3000)  # Extra wait after finding element
+                        
+                        # Get fresh HTML after wait
+                        html = page.content()
+                        soup = BeautifulSoup(html, "html.parser")
+                        product_desc = soup.find('div', id='product-description')
+                        
+                        if not product_desc:
+                            print("   ⚠️ Description element disappeared after wait")
+                            product_desc = description_element
+                        
                         # Remove script and style tags first
                         for unwanted in product_desc(['script', 'style']):
                             unwanted.decompose()
                         
                         # Get all text
                         full_text = product_desc.get_text(" ", strip=True)
+                        
+                        if not full_text:
+                            print("   🔍 DEBUG: Found element but text is empty")
+                            print(f"   HTML length: {len(product_desc.get_text())} chars")
+                            print(f"   Element HTML preview: {str(product_desc)[:200]}...")
                         
                         # Remove excessive whitespace
                         description_text = re.sub(r'\s+', ' ', full_text).strip()
@@ -367,7 +396,7 @@ def extract_aliexpress_product(url: str) -> dict:
                             print(f"   ✓ Extracted description: {len(description_text)} chars")
                             print(f"   Preview: {description_text[:100]}...")
                         else:
-                            print("   ⚠️ Description text is empty")
+                            print("   ⚠️ Description text is empty after extraction")
                     else:
                         print("⚠️ Description container not found")
                     
