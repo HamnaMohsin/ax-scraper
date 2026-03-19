@@ -346,7 +346,17 @@ def extract_aliexpress_product(url: str) -> dict:
                                         print(f"   ✓ Found Description button ({desc})")
                                         btn.click(force=True, timeout=2000)
                                         print("   ⏳ Waiting for description content to load...")
-                                        page.wait_for_timeout(5000)  # Increased: give content time to render
+                                        page.wait_for_timeout(3000)
+                                        
+                                        # Scroll to description container to trigger rendering
+                                        try:
+                                            page.locator('#product-description').scroll_into_view()
+                                            page.wait_for_timeout(2000)
+                                        except:
+                                            pass
+                                        
+                                        # Wait more for content to load
+                                        page.wait_for_timeout(3000)
                                         print("   ✓ Clicked Description tab")
                                         clicked = True
                                         break
@@ -417,27 +427,31 @@ def extract_aliexpress_product(url: str) -> dict:
                                 # Method 3: Try full page search
                                 if not description_text or len(description_text) < 100:
                                     print(f"   🎯 Method 3: Searching entire page...")
-                                    # Get text from entire page
-                                    all_text = page.inner_text()
-                                    
-                                    # Look for description-related keywords
-                                    if 'Games' in all_text and 'watch' in all_text.lower():
-                                        # Extract from the page content
-                                        lines = all_text.split('\n')
-                                        description_parts = []
+                                    # Get text from entire page using locator
+                                    try:
+                                        all_text = page.locator('body').inner_text()
+                                        print(f"      Got {len(all_text)} chars from entire page")
                                         
-                                        for i, line in enumerate(lines):
-                                            # Find lines with description content
-                                            if any(keyword in line for keyword in ['Games', 'Flashlight', 'Battery', 'Camera', 'Theme', 'Sleep', 'Tools', 'Language']):
-                                                # Get this line and next few lines as content
-                                                description_parts.append(line)
-                                                if i + 1 < len(lines):
-                                                    description_parts.append(lines[i + 1])
-                                        
-                                        if description_parts:
-                                            description_text = ' '.join(description_parts)
-                                            description_text = re.sub(r'\s+', ' ', description_text).strip()
-                                            print(f"   ✓ Text found on page: {len(description_text)} chars")
+                                        # Look for description-related keywords
+                                        if 'Games' in all_text and 'watch' in all_text.lower():
+                                            # Extract from the page content
+                                            lines = all_text.split('\n')
+                                            description_parts = []
+                                            
+                                            for i, line in enumerate(lines):
+                                                # Find lines with description content
+                                                if any(keyword in line for keyword in ['Games', 'Flashlight', 'Battery', 'Camera', 'Theme', 'Sleep', 'Tools', 'Language']):
+                                                    # Get this line and next few lines as content
+                                                    description_parts.append(line)
+                                                    if i + 1 < len(lines):
+                                                        description_parts.append(lines[i + 1])
+                                            
+                                            if description_parts:
+                                                description_text = ' '.join(description_parts)
+                                                description_text = re.sub(r'\s+', ' ', description_text).strip()
+                                                print(f"   ✓ Text found on page: {len(description_text)} chars")
+                                    except Exception as e:
+                                        print(f"   ⚠️ Could not search page: {e}")
                         
                         except Exception as e:
                             print(f"   ❌ Text extraction error: {e}")
