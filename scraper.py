@@ -301,9 +301,8 @@ def extract_aliexpress_product(url: str) -> dict:
                         
                         # Look for description tab button
                         desc_tab_selectors = [
-                            'button:has-text("Description")',
-                            'div[role="tab"]:has-text("Description")',
-                            'a:has-text("Description")',
+                            'product-description',
+                            '#product-description',
                         ]
                         
                         for tab_selector in desc_tab_selectors:
