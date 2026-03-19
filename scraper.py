@@ -390,54 +390,68 @@ def extract_aliexpress_product(url: str) -> dict:
                         
                         # EXTRACT TEXT using Playwright (not BeautifulSoup)
                         try:
-                            print(f"   🎯 Method 1: Using Playwright inner_text()...")
-                            # Get rendered text directly from Playwright
-                            inner_text = desc_container.inner_text(timeout=5000).strip()
-                            print(f"      Got {len(inner_text)} chars")
+                            print(f"   🎯 Method 1: Targeting description paragraph elements directly...")
                             
-                            if inner_text and len(inner_text) > 100:
-                                description_text = inner_text
-                                print(f"   ✓ Text extracted via Playwright: {len(description_text)} chars")
+                            # Get all title and content paragraphs directly
+                            titles = page.locator('#product-description p.detail-desc-decorate-title').all()
+                            contents = page.locator('#product-description p.detail-desc-decorate-content').all()
+                            
+                            print(f"      Found {len(titles)} titles, {len(contents)} content paragraphs")
+                            
+                            text_parts = []
+                            
+                            # Extract title text
+                            for title in titles:
+                                try:
+                                    text = title.inner_text(timeout=2000).strip()
+                                    if text:
+                                        text_parts.append(text)
+                                        print(f"      Title: {text[:50]}...")
+                                except:
+                                    pass
+                            
+                            # Extract content text
+                            for content in contents:
+                                try:
+                                    text = content.inner_text(timeout=2000).strip()
+                                    if text:
+                                        text_parts.append(text)
+                                        print(f"      Content: {text[:50]}...")
+                                except:
+                                    pass
+                            
+                            if text_parts:
+                                description_text = ' '.join(text_parts)
+                                description_text = re.sub(r'\s+', ' ', description_text).strip()
+                                print(f"   ✓ Text extracted directly: {len(description_text)} chars")
                             else:
-                                print(f"   ⚠️ Playwright inner_text too short ({len(inner_text)})")
-                                print(f"   ⏳ Waiting 8 more seconds for content to load...")
-                                page.wait_for_timeout(8000)  # Wait much longer
+                                print(f"   ⚠️ No text found in paragraph elements ({len(titles)} titles, {len(contents)} contents)")
                                 
-                                # Try again after long wait
+                                # Fallback Method 2: Use inner_text() on container
+                                print(f"   🎯 Method 2: Using Playwright inner_text() on container...")
                                 inner_text = desc_container.inner_text(timeout=5000).strip()
-                                print(f"      Got {len(inner_text)} chars (after 8s wait)")
+                                print(f"      Got {len(inner_text)} chars")
                                 
                                 if inner_text and len(inner_text) > 100:
                                     description_text = inner_text
-                                    print(f"   ✓ Text extracted via Playwright: {len(description_text)} chars")
+                                    print(f"   ✓ Text extracted via container: {len(description_text)} chars")
                                 else:
-                                    # Method 2: Use page.evaluate() to run JavaScript
-                                    print(f"   🎯 Method 2: Using JavaScript (page.evaluate)...")
-                                    try:
-                                        # JavaScript to extract text from description elements
-                                        js_text = page.evaluate("""() => {
-                                            // Get all text content from description
-                                            const desc = document.getElementById('product-description');
-                                            if (!desc) return '';
-                                            
-                                            // Get all paragraph text
-                                            const paragraphs = Array.from(desc.querySelectorAll('p'));
-                                            const text = paragraphs.map(p => p.textContent.trim()).filter(t => t).join(' ');
-                                            return text;
-                                        }""")
-                                        
-                                        if js_text and len(js_text) > 100:
-                                            description_text = js_text
-                                            print(f"   ✓ Text extracted via JavaScript: {len(description_text)} chars")
-                                        else:
-                                            print(f"   ⚠️ JavaScript returned {len(js_text) if js_text else 0} chars")
-                                            print(f"   ❌ FAILED: Description container is empty - content not loading")
-                                    except Exception as e:
-                                        print(f"   ❌ JavaScript evaluation failed: {e}")
-                                        print(f"   ⚠️ Could not extract description text")
+                                    print(f"   ⚠️ Container inner_text too short ({len(inner_text)})")
+                                    print(f"   ⏳ Waiting 5 more seconds...")
+                                    page.wait_for_timeout(5000)
+                                    
+                                    # Try one more time
+                                    inner_text = desc_container.inner_text(timeout=5000).strip()
+                                    if inner_text and len(inner_text) > 100:
+                                        description_text = inner_text
+                                        print(f"   ✓ Text extracted after wait: {len(description_text)} chars")
+                                    else:
+                                        print(f"   ❌ FAILED: Could not extract description text")
                         
                         except Exception as e:
                             print(f"   ❌ Text extraction error: {e}")
+                            import traceback
+                            traceback.print_exc()
                         
                         if description_text:
                             print(f"   ✅ Final description length: {len(description_text)} chars")
