@@ -382,12 +382,40 @@ def extract_aliexpress_product(url: str) -> dict:
                         try:
                             if desc_html and len(desc_html) > 50:
                                 soup_desc = BeautifulSoup(desc_html, "html.parser")
-                                # Clean and extract text
-                                for tag in soup_desc(["script", "style"]):
-                                    tag.decompose()
-                                description_text = soup_desc.get_text(" ", strip=True)
-                                description_text = re.sub(r'\s+', ' ', description_text).strip()
-                                print(f"   ✓ Text extracted: {len(description_text)} chars")
+                                
+                                # Method 1: Extract from specific content classes
+                                print(f"   🔍 Extracting text from detail-desc elements...")
+                                
+                                titles = []
+                                contents = []
+                                
+                                # Get titles
+                                for title_elem in soup_desc.find_all('p', class_='detail-desc-decorate-title'):
+                                    title_text = title_elem.get_text(strip=True)
+                                    if title_text:
+                                        titles.append(title_text)
+                                
+                                # Get content
+                                for content_elem in soup_desc.find_all('p', class_='detail-desc-decorate-content'):
+                                    content_text = content_elem.get_text(strip=True)
+                                    if content_text:
+                                        contents.append(content_text)
+                                
+                                print(f"   Found {len(titles)} titles, {len(contents)} content blocks")
+                                
+                                # Combine extracted text
+                                if titles or contents:
+                                    description_text = " ".join(titles + contents)
+                                    description_text = re.sub(r'\s+', ' ', description_text).strip()
+                                    print(f"   ✓ Text extracted: {len(description_text)} chars")
+                                else:
+                                    # Fallback: get all text
+                                    print(f"   ⚠️ Specific classes not found, trying generic get_text()...")
+                                    for tag in soup_desc(["script", "style"]):
+                                        tag.decompose()
+                                    description_text = soup_desc.get_text(" ", strip=True)
+                                    description_text = re.sub(r'\s+', ' ', description_text).strip()
+                                    print(f"   ✓ Text extracted (fallback): {len(description_text)} chars")
                             else:
                                 print(f"   ⚠️ inner_html too small, trying inner_text...")
                                 description_text = desc_container.inner_text(timeout=5000)
@@ -400,25 +428,42 @@ def extract_aliexpress_product(url: str) -> dict:
                         try:
                             print(f"   🖼️ Starting image extraction...")
                             
-                            # Method 1: Playwright locator for rendered images
-                            print(f"   Method 1: Using Playwright locator...")
-                            imgs = desc_container.locator('img').all()
-                            print(f"      Found {len(imgs)} total <img> tags")
+                            # Method 1: Target specific image class in Playwright
+                            print(f"   Method 1: Looking for detail-desc-decorate-image class...")
+                            
+                            # Find all img.detail-desc-decorate-image
+                            imgs = desc_container.locator('img.detail-desc-decorate-image').all()
+                            print(f"      Found {len(imgs)} detail-desc-decorate-image tags")
                             
                             for img in imgs:
                                 src = (img.get_attribute("src") or 
                                       img.get_attribute("data-src") or 
                                       img.get_attribute("data-lazy-src"))
-                                if src:
-                                    print(f"      Found src: {src[:80]}...")
                                 if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
                                     clean_src = src.split('?')[0]
                                     description_images.append(clean_src)
+                                    print(f"      Added: {src[:60]}...")
                             
                             print(f"      After Method 1: {len(description_images)} images")
                             
-                            # Method 2: HTML parsing (catches lazy-loaded)
-                            print(f"   Method 2: Using HTML parsing...")
+                            # Method 2: Also look for all images in case structure varies
+                            print(f"   Method 2: Looking for all images...")
+                            all_imgs = desc_container.locator('img').all()
+                            print(f"      Found {len(all_imgs)} total <img> tags")
+                            
+                            for img in all_imgs:
+                                src = (img.get_attribute("src") or 
+                                      img.get_attribute("data-src") or 
+                                      img.get_attribute("data-lazy-src"))
+                                if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
+                                    clean_src = src.split('?')[0]
+                                    if clean_src not in description_images:  # Avoid duplicates
+                                        description_images.append(clean_src)
+                            
+                            print(f"      After Method 2: {len(description_images)} total images")
+                            
+                            # Method 3: HTML parsing (catches any missed images)
+                            print(f"   Method 3: Using HTML parsing...")
                             if desc_html and len(desc_html) > 50:
                                 soup_desc = BeautifulSoup(desc_html, "html.parser")
                                 html_imgs = soup_desc.find_all("img")
@@ -426,29 +471,29 @@ def extract_aliexpress_product(url: str) -> dict:
                                 
                                 for img in html_imgs:
                                     src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-                                    if src:
-                                        if "alicdn.com" in src or "ae01.alicdn.com" in src:
-                                            clean_src = src.split('?')[0]
+                                    if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
+                                        clean_src = src.split('?')[0]
+                                        if clean_src not in description_images:
                                             description_images.append(clean_src)
                             else:
-                                print(f"      Skipping HTML parsing (desc_html={len(desc_html) if desc_html else 0} chars)")
+                                print(f"      Skipping (desc_html too small)")
                             
-                            print(f"      After Method 2: {len(description_images)} total images before dedup")
+                            print(f"      After Method 3: {len(description_images)} total before dedup")
                             
                             # Dedupe + quality filter
                             unique_desc_images = list(set(description_images))
                             print(f"      After dedupe: {len(unique_desc_images)} unique images")
                             
                             quality_images = [img for img in unique_desc_images 
-                                            if len(img) > 50 and not any(bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50'])]
+                                            if len(img) > 50 and not any(bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100'])]
                             print(f"      After quality filter: {len(quality_images)} quality images")
                             
-                            description_images = quality_images[:15]
+                            description_images = quality_images[:20]  # Limit to 20
                             print(f"   ✓ Images: {len(description_images)} extracted")
                             
                             if description_images:
                                 for i, img_url in enumerate(description_images[:3], 1):
-                                    print(f"      {i}. {img_url[:80]}...")
+                                    print(f"      {i}. {img_url[:60]}...")
                         except Exception as e:
                             print(f"   ❌ Image extraction error: {e}")
                             import traceback
