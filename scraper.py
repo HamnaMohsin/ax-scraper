@@ -400,58 +400,41 @@ def extract_aliexpress_product(url: str) -> dict:
                                 print(f"   ✓ Text extracted via Playwright: {len(description_text)} chars")
                             else:
                                 print(f"   ⚠️ Playwright inner_text too short ({len(inner_text)})")
+                                print(f"   ⏳ Waiting 8 more seconds for content to load...")
+                                page.wait_for_timeout(8000)  # Wait much longer
                                 
-                                # Method 2: Use page.evaluate() to run JavaScript
-                                print(f"   🎯 Method 2: Using JavaScript (page.evaluate)...")
-                                try:
-                                    # JavaScript to extract text from description elements
-                                    js_text = page.evaluate("""() => {
-                                        // Get all text content from description
-                                        const desc = document.getElementById('product-description');
-                                        if (!desc) return '';
-                                        
-                                        // Get all paragraph text
-                                        const paragraphs = Array.from(desc.querySelectorAll('p'));
-                                        const text = paragraphs.map(p => p.textContent.trim()).filter(t => t).join(' ');
-                                        return text;
-                                    }""")
-                                    
-                                    if js_text and len(js_text) > 100:
-                                        description_text = js_text
-                                        print(f"   ✓ Text extracted via JavaScript: {len(description_text)} chars")
-                                    else:
-                                        print(f"   ⚠️ JavaScript returned {len(js_text) if js_text else 0} chars")
-                                except Exception as e:
-                                    print(f"   ❌ JavaScript evaluation failed: {e}")
+                                # Try again after long wait
+                                inner_text = desc_container.inner_text(timeout=5000).strip()
+                                print(f"      Got {len(inner_text)} chars (after 8s wait)")
                                 
-                                # Method 3: Try full page search
-                                if not description_text or len(description_text) < 100:
-                                    print(f"   🎯 Method 3: Searching entire page...")
-                                    # Get text from entire page using locator
+                                if inner_text and len(inner_text) > 100:
+                                    description_text = inner_text
+                                    print(f"   ✓ Text extracted via Playwright: {len(description_text)} chars")
+                                else:
+                                    # Method 2: Use page.evaluate() to run JavaScript
+                                    print(f"   🎯 Method 2: Using JavaScript (page.evaluate)...")
                                     try:
-                                        all_text = page.locator('body').inner_text()
-                                        print(f"      Got {len(all_text)} chars from entire page")
+                                        # JavaScript to extract text from description elements
+                                        js_text = page.evaluate("""() => {
+                                            // Get all text content from description
+                                            const desc = document.getElementById('product-description');
+                                            if (!desc) return '';
+                                            
+                                            // Get all paragraph text
+                                            const paragraphs = Array.from(desc.querySelectorAll('p'));
+                                            const text = paragraphs.map(p => p.textContent.trim()).filter(t => t).join(' ');
+                                            return text;
+                                        }""")
                                         
-                                        # Look for description-related keywords
-                                        if 'Games' in all_text and 'watch' in all_text.lower():
-                                            # Extract from the page content
-                                            lines = all_text.split('\n')
-                                            description_parts = []
-                                            
-                                            for i, line in enumerate(lines):
-                                                # Find lines with description content
-                                                if any(keyword in line for keyword in ['Games', 'Flashlight', 'Battery', 'Camera', 'Theme', 'Sleep', 'Tools', 'Language']):
-                                                    # Get this line and next few lines as content
-                                                    description_parts.append(line)
-                                                    if i + 1 < len(lines):
-                                                        description_parts.append(lines[i + 1])
-                                            
-                                            if description_parts:
-                                                description_text = ' '.join(description_parts)
-                                                description_text = re.sub(r'\s+', ' ', description_text).strip()
-                                                print(f"   ✓ Text found on page: {len(description_text)} chars")
+                                        if js_text and len(js_text) > 100:
+                                            description_text = js_text
+                                            print(f"   ✓ Text extracted via JavaScript: {len(description_text)} chars")
+                                        else:
+                                            print(f"   ⚠️ JavaScript returned {len(js_text) if js_text else 0} chars")
+                                            print(f"   ❌ FAILED: Description container is empty - content not loading")
                                     except Exception as e:
-                                        print(f"   ⚠️ Could not search page: {e}")
+                                        print(f"   ❌ JavaScript evaluation failed: {e}")
+                                        print(f"   ⚠️ Could not extract description text")
                         
                         except Exception as e:
                             print(f"   ❌ Text extraction error: {e}")
