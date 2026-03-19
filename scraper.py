@@ -33,12 +33,17 @@ def random_viewport():
 
 
 def rotate_tor_circuit():
-    """Rotate Tor circuit to get new exit IP"""
+    """Rotate Tor circuit to get new exit IP - wait longer for actual change"""
     try:
         with Controller.from_port(port=9051) as controller:
             controller.authenticate()
             controller.signal(Signal.NEWNYM)
-            time.sleep(5)
+            # Wait MUCH longer for Tor to establish new circuit
+            print("   Waiting 15s for new Tor circuit...")
+            for i in range(15):
+                time.sleep(1)
+                if i % 5 == 4:
+                    print(f"   ... {15 - i - 1}s remaining")
         print("✅ Tor circuit rotated - new IP acquired")
         return True
     except Exception as e:
@@ -190,7 +195,10 @@ def extract_aliexpress_product(url: str) -> dict:
         if attempt > 0:
             print("🔄 Rotating Tor circuit...")
             rotate_tor_circuit()
-            random_delay(8, 15)
+            # Wait longer between retries to ensure new IP is ready
+            wait_time = 20 + (attempt * 5)  # 25s, 30s for attempts 2, 3
+            print(f"   Waiting {wait_time}s before next attempt...")
+            time.sleep(wait_time)
         
         with sync_playwright() as p:
             browser = p.chromium.launch(
