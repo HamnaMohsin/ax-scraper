@@ -1,462 +1,410 @@
 import re
 import time
 import random
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
-from stem import Signal
-from stem.control import Controller
 
 
-def clean_text(text: str) -> str:
-    """Clean and normalize text"""
-    if not text:
-        return ""
-    text = BeautifulSoup(text, "html.parser").get_text(" ")
-    return re.sub(r"\s+", " ", text).strip()
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
-
-def random_delay(min_seconds: float = 1, max_seconds: float = 3):
-    """Random delay to mimic human behavior"""
-    delay = random.uniform(min_seconds, max_seconds)
+def random_delay(min_sec: float = 1.0, max_sec: float = 3.0):
+    delay = random.uniform(min_sec, max_sec)
+    print(f"Waiting {delay:.1f}s...")
     time.sleep(delay)
 
 
-def random_viewport():
-    """Return random viewport size"""
-    viewports = [
-        {'width': 1366, 'height': 768},
-        {'width': 1920, 'height': 1080},
-        {'width': 1440, 'height': 900},
-        {'width': 1280, 'height': 720},
-    ]
-    return random.choice(viewports)
-
-
 def rotate_tor_circuit():
-    """Rotate Tor circuit to get new exit IP - wait longer for actual change"""
     try:
+        from stem import Signal
+        from stem.control import Controller
         with Controller.from_port(port=9051) as controller:
             controller.authenticate()
             controller.signal(Signal.NEWNYM)
-            # Wait MUCH longer for Tor to establish new circuit
-            print("   Waiting 15s for new Tor circuit...")
-            for i in range(15):
-                time.sleep(1)
-                if i % 5 == 4:
-                    print(f"   ... {15 - i - 1}s remaining")
-        print("✅ Tor circuit rotated - new IP acquired")
-        return True
+            print("Tor circuit rotated — new exit IP assigned.")
+            time.sleep(5)
     except Exception as e:
-        print(f"⚠️ Could not rotate Tor circuit: {e}")
-        return False
+        print(f"Failed to rotate Tor circuit: {e}")
 
 
-def is_captcha_page(page) -> bool:
-    """Detect if page is a CAPTCHA/block page - multiple selectors"""
-    page_url = page.url.lower()
-    page_title = page.title().lower()
-    
-    # URL indicators
-    captcha_url_keywords = ["baxia", "punish", "captcha", "verify", "_____tmd_____"]
-    if any(kw in page_url for kw in captcha_url_keywords):
-        print("❌ CAPTCHA detected in URL")
-        return True
-    
-    # CAPTCHA iframe selectors
-    captcha_selectors = [
+def detect_recaptcha(page) -> bool:
+    indicators = [
         "iframe[src*='recaptcha']",
-        ".baxia-punish",
+        "iframe[src*='google.com/recaptcha']",
+        ".g-recaptcha",
         "#captcha-verify",
+        ".baxia-punish",
         "[id*='captcha']",
-        "iframe[src*='geetest']",
-        "[class*='captcha']",
     ]
-    
-    for selector in captcha_selectors:
+    for selector in indicators:
         try:
-            if page.locator(selector).count() > 0:
-                print(f"❌ CAPTCHA detected: {selector}")
+            if page.query_selector(selector):
+                print(f"reCAPTCHA/block detected via selector: {selector}")
                 return True
-        except:
-            continue
-    
-    # Title indicators
-    is_product_page = "aliexpress" in page_title and len(page_title) > 40
-    block_title_keywords = ["verify", "access", "denied", "blocked", "challenge"]
-    if not is_product_page and any(kw in page_title for kw in block_title_keywords):
-        print("❌ Block page detected from title")
+        except Exception:
+            pass
+
+    page_url = page.url.lower()
+    if any(kw in page_url for kw in ["baxia", "punish", "captcha", "verify"]):
+        print(f"Block detected via URL: '{page.url}'")
         return True
-    
+
+    page_title = page.title()
+    page_title_lower = page_title.lower()
+    is_product_page = "aliexpress" in page_title_lower and len(page_title) > 40
+    if not is_product_page:
+        block_titles = ["verify", "captcha", "robot", "access denied", "blocked", "aanmelden", "sign in"]
+        if any(kw in page_title_lower for kw in block_titles):
+            print(f"Block detected via page title: '{page_title}'")
+            return True
+
     return False
 
 
-def extract_store_info_universal(page) -> dict:
-    """Extract store info - try multiple selectors with debugging"""
-    store_info = {}
-    
-    print("📦 Extracting store info...")
-    
-    try:
-        html = page.content()
-        soup = BeautifulSoup(html, "html.parser")
-        
-        # Search 1: Direct class selector
-        print("   🔍 Search 1: Looking for store-detail elements...")
-        store_elem = soup.find('div', class_=lambda x: x and 'store-detail' in x)
-        
-        if store_elem:
-            print(f"   ✓ Found store element")
-            
-            # Look for table
-            table = store_elem.find('table')
-            if table:
-                print(f"   ✓ Found table with store info")
-                for row in table.find_all('tr'):
-                    cols = row.find_all('td')
-                    if len(cols) >= 2:
-                        key = clean_text(cols[0].get_text()).replace(":", "").strip()
-                        value = clean_text(cols[1].get_text()).strip()
-                        if key and value:
-                            store_info[key] = value
-                            print(f"      {key}: {value}")
-            else:
-                print(f"   ⚠️ No table found in store element")
-                # Show what's actually in the element
-                elem_text = store_elem.get_text(" ", strip=True)[:200]
-                print(f"   Element content: {elem_text}...")
-        
-        # Search 2: If table method failed, try broader search
-        if not store_info:
-            print("   🔍 Search 2: Broader search for store information...")
-            
-            # Look for any div with store-related content
-            all_divs = soup.find_all('div', class_=lambda x: x and any(s in str(x).lower() for s in ['store', 'seller', 'shop']))
-            print(f"   Found {len(all_divs)} potential store divs")
-            
-            for div in all_divs[:5]:  # Check first 5
-                # Look for table in each
-                tbl = div.find('table')
-                if tbl:
-                    print(f"   ✓ Found table in div")
-                    for row in tbl.find_all('tr'):
-                        cols = row.find_all('td')
-                        if len(cols) >= 2:
-                            key = clean_text(cols[0].get_text()).replace(":", "").strip()
-                            value = clean_text(cols[1].get_text()).strip()
-                            if key and value:
-                                store_info[key] = value
-                                print(f"      {key}: {value}")
-                    if store_info:
-                        break
-        
-        # Search 3: Look for span/div elements with store info text
-        if not store_info:
-            print("   🔍 Search 3: Looking for store info in text elements...")
-            
-            # Search for "Store no." or "store no" pattern
-            all_text = soup.get_text()
-            if 'store no' in all_text.lower():
-                print("   📝 Store info text found on page but table structure not matching")
-                
-                # Try to find the container with store info
-                containers = soup.find_all(['div', 'span'], class_=lambda x: x and any(s in str(x).lower() for s in ['store', 'seller', 'shop', 'info']))
-                
-                for container in containers:
-                    text = container.get_text()
-                    if 'store' in text.lower() or 'seller' in text.lower():
-                        # Try to parse key-value pairs
-                        lines = [line.strip() for line in text.split('\n') if line.strip()]
-                        for i, line in enumerate(lines):
-                            if ':' in line or (i + 1 < len(lines) and line.endswith(('Store', 'no.', 'Location', 'since'))):
-                                if ':' in line:
-                                    parts = line.split(':', 1)
-                                    key = parts[0].strip()
-                                    value = parts[1].strip() if len(parts) > 1 else ""
-                                    if key and value and len(key) < 50:
-                                        store_info[key] = value
-                                        print(f"      {key}: {value}")
-        
-        if not store_info:
-            print("   ⚠️ Could not extract store information")
-            
-    except Exception as e:
-        print(f"⚠️ Store extraction error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    return store_info
-
-
-def extract_title_universal(page) -> str:
-    """Extract title - try multiple selectors"""
-    
-    print("📌 Extracting title...")
-    
-    # Multiple selectors with fallbacks
-    title_selectors = [
-        ('[data-pl="product-title"]', "data-pl product-title"),
-        ('h1', "h1 heading"),
-        ('[class*="product-title"]', "product-title class"),
-        ('[class*="ProductTitle"]', "ProductTitle class"),
-        ('span[class*="title"]', "span title class"),
-    ]
-    
-    for selector, desc in title_selectors:
-        try:
-            elem = page.locator(selector).first
-            if elem.count() > 0:
-                title = elem.inner_text().strip()
-                if title and len(title) > 10:
-                    print(f"✅ Title ({desc}): {title[:80]}...")
-                    return title
-        except:
-            continue
-    
-    print("⚠️ Could not extract title")
-    return ""
-
-
-def extract_aliexpress_product(url: str) -> dict:
-    """
-    Extract AliExpress product data with Tor routing and anti-detection.
-    """
-    
-    print(f"\n🔍 Scraping: {url}")
-    
-    empty_result = {
-        "title": "",
-        "description_text": "",
-        "images": [],
-        "store_info": {}
+def random_viewport():
+    return {
+        "width": random.choice([1280, 1366, 1440, 1536, 1600]),
+        "height": random.choice([720, 768, 864, 900]),
     }
-    
-    max_retries = 3
-    
-    for attempt in range(max_retries):
-        print(f"\n📍 Attempt {attempt + 1}/{max_retries}")
-        
-        if attempt > 0:
-            print("🔄 Rotating Tor circuit...")
+
+
+def normalize_img_url(src: str) -> str:
+    if not src:
+        return ""
+    src = src.strip()
+    if src.startswith("//"):
+        return "https:" + src
+    if src.startswith("/"):
+        return "https://www.aliexpress.com" + src
+    return src
+
+
+def clean_text(text: str) -> str:
+    if not text:
+        return ""
+    text = BeautifulSoup(text, "html.parser").get_text(" ")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+# ── Shadow DOM extraction (JS) ─────────────────────────────────────────────────
+
+SHADOW_DOM_EXTRACT_JS = """
+() => {
+    const host = document.querySelector('#product-description [data-spm-anchor-id]');
+    if (!host || !host.shadowRoot) return null;
+
+    const root = host.shadowRoot;
+
+    // Remove comparison/price table noise
+    const junkSelectors = [
+        '.comparison-table',
+        '.premium-aplus-module-5',
+        '.apm-brand-story-carousel-container',
+    ];
+    junkSelectors.forEach(sel => {
+        root.querySelectorAll(sel).forEach(el => el.remove());
+    });
+
+    const textSelectors = [
+        '.aplus-p1',
+        '.aplus-p3',
+        '.aplus-description',
+        'h3',
+        'h4.aplus-h1',
+        'h1.aplus-h3',
+        '.card-description p',
+        '.column-description p',
+        'p',
+    ];
+
+    const seen = new Set();
+    let text = '';
+    for (const sel of textSelectors) {
+        root.querySelectorAll(sel).forEach(el => {
+            const t = (el.innerText || el.textContent || '').trim();
+            if (t && t.length > 5 && !seen.has(t)) {
+                seen.add(t);
+                text += t + ' ';
+            }
+        });
+    }
+
+    const images = [];
+    const seenSrc = new Set();
+    root.querySelectorAll('img').forEach(img => {
+        let src = img.getAttribute('src') || img.getAttribute('data-src') || '';
+        if (!src) return;
+        src = src.trim();
+        if (src.startsWith('//')) src = 'https:' + src;
+        if (src.includes('alicdn') && !seenSrc.has(src)) {
+            seenSrc.add(src);
+            images.push(src);
+        }
+    });
+
+    return { text: text.trim(), images };
+}
+"""
+
+
+# ── Fallback: plain DOM extraction ────────────────────────────────────────────
+
+def extract_from_plain_dom(page) -> tuple:
+    description_text = ""
+    images = []
+
+    container = page.query_selector("#product-description")
+    if not container:
+        print("Description container not found in plain DOM either.")
+        return "", []
+
+    print("Falling back to plain DOM extraction...")
+
+    # Priority: target the known AliExpress rich-text description wrapper directly
+    richtext = container.query_selector(".detail-desc-decorate-richtext") or \
+               container.query_selector(".detailmodule_html") or \
+               container
+
+    # Extract images first — works even for image-only descriptions
+    for img in richtext.query_selector_all("img"):
+        src = img.get_attribute("src") or img.get_attribute("data-src") or ""
+        src = normalize_img_url(src)
+        if "alicdn" in src and src not in images:
+            images.append(src)
+
+    if images:
+        print(f"Plain DOM: found {len(images)} description images")
+
+    # Extract text — leaf nodes only to avoid duplicating parent/child text
+    for el in richtext.query_selector_all("p, span, li, h3, h4"):
+        try:
+            child_count = el.evaluate("e => e.children.length")
+            text = el.text_content().strip()
+            if child_count == 0 and text and len(text) > 5:
+                description_text += text + " "
+        except Exception:
+            pass
+
+    # Sanity check: discard if mostly price data
+    if description_text:
+        dollar_ratio = description_text.count("$") / max(len(description_text), 1)
+        if dollar_ratio > 0.02:
+            print("Plain DOM text looks like price data — discarding.")
+            description_text = ""
+
+    return description_text.strip(), list(dict.fromkeys(images))
+
+
+# ── Main scraper ───────────────────────────────────────────────────────────────
+
+def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
+    print("Starting scrape...")
+
+    base_url = url.split('#')[0].strip()
+    if not base_url.startswith("http"):
+        base_url = "https://" + base_url
+
+    empty_result = {"title": "", "description_text": "", "images": []}
+
+    for attempt in range(1, max_retries + 1):
+        print(f"\n── Attempt {attempt}/{max_retries} ──")
+
+        if attempt > 1:
+            print("Rotating Tor circuit before new attempt...")
             rotate_tor_circuit()
-            # Wait longer between retries to ensure new IP is ready
-            wait_time = 20 + (attempt * 5)  # 25s, 30s for attempts 2, 3
-            print(f"   Waiting {wait_time}s before next attempt...")
-            time.sleep(wait_time)
-        
+            random_delay(8.0, 15.0)
+
         with sync_playwright() as p:
+            print("Opening browser...")
             browser = p.chromium.launch(
                 headless=True,
                 proxy={"server": "socks5://127.0.0.1:9050"},
                 args=[
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-dev-shm-usage',
-                    '--no-sandbox',
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--single-process",
                 ]
             )
-            
-            page = browser.new_page(
-                viewport=random_viewport(),
+            context = browser.new_context(
                 user_agent=random.choice([
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 ]),
+                viewport=random_viewport(),
+                locale="en-US",
                 timezone_id=random.choice([
-                    'America/New_York',
-                    'America/Chicago',
-                    'America/Denver',
-                    'America/Los_Angeles',
-                ])
+                    "America/New_York",
+                    "America/Chicago",
+                    "America/Los_Angeles",
+                ]),
+                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                java_script_enabled=True,
+                bypass_csp=True,
             )
-            
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            page.add_init_script("Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]})")
-            
+            page = context.new_page()
+            page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+
+            # ── Navigate ──────────────────────────────────────────────────────
             try:
-                # NAVIGATION
-                print("📡 Loading page...")
-                page.goto(url, timeout=120000, wait_until="domcontentloaded")
-                time.sleep(2)
-                
-                current_url = page.url
-                if current_url != url:
-                    print(f"⚠️ Redirected to: {current_url}")
-                
-                # CAPTCHA CHECK
-                if is_captcha_page(page):
-                    print("⚠️ CAPTCHA detected - rotating IP and retrying...")
-                    browser.close()
-                    continue
-                
-                # Wait for page to load
-                print("⏳ Waiting for page to render...")
-                time.sleep(8)
-                
-                # SCROLL
-                print("⏳ Scrolling to load images...")
-                try:
-                    for _ in range(3):
-                        page.mouse.wheel(0, random.randint(150, 300))
-                        time.sleep(random.uniform(0.2, 0.6))
-                    page.evaluate("window.scrollTo(0, 0)")
-                    time.sleep(1)
-                except Exception as e:
-                    print(f"⚠️ Scroll error: {e}")
-                
-                # SECOND CAPTCHA CHECK
-                if is_captcha_page(page):
-                    print("⚠️ CAPTCHA after scroll - rotating IP and retrying...")
-                    browser.close()
-                    continue
-                
-                # EXTRACT TITLE
-                title = extract_title_universal(page)
-                
-                # EXTRACT STORE INFO
-                store_info = extract_store_info_universal(page)
-                
-                # EXTRACT DESCRIPTION using inner_html (working method)
-                print("📝 Loading description...")
-                description_text = ""
-                description_images = []
-                
-                try:
-                    # Try to click description tab
-                    print("   Clicking Description tab...")
-                    try:
-                        page.keyboard.press("Escape")
-                        page.wait_for_timeout(300)
-                        
-                        # Multiple selectors for description button
-                        desc_button_selectors = [
-                            ('a.comet-v2-anchor-link', "comet-v2-anchor-link"),
-                            ('button[class*="Description"]', "button Description class"),
-                            ('a:has-text("Description")', "anchor with Description text"),
-                            ('div[role="tab"]:has-text("Description")', "tab Description"),
-                        ]
-                        
-                        clicked = False
-                        for selector, desc in desc_button_selectors:
-                            try:
-                                buttons = page.locator(selector).all()
-                                
-                                for btn in buttons:
-                                    text = btn.inner_text().strip().lower()
-                                    if 'description' in text:
-                                        print(f"   ✓ Found Description button ({desc})")
-                                        btn.click(force=True, timeout=2000)
-                                        page.wait_for_timeout(3000)
-                                        print("   ✓ Clicked Description tab")
-                                        clicked = True
-                                        break
-                                
-                                if clicked:
-                                    break
-                            except:
-                                continue
-                        
-                        if not clicked:
-                            print("   ⚠️ Could not click description tab, will try to find content anyway")
-                    except Exception as e:
-                        print(f"   ⚠️ Description tab click error: {e}")
-                    
-                    # Get the MAIN description container using Playwright's inner_html
-                    desc_container = page.locator('#product-description').first
-                    
-                    if desc_container.count() > 0:
-                        print("   ✓ Found #product-description container")
-                        
-                        # GET HTML FROM RENDERED PAGE
-                        desc_html = desc_container.inner_html(timeout=5000)
-                        print(f"   📊 inner_html size: {len(desc_html)} chars")
-                        
-                        # EXTRACT TEXT
-                        try:
-                            if desc_html and len(desc_html) > 50:
-                                soup_desc = BeautifulSoup(desc_html, "html.parser")
-                                # Clean and extract text
-                                for tag in soup_desc(["script", "style"]):
-                                    tag.decompose()
-                                description_text = soup_desc.get_text(" ", strip=True)
-                                description_text = re.sub(r'\s+', ' ', description_text).strip()
-                                print(f"   ✓ Text extracted: {len(description_text)} chars")
-                            else:
-                                print(f"   ⚠️ inner_html too small, trying inner_text...")
-                                description_text = desc_container.inner_text(timeout=5000)
-                                print(f"   ✓ Text via inner_text: {len(description_text)} chars")
-                        except Exception as e:
-                            print(f"   ❌ Text extraction error: {e}")
-                            description_text = ""
-                        
-                        # EXTRACT IMAGES (INDEPENDENT of text extraction)
-                        try:
-                            # Method 1: Playwright locator for rendered images
-                            imgs = desc_container.locator('img').all()
-                            for img in imgs:
-                                src = (img.get_attribute("src") or 
-                                      img.get_attribute("data-src") or 
-                                      img.get_attribute("data-lazy-src"))
-                                if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
-                                    clean_src = src.split('?')[0]
-                                    description_images.append(clean_src)
-                            
-                            # Method 2: HTML parsing (catches lazy-loaded)
-                            if desc_html and len(desc_html) > 50:
-                                soup_desc = BeautifulSoup(desc_html, "html.parser")
-                                for img in soup_desc.find_all("img"):
-                                    src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-                                    if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
-                                        clean_src = src.split('?')[0]
-                                        description_images.append(clean_src)
-                            
-                            # Dedupe + quality filter
-                            unique_desc_images = list(set(description_images))
-                            quality_images = [img for img in unique_desc_images 
-                                            if len(img) > 50 and not any(bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50'])]
-                            
-                            description_images = quality_images[:15]
-                            print(f"   ✓ Images: {len(description_images)} extracted")
-                        except Exception as e:
-                            print(f"   ❌ Image extraction error: {e}")
-                            description_images = []
-                    else:
-                        print("   ❌ #product-description not found")
-                    
-                except Exception as e:
-                    print(f"⚠️ Description extraction error: {e}")
-                
-                # SUCCESS
-                browser.close()
-                
-                result = {
-                    "title": title,
-                    "description_text": description_text,
-                    "images": description_images,
-                    "store_info": store_info
-                }
-                
-                print(f"\n🔍 DEBUG RETURN VALUES:")
-                print(f"   title: {len(title)} chars")
-                print(f"   description_text: {len(description_text)} chars")
-                print(f"   images: {len(description_images)} images")
-                print(f"   store_info: {store_info}")
-                print(f"✅ Extraction successful on attempt {attempt + 1}\n")
-                return result
-                
-            except PlaywrightTimeoutError as e:
-                print(f"⚠️ Timeout on attempt {attempt + 1}: {e}")
-                browser.close()
-                continue
-                
+                page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
+                random_delay(3.0, 6.0)
             except Exception as e:
-                print(f"❌ Error on attempt {attempt + 1}: {e}")
-                import traceback
-                traceback.print_exc()
-                try:
-                    browser.close()
-                except:
-                    pass
+                print(f"Navigation failed: {e}")
+                browser.close()
                 continue
-    
-    print(f"❌ Failed after {max_retries} attempts")
+
+            if detect_recaptcha(page):
+                print("CAPTCHA detected — rotating circuit and retrying.")
+                browser.close()
+                continue
+
+            page.wait_for_timeout(8000)
+            random_delay(2.0, 4.0)
+
+            # ── Scroll gradually to trigger lazy loading ───────────────────────
+            for _ in range(10):
+                page.mouse.wheel(0, random.randint(150, 300))
+                page.wait_for_timeout(random.randint(200, 500))
+
+            random_delay(1.0, 3.0)
+
+            if detect_recaptcha(page):
+                print("CAPTCHA detected after scroll — rotating circuit and retrying.")
+                browser.close()
+                continue
+
+            # ── Scroll description into view ───────────────────────────────────
+            try:
+                page.evaluate(
+                    "document.querySelector('#product-description')?.scrollIntoView()"
+                )
+                page.wait_for_timeout(3000)
+            except Exception:
+                pass
+
+            # ── KEY FIX: wait for shadow root to be populated ─────────────────
+            # AliExpress loads description content via XHR after the element
+            # enters the viewport. The shadow root exists but is empty until
+            # the XHR completes — we poll until it has real content.
+            try:
+                page.wait_for_function(
+                    """() => {
+                        const host = document.querySelector(
+                            '#product-description [data-spm-anchor-id]'
+                        );
+                        if (!host || !host.shadowRoot) return false;
+                        return (host.shadowRoot.textContent || '').trim().length > 50;
+                    }""",
+                    timeout=12000,
+                )
+                print("Shadow root populated — proceeding with extraction.")
+            except Exception:
+                print("Shadow root did not populate in 12s — will try fallbacks.")
+
+            # ── Extract title ─────────────────────────────────────────────────
+            def safe_query_text(selector: str) -> str:
+                el = page.query_selector(selector)
+                return el.text_content().strip() if el else ""
+
+            title = ""
+            BLOCKED_TITLES = {"aliexpress", "", "aanmelden", "sign in", "log in", "login", "verify", "robot"}
+            title_selectors = [
+                "[data-pl='product-title']",
+                ".title--wrap--NWOaiSp h1",
+                ".product-title-text",
+                ".title--wrap--UUHae_g h1",
+                "h1.pdp-title",
+                "#root h1",
+                "h1",
+            ]
+            for sel in title_selectors:
+                candidate = safe_query_text(sel)
+                if candidate and candidate.lower().strip() not in BLOCKED_TITLES:
+                    title = candidate
+                    print(f"Title found via '{sel}': {title[:60]}")
+                    break
+
+            if not title:
+                print("Title not found — page likely blocked.")
+                browser.close()
+                continue
+
+            # ── Extract description + images ──────────────────────────────────
+            description_text = ""
+            images = []
+
+            # Strategy 1: Shadow DOM
+            try:
+                result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
+                if result:
+                    description_text = result.get("text", "").strip()
+                    images = result.get("images", [])
+                    if description_text or images:
+                        print(f"Shadow DOM: {len(description_text)} chars, {len(images)} images")
+            except Exception as e:
+                print(f"Shadow DOM extraction error: {e}")
+
+            # Strategy 2: Plain DOM fallback
+            if not description_text and not images:
+                print("Shadow DOM returned nothing — trying plain DOM fallback...")
+                description_text, images = extract_from_plain_dom(page)
+
+            # Strategy 3: iframe fallback
+            if not description_text and not images:
+                print("Trying iframe fallback...")
+                try:
+                    iframes = page.query_selector_all(
+                        "#product-description iframe, "
+                        "iframe[id*='desc'], iframe[name*='desc']"
+                    )
+                    for iframe_el in iframes:
+                        frame = iframe_el.content_frame()
+                        if not frame:
+                            continue
+                        frame.wait_for_load_state("domcontentloaded")
+                        frame.wait_for_timeout(2000)
+
+                        for el in frame.query_selector_all("p, span, div"):
+                            try:
+                                child_count = el.evaluate("e => e.children.length")
+                                text = el.text_content().strip()
+                                if child_count == 0 and text and len(text) > 5:
+                                    description_text += text + " "
+                            except Exception:
+                                pass
+
+                        for img in frame.query_selector_all("img"):
+                            src = img.get_attribute("src") or img.get_attribute("data-src") or ""
+                            src = normalize_img_url(src)
+                            if "alicdn" in src:
+                                images.append(src)
+
+                        if description_text or images:
+                            print(f"iframe: {len(description_text)} chars, {len(images)} images")
+                            break
+                except Exception as e:
+                    print(f"iframe fallback error: {e}")
+
+            images = list(dict.fromkeys(images))
+
+            if not description_text:
+                print("No description text extracted (seller may use image-only description).")
+            if not images:
+                print("No description images extracted.")
+
+            browser.close()
+
+            return {
+                "title": clean_text(title),
+                "description_text": clean_text(description_text),
+                "images": images,
+            }
+
+    print(f"All {max_retries} attempts exhausted. Returning empty result.")
     return empty_result
