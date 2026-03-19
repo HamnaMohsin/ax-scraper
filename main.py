@@ -1,410 +1,442 @@
-import re
-import time
-import random
-from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
-
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-def random_delay(min_sec: float = 1.0, max_sec: float = 3.0):
-    delay = random.uniform(min_sec, max_sec)
-    print(f"Waiting {delay:.1f}s...")
-    time.sleep(delay)
-
-
-def rotate_tor_circuit():
-    try:
-        from stem import Signal
-        from stem.control import Controller
-        with Controller.from_port(port=9051) as controller:
-            controller.authenticate()
-            controller.signal(Signal.NEWNYM)
-            print("Tor circuit rotated — new exit IP assigned.")
-            time.sleep(5)
-    except Exception as e:
-        print(f"Failed to rotate Tor circuit: {e}")
-
-
-def detect_recaptcha(page) -> bool:
-    indicators = [
-        "iframe[src*='recaptcha']",
-        "iframe[src*='google.com/recaptcha']",
-        ".g-recaptcha",
-        "#captcha-verify",
-        ".baxia-punish",
-        "[id*='captcha']",
-    ]
-    for selector in indicators:
-        try:
-            if page.query_selector(selector):
-                print(f"reCAPTCHA/block detected via selector: {selector}")
-                return True
-        except Exception:
-            pass
-
-    page_url = page.url.lower()
-    if any(kw in page_url for kw in ["baxia", "punish", "captcha", "verify"]):
-        print(f"Block detected via URL: '{page.url}'")
-        return True
-
-    page_title = page.title()
-    page_title_lower = page_title.lower()
-    is_product_page = "aliexpress" in page_title_lower and len(page_title) > 40
-    if not is_product_page:
-        block_titles = ["verify", "captcha", "robot", "access denied", "blocked", "aanmelden", "sign in"]
-        if any(kw in page_title_lower for kw in block_titles):
-            print(f"Block detected via page title: '{page_title}'")
-            return True
-
-    return False
-
-
-def random_viewport():
-    return {
-        "width": random.choice([1280, 1366, 1440, 1536, 1600]),
-        "height": random.choice([720, 768, 864, 900]),
-    }
-
-
-def normalize_img_url(src: str) -> str:
-    if not src:
-        return ""
-    src = src.strip()
-    if src.startswith("//"):
-        return "https:" + src
-    if src.startswith("/"):
-        return "https://www.aliexpress.com" + src
-    return src
-
-
-def clean_text(text: str) -> str:
-    if not text:
-        return ""
-    text = BeautifulSoup(text, "html.parser").get_text(" ")
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-# ── Shadow DOM extraction (JS) ─────────────────────────────────────────────────
-
-SHADOW_DOM_EXTRACT_JS = """
-() => {
-    const host = document.querySelector('#product-description [data-spm-anchor-id]');
-    if (!host || !host.shadowRoot) return null;
-
-    const root = host.shadowRoot;
-
-    // Remove comparison/price table noise
-    const junkSelectors = [
-        '.comparison-table',
-        '.premium-aplus-module-5',
-        '.apm-brand-story-carousel-container',
-    ];
-    junkSelectors.forEach(sel => {
-        root.querySelectorAll(sel).forEach(el => el.remove());
-    });
-
-    const textSelectors = [
-        '.aplus-p1',
-        '.aplus-p3',
-        '.aplus-description',
-        'h3',
-        'h4.aplus-h1',
-        'h1.aplus-h3',
-        '.card-description p',
-        '.column-description p',
-        'p',
-    ];
-
-    const seen = new Set();
-    let text = '';
-    for (const sel of textSelectors) {
-        root.querySelectorAll(sel).forEach(el => {
-            const t = (el.innerText || el.textContent || '').trim();
-            if (t && t.length > 5 && !seen.has(t)) {
-                seen.add(t);
-                text += t + ' ';
-            }
-        });
-    }
-
-    const images = [];
-    const seenSrc = new Set();
-    root.querySelectorAll('img').forEach(img => {
-        let src = img.getAttribute('src') || img.getAttribute('data-src') || '';
-        if (!src) return;
-        src = src.trim();
-        if (src.startsWith('//')) src = 'https:' + src;
-        if (src.includes('alicdn') && !seenSrc.has(src)) {
-            seenSrc.add(src);
-            images.push(src);
-        }
-    });
-
-    return { text: text.trim(), images };
-}
+"""
+main.py — AliExpress Scraper FastAPI application
+Base URL: http://34.10.186.46:8001
 """
 
+import os
+import asyncio
+from datetime import datetime
+from typing import Optional
 
-# ── Fallback: plain DOM extraction ────────────────────────────────────────────
+from fastapi import FastAPI, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
 
-def extract_from_plain_dom(page) -> tuple:
-    description_text = ""
-    images = []
+from database import get_db, init_db
+from models import ProductFetched, ProductRefined, CategoryAssignment
+from schemas import (
+    ScrapeRequest,
+    CategorizeRequest,
+    ProductFetchedOut,
+    ProductRefinedOut,
+    CategoryAssignmentOut,
+    CategoryStandaloneOut,
+    ProductFullOut,
+)
+from scraper       import extract_aliexpress_product
+from llm_refiner2   import refine_product
+from assign_embeddings2 import categorize_product as assign_category
 
-    container = page.query_selector("#product-description")
-    if not container:
-        print("Description container not found in plain DOM either.")
-        return "", []
+from data.export_to_template import (
+    load_products,
+    write_category_file,
+    make_safe_filename,
+)
 
-    print("Falling back to plain DOM extraction...")
+# ── App init ──────────────────────────────────────────────────────────────────
 
-    # Priority: target the known AliExpress rich-text description wrapper directly
-    richtext = container.query_selector(".detail-desc-decorate-richtext") or \
-               container.query_selector(".detailmodule_html") or \
-               container
+app = FastAPI(title="AX-Scraper", version="1.0")
 
-    # Extract images first — works even for image-only descriptions
-    for img in richtext.query_selector_all("img"):
-        src = img.get_attribute("src") or img.get_attribute("data-src") or ""
-        src = normalize_img_url(src)
-        if "alicdn" in src and src not in images:
-            images.append(src)
+OUT_DIR = os.path.join(os.path.dirname(__file__), "data", "output_templates")
+os.makedirs(OUT_DIR, exist_ok=True)
 
-    if images:
-        print(f"Plain DOM: found {len(images)} description images")
 
-    # Extract text — leaf nodes only to avoid duplicating parent/child text
-    for el in richtext.query_selector_all("p, span, li, h3, h4"):
+@app.on_event("startup")
+def startup():
+    init_db()
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _build_full_out(p: ProductFetched) -> ProductFullOut:
+    return ProductFullOut(
+        product_id=p.product_id,
+        url=p.url,
+        title=p.title,
+        description=p.description,
+        images=p.images,
+        exported_at=p.exported_at,
+        enhanced_title        = p.refined.enhanced_title        if p.refined else None,
+        enhanced_description  = p.refined.enhanced_description  if p.refined else None,
+        description_marketing = p.refined.description_marketing if p.refined else None,
+        llm_predicted_category= p.category.llm_predicted_category if p.category else None,
+        assigned_category     = p.category.assigned_category      if p.category else None,
+        category_id           = str(p.category.category_id) if p.category and p.category.category_id is not None else None,
+        similarity_score      = p.category.similarity_score       if p.category else None,
+    )
+
+
+def _upsert(db: Session, url: str, data: dict) -> ProductFetched:
+    """
+    Insert or update product_fetched, then refine + categorize.
+    data = { title, description_text, images }
+    """
+    product = db.query(ProductFetched).filter_by(url=url).first()
+
+    if product:
+        product.title       = data["title"]
+        product.description = data["description_text"]
+        product.images      = data["images"]
+        product.exported_at = None   # reset so it gets re-exported
+    else:
+        product_id = int(url.split("/item/")[-1].split(".")[0].split("?")[0])
+        product = ProductFetched(
+            product_id  = product_id,
+            url         = url,
+            title       = data["title"],
+            description = data["description_text"],
+            images      = data["images"],
+            exported_at = None,
+        )
+        db.add(product)
+
+    db.flush()
+    product_id = product.product_id
+
+    # ── Refine ────────────────────────────────────────────────────────────────
+    refined = refine_product(data["title"], data["description_text"])
+
+    refined_row = db.query(ProductRefined).filter_by(product_id=product_id).first()
+    if refined_row:
+        refined_row.enhanced_title        = refined["refined_title"]
+        refined_row.enhanced_description  = refined["refined_description"]
+        refined_row.description_marketing = refined["description_marketing"]
+    else:
+        db.add(ProductRefined(
+            product_id            = product_id,
+            enhanced_title        = refined["refined_title"],
+            enhanced_description  = refined["refined_description"],
+            description_marketing = refined["description_marketing"],
+        ))
+
+    db.flush()
+
+    # ── Categorize ────────────────────────────────────────────────────────────
+    category_result = assign_category(
+        refined["refined_title"],
+        refined["refined_description"],
+    )
+
+    cat_row = db.query(CategoryAssignment).filter_by(product_id=product_id).first()
+    if cat_row:
+        cat_row.llm_predicted_category = category_result.get("llm_predicted_category")
+        cat_row.assigned_category      = category_result.get("category_path")
+        cat_row.category_id            = category_result.get("category_id")
+        cat_row.similarity_score       = category_result.get("similarity_score")
+    else:
+        db.add(CategoryAssignment(
+            product_id             = product_id,
+            llm_predicted_category = category_result.get("llm_predicted_category"),
+            assigned_category      = category_result.get("category_path"),
+            category_id            = category_result.get("category_id"),
+            similarity_score       = category_result.get("similarity_score"),
+        ))
+
+    db.commit()
+    db.refresh(product)
+    return product
+
+
+def _scrape_and_save(db: Session, url: str) -> dict:
+    """Scrape only — no LLM, no categorization. Resets exported_at."""
+    data = extract_aliexpress_product(url)
+    if not data.get("title"):
+        return {"url": url, "success": False, "error": "Scrape failed or blocked"}
+
+    product = db.query(ProductFetched).filter_by(url=url).first()
+    if product:
+        product.title       = data["title"]
+        product.description = data["description_text"]
+        product.images      = data["images"]
+        product.exported_at = None
+    else:
+        product_id = int(url.split("/item/")[-1].split(".")[0].split("?")[0])
+        product = ProductFetched(
+            product_id  = product_id,
+            url         = url,
+            title       = data["title"],
+            description = data["description_text"],
+            images      = data["images"],
+            exported_at = None,
+        )
+        db.add(product)
+
+    db.commit()
+    db.refresh(product)
+
+    return {
+        "url":         url,
+        "success":     True,
+        "product_id":  product.product_id,
+        "title":       product.title,
+        "description": product.description,
+        "images":      product.images,
+    }
+
+
+def _run_export(only_new: bool = False) -> dict:
+    """Core export logic shared by /export-templates endpoint."""
+    categories = load_products(only_new=only_new)
+
+    if not categories:
+        return {
+            "mode":             "incremental" if only_new else "full",
+            "total_products":   0,
+            "total_categories": 0,
+            "output_dir":       OUT_DIR,
+            "files":            [],
+        }
+
+    all_written_ids = []
+    files_summary   = []
+
+    for cat_id, cat_data in categories.items():
+        cat_name  = cat_data["category_name"]
+        products  = cat_data["products"]
+        safe_name = make_safe_filename(str(cat_id), cat_name)
+        out_path  = os.path.join(OUT_DIR, f"{safe_name}.xlsm")
+
+        written_ids = write_category_file(
+            category_id   = cat_id,
+            category_name = cat_name,
+            products      = products,
+            out_path      = out_path,
+            append_mode   = only_new,
+        )
+        all_written_ids.extend(written_ids)
+
+        files_summary.append({
+            "category_id":    cat_id,
+            "category_name":  cat_name,
+            "product_count":  len(written_ids),
+            "file":           out_path,
+            "products": [
+                {
+                    "product_id":       str(p["product_id"]),
+                    "title":            (p["enhanced_title"] or p["original_title"])[:80],
+                    "image_count":      len(p["images"]),
+                    "has_description":  bool(p["enhanced_description"] or p["original_description"]),
+                }
+                for p in products
+            ],
+        })
+
+    # Mark exported_at in DB
+    if all_written_ids:
+        from database import SessionLocal
+        from sqlalchemy import update
+        db_write = SessionLocal()
         try:
-            child_count = el.evaluate("e => e.children.length")
-            text = el.text_content().strip()
-            if child_count == 0 and text and len(text) > 5:
-                description_text += text + " "
-        except Exception:
-            pass
+            now = datetime.utcnow()
+            db_write.query(ProductFetched).filter(
+                ProductFetched.product_id.in_([int(i) for i in all_written_ids])
+            ).update({"exported_at": now}, synchronize_session=False)
+            db_write.commit()
+            print(f"Marked {len(all_written_ids)} product(s) as exported.")
+        finally:
+            db_write.close()
 
-    # Sanity check: discard if mostly price data
-    if description_text:
-        dollar_ratio = description_text.count("$") / max(len(description_text), 1)
-        if dollar_ratio > 0.02:
-            print("Plain DOM text looks like price data — discarding.")
-            description_text = ""
+    return {
+        "mode":             "incremental" if only_new else "full",
+        "total_products":   len(all_written_ids),
+        "total_categories": len(files_summary),
+        "output_dir":       OUT_DIR,
+        "files":            files_summary,
+    }
 
-    return description_text.strip(), list(dict.fromkeys(images))
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.post("/scrape")
+def scrape_full(request: ScrapeRequest, db: Session = Depends(get_db)):
+    """Full pipeline: scrape → refine → categorize → save."""
+    urls = [u.strip() for u in request.urls.split(",") if u.strip()]
+
+    results = []
+    success_count = 0
+    fail_count    = 0
+
+    for url in urls:
+        try:
+            data = extract_aliexpress_product(url)
+            fail_count += 1
+            results.append({"url": url, "success": False, "error": "Scrape failed or blocked"})
+            continue
+
+            product = _upsert(db, url, data)
+            success_count += 1
+            results.append({
+                "url":              url,
+                "success":          True,
+                "product_id":       product.product_id,
+                "original_title":   product.title,
+                "enhanced_title":   product.refined.enhanced_title   if product.refined  else None,
+                "assigned_category":product.category.assigned_category if product.category else None,
+                "category_id":      product.category.category_id       if product.category else None,
+                "similarity_score": product.category.similarity_score  if product.category else None,
+                "images":           product.images,
+            })
+        except Exception as e:
+            fail_count += 1
+            results.append({"url": url, "success": False, "error": str(e)})
+
+    return {"total": len(urls), "success": success_count, "failed": fail_count, "results": results}
 
 
-# ── Main scraper ───────────────────────────────────────────────────────────────
+@app.post("/scrape-only")
+def scrape_only(request: ScrapeRequest, db: Session = Depends(get_db)):
+    """Scrape only — saves raw data, no LLM or categorization."""
+    urls = [u.strip() for u in request.urls.split(",") if u.strip()]
 
-def extract_aliexpress_product(url: str, max_retries: int = 3) -> dict:
-    print("Starting scrape...")
+    results = []
+    success_count = 0
+    fail_count    = 0
 
-    base_url = url.split('#')[0].strip()
-    if not base_url.startswith("http"):
-        base_url = "https://" + base_url
+    for url in urls:
+        try:
+            result = _scrape_and_save(db, url)
+            if result["success"]:
+                success_count += 1
+            else:
+                fail_count += 1
+            results.append(result)
+        except Exception as e:
+            fail_count += 1
+            results.append({"url": url, "success": False, "error": str(e)})
 
-    empty_result = {"title": "", "description_text": "", "images": []}
+    return {"total": len(urls), "success": success_count, "failed": fail_count, "results": results}
 
-    for attempt in range(1, max_retries + 1):
-        print(f"\n── Attempt {attempt}/{max_retries} ──")
 
-        if attempt > 1:
-            print("Rotating Tor circuit before new attempt...")
-            rotate_tor_circuit()
-            random_delay(8.0, 15.0)
+@app.post("/refine/{product_id}")
+def refine(product_id: int, db: Session = Depends(get_db)):
+    """Step 2: refine an already-scraped product with the LLM."""
+    product = db.query(ProductFetched).filter_by(product_id=product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
 
-        with sync_playwright() as p:
-            print("Opening browser...")
-            browser = p.chromium.launch(
-                headless=True,
-                proxy={"server": "socks5://127.0.0.1:9050"},
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--single-process",
-                ]
-            )
-            context = browser.new_context(
-                user_agent=random.choice([
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                ]),
-                viewport=random_viewport(),
-                locale="en-US",
-                timezone_id=random.choice([
-                    "America/New_York",
-                    "America/Chicago",
-                    "America/Los_Angeles",
-                ]),
-                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-                java_script_enabled=True,
-                bypass_csp=True,
-            )
-            page = context.new_page()
-            page.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
+    refined = refine_product(product.title or "", product.description or "")
 
-            # ── Navigate ──────────────────────────────────────────────────────
-            try:
-                page.goto(base_url, timeout=120000, wait_until="domcontentloaded")
-                random_delay(3.0, 6.0)
-            except Exception as e:
-                print(f"Navigation failed: {e}")
-                browser.close()
-                continue
+    refined_row = db.query(ProductRefined).filter_by(product_id=product_id).first()
+    if refined_row:
+        refined_row.enhanced_title        = refined["refined_title"]
+        refined_row.enhanced_description  = refined["refined_description"]
+        refined_row.description_marketing = refined["description_marketing"]
+    else:
+        refined_row = ProductRefined(
+            product_id            = product_id,
+            enhanced_title        = refined["refined_title"],
+            enhanced_description  = refined["refined_description"],
+            description_marketing = refined["description_marketing"],
+        )
+        db.add(refined_row)
 
-            if detect_recaptcha(page):
-                print("CAPTCHA detected — rotating circuit and retrying.")
-                browser.close()
-                continue
+    db.commit()
+    db.refresh(refined_row)
+    return ProductRefinedOut.model_validate(refined_row)
 
-            page.wait_for_timeout(8000)
-            random_delay(2.0, 4.0)
 
-            # ── Scroll gradually to trigger lazy loading ───────────────────────
-            for _ in range(10):
-                page.mouse.wheel(0, random.randint(150, 300))
-                page.wait_for_timeout(random.randint(200, 500))
+@app.post("/assign-category/{product_id}")
+def assign_cat(product_id: int, db: Session = Depends(get_db)):
+    """Step 3: assign Octopia category via embedding similarity."""
+    refined_row = db.query(ProductRefined).filter_by(product_id=product_id).first()
+    if not refined_row:
+        raise HTTPException(status_code=404, detail="No refined product found — run /refine first")
 
-            random_delay(1.0, 3.0)
+    result = assign_category(
+        refined_row.enhanced_title       or "",
+        refined_row.enhanced_description or "",
+    )
 
-            if detect_recaptcha(page):
-                print("CAPTCHA detected after scroll — rotating circuit and retrying.")
-                browser.close()
-                continue
+    cat_row = db.query(CategoryAssignment).filter_by(product_id=product_id).first()
+    if cat_row:
+        cat_row.llm_predicted_category = result.get("llm_predicted_category")
+        cat_row.assigned_category      = result.get("category_path")
+        cat_row.category_id            = result.get("category_id")
+        cat_row.similarity_score       = result.get("similarity_score")
+    else:
+        cat_row = CategoryAssignment(
+            product_id             = product_id,
+            llm_predicted_category = result.get("llm_predicted_category"),
+            assigned_category      = result.get("category_path"),
+            category_id            = result.get("category_id"),
+            similarity_score       = result.get("similarity_score"),
+        )
+        db.add(cat_row)
 
-            # ── Scroll description into view ───────────────────────────────────
-            try:
-                page.evaluate(
-                    "document.querySelector('#product-description')?.scrollIntoView()"
-                )
-                page.wait_for_timeout(3000)
-            except Exception:
-                pass
+    db.commit()
+    db.refresh(cat_row)
+    return CategoryAssignmentOut.model_validate(cat_row)
 
-            # ── KEY FIX: wait for shadow root to be populated ─────────────────
-            # AliExpress loads description content via XHR after the element
-            # enters the viewport. The shadow root exists but is empty until
-            # the XHR completes — we poll until it has real content.
-            try:
-                page.wait_for_function(
-                    """() => {
-                        const host = document.querySelector(
-                            '#product-description [data-spm-anchor-id]'
-                        );
-                        if (!host || !host.shadowRoot) return false;
-                        return (host.shadowRoot.textContent || '').trim().length > 50;
-                    }""",
-                    timeout=12000,
-                )
-                print("Shadow root populated — proceeding with extraction.")
-            except Exception:
-                print("Shadow root did not populate in 12s — will try fallbacks.")
 
-            # ── Extract title ─────────────────────────────────────────────────
-            def safe_query_text(selector: str) -> str:
-                el = page.query_selector(selector)
-                return el.text_content().strip() if el else ""
+# ✅ FIXED: /categorize endpoint now uses proper response schema
+@app.post("/categorize", response_model=CategoryStandaloneOut)
+def categorize_standalone(request: CategorizeRequest):
+    """Standalone category lookup — does not touch the DB."""
+    result = assign_category(request.title, request.description)
+    return {
+        "llm_predicted_category": result.get("llm_predicted_category"),
+        "category_id":            result.get("category_id"),
+        "category_path":          result.get("category_path"),
+        "similarity_score":       result.get("similarity_score"),
+    }
 
-            title = ""
-            BLOCKED_TITLES = {"aliexpress", "", "aanmelden", "sign in", "log in", "login", "verify", "robot"}
-            title_selectors = [
-                "[data-pl='product-title']",
-                ".title--wrap--NWOaiSp h1",
-                ".product-title-text",
-                ".title--wrap--UUHae_g h1",
-                "h1.pdp-title",
-                "#root h1",
-                "h1",
-            ]
-            for sel in title_selectors:
-                candidate = safe_query_text(sel)
-                if candidate and candidate.lower().strip() not in BLOCKED_TITLES:
-                    title = candidate
-                    print(f"Title found via '{sel}': {title[:60]}")
-                    break
 
-            if not title:
-                print("Title not found — page likely blocked.")
-                browser.close()
-                continue
+@app.post("/export-templates")
+def export_templates(only_new: bool = Query(default=False)):
+    """
+    Export categorized products to per-category .xlsm files.
+    only_new=false (default) = full rebuild.
+    only_new=true = append only products not yet exported.
+    """
+    return _run_export(only_new=only_new)
 
-            # ── Extract description + images ──────────────────────────────────
-            description_text = ""
-            images = []
 
-            # Strategy 1: Shadow DOM
-            try:
-                result = page.evaluate(SHADOW_DOM_EXTRACT_JS)
-                if result:
-                    description_text = result.get("text", "").strip()
-                    images = result.get("images", [])
-                    if description_text or images:
-                        print(f"Shadow DOM: {len(description_text)} chars, {len(images)} images")
-            except Exception as e:
-                print(f"Shadow DOM extraction error: {e}")
+# ── Read endpoints ─────────────────────────────────────────────────────────────
 
-            # Strategy 2: Plain DOM fallback
-            if not description_text and not images:
-                print("Shadow DOM returned nothing — trying plain DOM fallback...")
-                description_text, images = extract_from_plain_dom(page)
+@app.get("/products", response_model=list[ProductFullOut])
+def list_products(limit: int = 20, offset: int = 0, db: Session = Depends(get_db)):
+    products = db.query(ProductFetched).offset(offset).limit(limit).all()
+    return [_build_full_out(p) for p in products]
 
-            # Strategy 3: iframe fallback
-            if not description_text and not images:
-                print("Trying iframe fallback...")
-                try:
-                    iframes = page.query_selector_all(
-                        "#product-description iframe, "
-                        "iframe[id*='desc'], iframe[name*='desc']"
-                    )
-                    for iframe_el in iframes:
-                        frame = iframe_el.content_frame()
-                        if not frame:
-                            continue
-                        frame.wait_for_load_state("domcontentloaded")
-                        frame.wait_for_timeout(2000)
 
-                        for el in frame.query_selector_all("p, span, div"):
-                            try:
-                                child_count = el.evaluate("e => e.children.length")
-                                text = el.text_content().strip()
-                                if child_count == 0 and text and len(text) > 5:
-                                    description_text += text + " "
-                            except Exception:
-                                pass
+@app.get("/products/fetched", response_model=list[ProductFetchedOut])
+def list_fetched(limit: int = 20, offset: int = 0, db: Session = Depends(get_db)):
+    return db.query(ProductFetched).offset(offset).limit(limit).all()
 
-                        for img in frame.query_selector_all("img"):
-                            src = img.get_attribute("src") or img.get_attribute("data-src") or ""
-                            src = normalize_img_url(src)
-                            if "alicdn" in src:
-                                images.append(src)
 
-                        if description_text or images:
-                            print(f"iframe: {len(description_text)} chars, {len(images)} images")
-                            break
-                except Exception as e:
-                    print(f"iframe fallback error: {e}")
+@app.get("/products/fetched/{product_id}", response_model=ProductFetchedOut)
+def get_fetched(product_id: int, db: Session = Depends(get_db)):
+    p = db.query(ProductFetched).filter_by(product_id=product_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return p
 
-            images = list(dict.fromkeys(images))
 
-            if not description_text:
-                print("No description text extracted (seller may use image-only description).")
-            if not images:
-                print("No description images extracted.")
+@app.get("/products/refined", response_model=list[ProductRefinedOut])
+def list_refined(limit: int = 20, offset: int = 0, db: Session = Depends(get_db)):
+    return db.query(ProductRefined).offset(offset).limit(limit).all()
 
-            browser.close()
 
-            return {
-                "title": clean_text(title),
-                "description_text": clean_text(description_text),
-                "images": images,
-            }
+@app.get("/products/refined/{product_id}", response_model=ProductRefinedOut)
+def get_refined(product_id: int, db: Session = Depends(get_db)):
+    r = db.query(ProductRefined).filter_by(product_id=product_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return r
 
-    print(f"All {max_retries} attempts exhausted. Returning empty result.")
-    return empty_result
+
+@app.delete("/products/fetched/{product_id}")
+def delete_product(product_id: int, db: Session = Depends(get_db)):
+    p = db.query(ProductFetched).filter_by(product_id=product_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Product not found")
+    db.delete(p)
+    db.commit()
+    return {"message": f"Product {product_id} deleted (cascaded to all tables)"}
+
+
+@app.get("/products/{product_id}", response_model=ProductFullOut)
+def get_product(product_id: int, db: Session = Depends(get_db)):
+    p = db.query(ProductFetched).filter_by(product_id=product_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return _build_full_out(p)
