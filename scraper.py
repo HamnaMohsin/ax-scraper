@@ -345,7 +345,8 @@ def extract_aliexpress_product(url: str) -> dict:
                                     if 'description' in text:
                                         print(f"   ✓ Found Description button ({desc})")
                                         btn.click(force=True, timeout=2000)
-                                        page.wait_for_timeout(3000)
+                                        print("   ⏳ Waiting for description content to load...")
+                                        page.wait_for_timeout(5000)  # Increased: give content time to render
                                         print("   ✓ Clicked Description tab")
                                         clicked = True
                                         break
@@ -370,6 +371,13 @@ def extract_aliexpress_product(url: str) -> dict:
                         desc_html = desc_container.inner_html(timeout=5000)
                         print(f"   📊 inner_html size: {len(desc_html)} chars")
                         
+                        # If inner_html is too small, content might still be loading - wait and retry
+                        if desc_html and len(desc_html) < 50:
+                            print(f"   ⏳ Content still loading, waiting 2s and retrying...")
+                            page.wait_for_timeout(2000)
+                            desc_html = desc_container.inner_html(timeout=5000)
+                            print(f"   📊 inner_html size (retry): {len(desc_html)} chars")
+                        
                         # EXTRACT TEXT
                         try:
                             if desc_html and len(desc_html) > 50:
@@ -390,34 +398,61 @@ def extract_aliexpress_product(url: str) -> dict:
                         
                         # EXTRACT IMAGES (INDEPENDENT of text extraction)
                         try:
+                            print(f"   🖼️ Starting image extraction...")
+                            
                             # Method 1: Playwright locator for rendered images
+                            print(f"   Method 1: Using Playwright locator...")
                             imgs = desc_container.locator('img').all()
+                            print(f"      Found {len(imgs)} total <img> tags")
+                            
                             for img in imgs:
                                 src = (img.get_attribute("src") or 
                                       img.get_attribute("data-src") or 
                                       img.get_attribute("data-lazy-src"))
+                                if src:
+                                    print(f"      Found src: {src[:80]}...")
                                 if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
                                     clean_src = src.split('?')[0]
                                     description_images.append(clean_src)
                             
+                            print(f"      After Method 1: {len(description_images)} images")
+                            
                             # Method 2: HTML parsing (catches lazy-loaded)
+                            print(f"   Method 2: Using HTML parsing...")
                             if desc_html and len(desc_html) > 50:
                                 soup_desc = BeautifulSoup(desc_html, "html.parser")
-                                for img in soup_desc.find_all("img"):
+                                html_imgs = soup_desc.find_all("img")
+                                print(f"      Found {len(html_imgs)} <img> in HTML")
+                                
+                                for img in html_imgs:
                                     src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-                                    if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
-                                        clean_src = src.split('?')[0]
-                                        description_images.append(clean_src)
+                                    if src:
+                                        if "alicdn.com" in src or "ae01.alicdn.com" in src:
+                                            clean_src = src.split('?')[0]
+                                            description_images.append(clean_src)
+                            else:
+                                print(f"      Skipping HTML parsing (desc_html={len(desc_html) if desc_html else 0} chars)")
+                            
+                            print(f"      After Method 2: {len(description_images)} total images before dedup")
                             
                             # Dedupe + quality filter
                             unique_desc_images = list(set(description_images))
+                            print(f"      After dedupe: {len(unique_desc_images)} unique images")
+                            
                             quality_images = [img for img in unique_desc_images 
                                             if len(img) > 50 and not any(bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50'])]
+                            print(f"      After quality filter: {len(quality_images)} quality images")
                             
                             description_images = quality_images[:15]
                             print(f"   ✓ Images: {len(description_images)} extracted")
+                            
+                            if description_images:
+                                for i, img_url in enumerate(description_images[:3], 1):
+                                    print(f"      {i}. {img_url[:80]}...")
                         except Exception as e:
                             print(f"   ❌ Image extraction error: {e}")
+                            import traceback
+                            traceback.print_exc()
                             description_images = []
                     else:
                         print("   ❌ #product-description not found")
