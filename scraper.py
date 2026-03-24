@@ -15,12 +15,6 @@ def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def random_delay(min_seconds: float = 1, max_seconds: float = 3):
-    """Random delay to mimic human behavior"""
-    delay = random.uniform(min_seconds, max_seconds)
-    time.sleep(delay)
-
-
 def random_viewport():
     """Return random viewport size"""
     viewports = [
@@ -33,7 +27,7 @@ def random_viewport():
 
 
 def rotate_tor_circuit():
-    """Rotate Tor circuit to get new exit IP"""
+    """Rotate Tor circuit"""
     try:
         with Controller.from_port(port=9051) as controller:
             controller.authenticate()
@@ -43,83 +37,257 @@ def rotate_tor_circuit():
                 time.sleep(1)
                 if i % 5 == 4:
                     print(f"   ... {15 - i - 1}s remaining")
-        print("✅ Tor circuit rotated - new IP acquired")
+        print("✅ Tor circuit rotated")
         return True
     except Exception as e:
-        print(f"⚠️ Could not rotate Tor circuit: {e}")
+        print(f"⚠️ Tor error: {e}")
         return False
 
 
 def is_captcha_page(page) -> bool:
-    """Detect if page is a CAPTCHA/block page"""
+    """Detect CAPTCHA"""
     page_url = page.url.lower()
     page_title = page.title().lower()
     
-    captcha_url_keywords = ["baxia", "punish", "captcha", "verify", "_____tmd_____"]
+    captcha_url_keywords = ["baxia", "punish", "captcha", "verify"]
     if any(kw in page_url for kw in captcha_url_keywords):
-        print("❌ CAPTCHA detected in URL")
         return True
     
     captcha_selectors = [
         "iframe[src*='recaptcha']",
         ".baxia-punish",
         "#captcha-verify",
-        "[id*='captcha']",
         "iframe[src*='geetest']",
-        "[class*='captcha']",
     ]
     
     for selector in captcha_selectors:
         try:
             if page.locator(selector).count() > 0:
-                print(f"❌ CAPTCHA detected: {selector}")
                 return True
         except:
             continue
     
-    is_product_page = "aliexpress" in page_title and len(page_title) > 40
-    block_title_keywords = ["verify", "access", "denied", "blocked", "challenge"]
-    if not is_product_page and any(kw in page_title for kw in block_title_keywords):
-        print("❌ Block page detected from title")
-        return True
-    
     return False
 
 
-def extract_store_info_universal(page) -> dict:
-    """Extract store info"""
-    store_info = {}
+def analyze_html_structure(html: str) -> dict:
+    """
+    Analyze the actual HTML structure to understand what we're working with
+    Returns info about what containers exist on this page
+    """
+    soup = BeautifulSoup(html, "html.parser")
     
-    print("📦 Extracting store info...")
+    structure = {
+        'richTextContainer_count': 0,
+        'product_description_count': 0,
+        'detail_desc_count': 0,
+        'spec_table_count': 0,
+        'description_container_count': 0,
+        'has_shadow_dom': False,
+        'common_description_classes': [],
+        'all_divs_with_text': []
+    }
+    
+    # Count known structures
+    structure['richTextContainer_count'] = len(soup.find_all('div', class_=lambda x: x and 'richTextContainer' in x))
+    structure['product_description_count'] = len(soup.find_all('div', id='product-description'))
+    structure['detail_desc_count'] = len(soup.find_all('div', class_=lambda x: x and 'detail-desc-decorate' in x))
+    structure['spec_table_count'] = len(soup.find_all('table'))
+    
+    # Check for shadow DOM
+    structure['has_shadow_dom'] = bool(soup.find('template', attrs={'shadowrootmode': 'open'}))
+    
+    # Find divs with description-related classes
+    for div in soup.find_all('div', class_=True):
+        classes = div.get('class', [])
+        class_str = ' '.join(classes) if isinstance(classes, list) else str(classes)
+        
+        if any(kw in class_str.lower() for kw in ['description', 'detail', 'product', 'spec', 'info']):
+            structure['common_description_classes'].append(class_str[:80])
+    
+    # Get all substantial text containers
+    for div in soup.find_all('div'):
+        text = div.get_text(strip=True)
+        if len(text) > 100 and len(text) < 5000:  # Reasonable size for description
+            div_classes = div.get('class', [])
+            div_id = div.get('id', '')
+            structure['all_divs_with_text'].append({
+                'classes': ' '.join(div_classes) if div_classes else 'none',
+                'id': div_id if div_id else 'none',
+                'text_length': len(text)
+            })
+    
+    return structure
+
+
+def extract_description_adaptive(page) -> tuple:
+    """
+    Adaptively extract description by inspecting HTML structure first
+    Returns (description_text, found_sources)
+    """
+    print("📝 Extracting description (adaptive mode)...")
+    
+    all_descriptions = []
+    sources_found = []
+    
+    try:
+        # Wait for content
+        print("   ⏳ Waiting for page content...")
+        page.wait_for_timeout(3000)
+        
+        html = page.content()
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # Analyze structure
+        print("   🔍 Analyzing HTML structure...")
+        structure = analyze_html_structure(html)
+        
+        print(f"   📊 Structure found:")
+        print(f"      richTextContainer: {structure['richTextContainer_count']}")
+        print(f"      product-description: {structure['product_description_count']}")
+        print(f"      detail-desc: {structure['detail_desc_count']}")
+        print(f"      tables: {structure['spec_table_count']}")
+        print(f"      shadow DOM: {structure['has_shadow_dom']}")
+        print(f"      divs with substantial text: {len(structure['all_divs_with_text'])}")
+        
+        # Strategy 1: Extract from known containers
+        print("   📌 Strategy 1: Known containers...")
+        
+        # richTextContainer
+        if structure['richTextContainer_count'] > 0:
+            print(f"      Found {structure['richTextContainer_count']} richTextContainer(s)")
+            for container in soup.find_all('div', class_=lambda x: x and 'richTextContainer' in x):
+                text = container.get_text(separator='\n', strip=True)
+                if text and len(text) > 50:
+                    all_descriptions.append(text)
+                    sources_found.append('richTextContainer')
+        
+        # product-description
+        if structure['product_description_count'] > 0:
+            print(f"      Found {structure['product_description_count']} product-description(s)")
+            for desc in soup.find_all('div', id='product-description'):
+                text = desc.get_text(separator='\n', strip=True)
+                if text and len(text) > 50:
+                    # Only add if not already in all_descriptions
+                    if not any(text in existing for existing in all_descriptions):
+                        all_descriptions.append(text)
+                        sources_found.append('product-description')
+        
+        # detail-desc
+        if structure['detail_desc_count'] > 0:
+            print(f"      Found {structure['detail_desc_count']} detail-desc container(s)")
+            for desc in soup.find_all('div', class_=lambda x: x and 'detail-desc-decorate' in x):
+                text = desc.get_text(separator='\n', strip=True)
+                if text and len(text) > 50:
+                    if not any(text in existing for existing in all_descriptions):
+                        all_descriptions.append(text)
+                        sources_found.append('detail-desc')
+        
+        # Strategy 2: If nothing found, try description/detail in class names
+        if not all_descriptions:
+            print("   📌 Strategy 2: Class name matching...")
+            
+            # Look for any div with 'description' or 'detail' or 'product' in class
+            for div in soup.find_all('div', class_=True):
+                classes = div.get('class', [])
+                class_str = ' '.join(classes) if isinstance(classes, list) else str(classes)
+                
+                if any(kw in class_str.lower() for kw in ['description', 'detail', 'product-info', 'spec']):
+                    text = div.get_text(separator='\n', strip=True)
+                    if len(text) > 100 and len(text) < 10000:
+                        if not any(text in existing for existing in all_descriptions):
+                            all_descriptions.append(text)
+                            sources_found.append(f'div[class*={class_str[:30]}]')
+                            print(f"      Found: {class_str[:50]}...")
+        
+        # Strategy 3: Look for any div with substantial text content
+        if not all_descriptions:
+            print("   📌 Strategy 3: Content-based detection...")
+            
+            # Look for divs with description-like content
+            for div in soup.find_all('div'):
+                text = div.get_text(separator='\n', strip=True)
+                
+                # Look for content that looks like descriptions
+                if (len(text) > 200 and len(text) < 10000 and
+                    any(kw in text.lower() for kw in ['material', 'product', 'design', 'features', 'specification', 'quality'])):
+                    
+                    if not any(text in existing for existing in all_descriptions):
+                        all_descriptions.append(text)
+                        sources_found.append('content-detected')
+                        print(f"      Found content: {text[:60]}...")
+        
+        # Combine all
+        if all_descriptions:
+            print(f"   ✅ Found {len(all_descriptions)} description section(s)")
+            combined = "\n\n---\n\n".join(all_descriptions)
+            
+            # Clean up
+            combined = re.sub(r'\n\s*\n+', '\n\n', combined)
+            combined = re.sub(r'[ \t]+', ' ', combined)
+            combined = combined.strip()
+            
+            return combined, sources_found
+        else:
+            print("   ⚠️ No descriptions found with any strategy")
+            
+            # Last resort: show what was found
+            if structure['all_divs_with_text']:
+                print(f"   💡 Found {len(structure['all_divs_with_text'])} divs with text content")
+                print("      Largest ones:")
+                sorted_divs = sorted(structure['all_divs_with_text'], key=lambda x: x['text_length'], reverse=True)
+                for div_info in sorted_divs[:3]:
+                    print(f"         {div_info['text_length']} chars - id:{div_info['id']}, class:{div_info['classes'][:40]}")
+            
+            return "", sources_found
+    
+    except Exception as e:
+        print(f"❌ Description extraction error: {e}")
+        import traceback
+        traceback.print_exc()
+        return "", sources_found
+
+
+def extract_images_adaptive(page) -> list:
+    """Adaptively extract images from any description section"""
+    print("🖼️ Extracting images...")
+    
+    images = []
     
     try:
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
         
-        print("   🔍 Looking for store-detail elements...")
-        store_elem = soup.find('div', class_=lambda x: x and 'store-detail' in x)
+        # Look for all images with alicdn
+        print("   🔍 Looking for alicdn.com images...")
         
-        if store_elem:
-            print(f"   ✓ Found store element")
-            table = store_elem.find('table')
-            if table:
-                print(f"   ✓ Found table with store info")
-                for row in table.find_all('tr'):
-                    cols = row.find_all('td')
-                    if len(cols) >= 2:
-                        key = clean_text(cols[0].get_text()).replace(":", "").strip()
-                        value = clean_text(cols[1].get_text()).strip()
-                        if key and value:
-                            store_info[key] = value
-                            print(f"      {key}: {value}")
+        all_imgs = soup.find_all('img')
+        print(f"      Found {len(all_imgs)} total images")
         
-        if not store_info:
-            print("   ⚠️ Could not extract store information")
+        alicdn_count = 0
+        for img in all_imgs:
+            src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
             
-    except Exception as e:
-        print(f"⚠️ Store extraction error: {e}")
+            if src and "alicdn.com" in src:
+                clean_src = src.split('?')[0]
+                
+                # Quality filter
+                if (len(clean_src) > 40 and 
+                    not any(bad in clean_src.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100', '/s.gif']) and
+                    clean_src not in images):
+                    images.append(clean_src)
+                    alicdn_count += 1
+        
+        print(f"      ✓ Found {alicdn_count} quality images")
+        
+        # Limit to 20
+        images = images[:20]
+        
+        return images
     
-    return store_info
+    except Exception as e:
+        print(f"⚠️ Image extraction error: {e}")
+        return []
 
 
 def extract_title_universal(page) -> str:
@@ -131,7 +299,6 @@ def extract_title_universal(page) -> str:
         ('[data-pl="product-title"]', "data-pl product-title"),
         ('h1', "h1 heading"),
         ('[class*="product-title"]', "product-title class"),
-        ('[class*="ProductTitle"]', "ProductTitle class"),
         ('span[class*="title"]', "span title class"),
     ]
     
@@ -140,8 +307,8 @@ def extract_title_universal(page) -> str:
             elem = page.locator(selector).first
             if elem.count() > 0:
                 title = elem.inner_text().strip()
-                if title and len(title) > 10:
-                    print(f"✅ Title ({desc}): {title[:80]}...")
+                if title and len(title) > 5:
+                    print(f"✅ Title: {title[:80]}...")
                     return title
         except:
             continue
@@ -150,212 +317,9 @@ def extract_title_universal(page) -> str:
     return ""
 
 
-def extract_complete_description(page) -> str:
-    """
-    COMPLETE REWRITE: Extract description from ALL sources
-    - richTextContainer divs (primary descriptions)
-    - product-description containers (specs)
-    - Handles multiple content sections
-    """
-    print("📝 Extracting COMPLETE description from all sources...")
-    
-    all_descriptions = []
-    
-    try:
-        # Wait for dynamic content
-        print("   ⏳ Waiting for page content to fully render...")
-        page.wait_for_timeout(5000)
-        
-        # Get full page HTML
-        html = page.content()
-        soup = BeautifulSoup(html, "html.parser")
-        
-        print("   🔍 SOURCE 1: Looking for richTextContainer divs...")
-        # richTextContainer divs contain the main descriptions
-        rich_containers = soup.find_all('div', class_=lambda x: x and 'richTextContainer' in x)
-        print(f"      Found {len(rich_containers)} richTextContainer divs")
-        
-        for i, container in enumerate(rich_containers):
-            print(f"      Processing richTextContainer #{i+1}...")
-            
-            # Get all text from this container
-            text_content = container.get_text(separator='\n', strip=True)
-            
-            if text_content and len(text_content) > 50:
-                # Clean up
-                text_content = re.sub(r'\n+', '\n', text_content)
-                text_content = re.sub(r'[ \t]+', ' ', text_content)
-                
-                if text_content not in all_descriptions:  # Avoid duplicates
-                    all_descriptions.append(text_content)
-                    print(f"         ✓ Extracted {len(text_content)} chars")
-                else:
-                    print(f"         ~ Duplicate (skipped)")
-        
-        print("   🔍 SOURCE 2: Looking for product-description divs...")
-        # Also get from product-description
-        prod_descs = soup.find_all('div', id='product-description')
-        print(f"      Found {len(prod_descs)} product-description divs")
-        
-        for i, desc in enumerate(prod_descs):
-            print(f"      Processing product-description #{i+1}...")
-            
-            # Get all text
-            text_content = desc.get_text(separator='\n', strip=True)
-            
-            if text_content and len(text_content) > 30:
-                # Clean up
-                text_content = re.sub(r'\n+', '\n', text_content)
-                text_content = re.sub(r'[ \t]+', ' ', text_content)
-                
-                if text_content not in all_descriptions:
-                    all_descriptions.append(text_content)
-                    print(f"         ✓ Extracted {len(text_content)} chars")
-                else:
-                    print(f"         ~ Duplicate (skipped)")
-        
-        print("   🔍 SOURCE 3: Looking for detail-desc-decorate-richtext...")
-        # Detail-desc-decorate-richtext sections
-        detail_descs = soup.find_all('div', class_=lambda x: x and 'detail-desc-decorate-richtext' in x)
-        print(f"      Found {len(detail_descs)} detail-desc-decorate-richtext divs")
-        
-        for i, desc in enumerate(detail_descs):
-            print(f"      Processing detail-desc-decorate-richtext #{i+1}...")
-            
-            text_content = desc.get_text(separator='\n', strip=True)
-            
-            if text_content and len(text_content) > 30:
-                text_content = re.sub(r'\n+', '\n', text_content)
-                text_content = re.sub(r'[ \t]+', ' ', text_content)
-                
-                if text_content not in all_descriptions:
-                    all_descriptions.append(text_content)
-                    print(f"         ✓ Extracted {len(text_content)} chars")
-                else:
-                    print(f"         ~ Duplicate (skipped)")
-        
-        print("   🔍 SOURCE 4: Looking for all p, span elements with product info...")
-        # Get all paragraphs and spans that might contain product info
-        all_text_nodes = []
-        
-        # Look for elements that might contain descriptions
-        for element in soup.find_all(['p', 'span', 'div']):
-            text = element.get_text(strip=True)
-            
-            # Filter for relevant content (at least 20 chars)
-            if text and len(text) > 20:
-                # Skip if too long (probably a wrapper)
-                if len(text) < 2000:
-                    all_text_nodes.append(text)
-        
-        print(f"      Found {len(all_text_nodes)} individual text nodes")
-        
-        # Combine all sources
-        if all_descriptions:
-            print(f"   ✅ Found {len(all_descriptions)} description sections")
-            
-            # Join all descriptions with a separator
-            combined = "\n\n---\n\n".join(all_descriptions)
-            
-            # Clean up excessive whitespace
-            combined = re.sub(r'\n\s*\n+', '\n\n', combined)
-            combined = re.sub(r'[ \t]+', ' ', combined)
-            combined = combined.strip()
-            
-            print(f"   📊 Combined description: {len(combined)} chars")
-            
-            # Verify key content
-            if 'keep hot' in combined.lower():
-                print("   ✅ Includes 'Keep hot' specifications")
-            if 'keep cold' in combined.lower():
-                print("   ✅ Includes 'Keep cold' specifications")
-            if 'material' in combined.lower():
-                print("   ✅ Includes material specifications")
-            
-            return combined
-        else:
-            print("   ⚠️ No descriptions found in any source")
-            return ""
-    
-    except Exception as e:
-        print(f"❌ Description extraction error: {e}")
-        import traceback
-        traceback.print_exc()
-        return ""
-
-
-def extract_description_images(page) -> list:
-    """Extract images from all description sources"""
-    print("🖼️ Extracting description images...")
-    
-    description_images = []
-    
-    try:
-        html = page.content()
-        soup = BeautifulSoup(html, "html.parser")
-        
-        # Find all images in product description areas
-        print("   🔍 Looking for images in product-description...")
-        
-        # Images in product-description
-        prod_desc = soup.find('div', id='product-description')
-        if prod_desc:
-            imgs = prod_desc.find_all('img')
-            print(f"      Found {len(imgs)} images in product-description")
-            
-            for img in imgs:
-                src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-                if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
-                    clean_src = src.split('?')[0]
-                    if len(clean_src) > 50 and clean_src not in description_images:
-                        description_images.append(clean_src)
-        
-        # Images in richTextContainer
-        print("   🔍 Looking for images in richTextContainer...")
-        rich_containers = soup.find_all('div', class_=lambda x: x and 'richTextContainer' in x)
-        for container in rich_containers:
-            imgs = container.find_all('img')
-            print(f"      Found {len(imgs)} images in richTextContainer")
-            
-            for img in imgs:
-                src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-                if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
-                    clean_src = src.split('?')[0]
-                    if len(clean_src) > 50 and clean_src not in description_images:
-                        description_images.append(clean_src)
-        
-        # Images in detail-desc-decorate-richtext
-        print("   🔍 Looking for images in detail-desc-decorate-richtext...")
-        detail_descs = soup.find_all('div', class_=lambda x: x and 'detail-desc-decorate-richtext' in x)
-        for desc in detail_descs:
-            imgs = desc.find_all('img')
-            print(f"      Found {len(imgs)} images in detail-desc-decorate-richtext")
-            
-            for img in imgs:
-                src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-                if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
-                    clean_src = src.split('?')[0]
-                    if len(clean_src) > 50 and clean_src not in description_images:
-                        description_images.append(clean_src)
-        
-        print(f"   ✓ Extracted {len(description_images)} images")
-        
-        # Limit to 20 and remove quality filter
-        description_images = description_images[:20]
-        
-        if description_images:
-            for i, img_url in enumerate(description_images[:3], 1):
-                print(f"      {i}. {img_url[:60]}...")
-    
-    except Exception as e:
-        print(f"❌ Image extraction error: {e}")
-    
-    return description_images
-
-
 def extract_aliexpress_product(url: str) -> dict:
     """
-    Extract AliExpress product data - COMPLETE REWRITE for multi-source extraction
+    Extract from AliExpress with adaptive detection
     """
     
     print(f"\n🔍 Scraping: {url}")
@@ -376,7 +340,7 @@ def extract_aliexpress_product(url: str) -> dict:
             print("🔄 Rotating Tor circuit...")
             rotate_tor_circuit()
             wait_time = 20 + (attempt * 5)
-            print(f"   Waiting {wait_time}s before next attempt...")
+            print(f"   Waiting {wait_time}s...")
             time.sleep(wait_time)
         
         with sync_playwright() as p:
@@ -392,96 +356,74 @@ def extract_aliexpress_product(url: str) -> dict:
             
             page = browser.new_page(
                 viewport=random_viewport(),
-                user_agent=random.choice([
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                ]),
-                timezone_id=random.choice([
-                    'America/New_York',
-                    'America/Chicago',
-                    'America/Denver',
-                    'America/Los_Angeles',
-                ])
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                timezone_id='America/New_York'
             )
             
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            page.add_init_script("Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]})")
             
             try:
-                # NAVIGATION
+                # LOAD PAGE
                 print("📡 Loading page...")
                 page.goto(url, timeout=120000, wait_until="domcontentloaded")
                 time.sleep(2)
                 
-                current_url = page.url
-                if current_url != url:
-                    print(f"⚠️ Redirected to: {current_url}")
+                final_url = page.url
+                if final_url != url:
+                    print(f"⚠️ Redirected: {final_url}")
                 
-                # CAPTCHA CHECK
+                # CHECK CAPTCHA
                 if is_captcha_page(page):
-                    print("⚠️ CAPTCHA detected - rotating IP and retrying...")
+                    print("⚠️ CAPTCHA detected - retrying...")
                     browser.close()
                     continue
                 
-                # Wait for page to load
-                print("⏳ Waiting for page to render...")
+                # WAIT & SCROLL
+                print("⏳ Waiting for page render...")
                 time.sleep(8)
                 
-                # SCROLL
-                print("⏳ Scrolling to load content...")
-                try:
-                    for _ in range(5):
-                        page.mouse.wheel(0, random.randint(150, 300))
-                        time.sleep(random.uniform(0.2, 0.6))
-                    page.evaluate("window.scrollTo(0, 0)")
-                    time.sleep(1)
-                except Exception as e:
-                    print(f"⚠️ Scroll error: {e}")
+                print("⏳ Scrolling...")
+                for _ in range(5):
+                    page.mouse.wheel(0, random.randint(150, 300))
+                    time.sleep(0.3)
+                page.evaluate("window.scrollTo(0, 0)")
+                time.sleep(1)
                 
-                # SECOND CAPTCHA CHECK
+                # CHECK CAPTCHA AGAIN
                 if is_captcha_page(page):
-                    print("⚠️ CAPTCHA after scroll - rotating IP and retrying...")
+                    print("⚠️ CAPTCHA after scroll - retrying...")
                     browser.close()
                     continue
                 
-                # EXTRACT TITLE
+                # EXTRACT
                 title = extract_title_universal(page)
+                description_text, sources = extract_description_adaptive(page)
+                images = extract_images_adaptive(page)
                 
-                # EXTRACT STORE INFO
-                store_info = extract_store_info_universal(page)
-                
-                # EXTRACT DESCRIPTION - NEW MULTI-SOURCE METHOD
-                description_text = extract_complete_description(page)
-                
-                # EXTRACT IMAGES
-                description_images = extract_description_images(page)
-                
-                # SUCCESS
+                # RESULTS
                 browser.close()
                 
                 result = {
-                    "title": title if isinstance(title, str) else "",
-                    "description_text": description_text if isinstance(description_text, str) else "",
-                    "images": description_images if isinstance(description_images, list) else [],
-                    "store_info": store_info if isinstance(store_info, dict) else {}
+                    "title": title,
+                    "description_text": description_text,
+                    "images": images,
+                    "store_info": {}
                 }
                 
-                print(f"\n✅ Extraction Results:")
-                print(f"   Title: {len(result['title'])} chars")
-                print(f"   Description: {len(result['description_text'])} chars")
-                print(f"   Images: {len(result['images'])} images")
-                print(f"   Store info: {len(result['store_info'])} fields")
-                print(f"\n✅ Extraction successful on attempt {attempt + 1}\n")
+                print(f"\n✅ Results:")
+                print(f"   Title: {len(title)} chars")
+                print(f"   Description: {len(description_text)} chars (from {sources})")
+                print(f"   Images: {len(images)}")
+                print(f"\n✅ Success on attempt {attempt + 1}")
                 return result
                 
             except PlaywrightTimeoutError as e:
-                print(f"⚠️ Timeout on attempt {attempt + 1}: {e}")
+                print(f"⚠️ Timeout: {e}")
                 browser.close()
                 continue
                 
             except Exception as e:
-                print(f"❌ Error on attempt {attempt + 1}: {e}")
+                print(f"❌ Error: {e}")
                 import traceback
                 traceback.print_exc()
                 try:
