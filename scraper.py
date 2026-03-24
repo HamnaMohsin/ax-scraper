@@ -47,8 +47,6 @@ def rotate_tor_circuit():
 def is_captcha_page(page) -> bool:
     """Detect CAPTCHA"""
     page_url = page.url.lower()
-    page_title = page.title().lower()
-    
     captcha_url_keywords = ["baxia", "punish", "captcha", "verify"]
     if any(kw in page_url for kw in captcha_url_keywords):
         return True
@@ -70,187 +68,203 @@ def is_captcha_page(page) -> bool:
     return False
 
 
-def analyze_html_structure(html: str) -> dict:
+def extract_shadow_dom_text(html_str: str) -> str:
     """
-    Analyze the actual HTML structure to understand what we're working with
-    Returns info about what containers exist on this page
+    Extract text from template/shadow DOM elements
+    This gets the detailed specs that are hidden in template tags
     """
-    soup = BeautifulSoup(html, "html.parser")
+    print("   🔍 Checking for Shadow DOM content...")
     
-    structure = {
-        'richTextContainer_count': 0,
-        'product_description_count': 0,
-        'detail_desc_count': 0,
-        'spec_table_count': 0,
-        'description_container_count': 0,
-        'has_shadow_dom': False,
-        'common_description_classes': [],
-        'all_divs_with_text': []
+    # Parse the HTML
+    soup = BeautifulSoup(html_str, "html.parser")
+    
+    # Find template elements with shadowrootmode
+    templates = soup.find_all('template', attrs={'shadowrootmode': 'open'})
+    print(f"      Found {len(templates)} shadow DOM template(s)")
+    
+    shadow_content = []
+    
+    for i, template in enumerate(templates):
+        # Get the content inside the template
+        template_html = str(template)
+        
+        # Parse the template content
+        # The content is inside the <template> tag
+        if template.string:
+            # Extract text from template
+            pass
+        
+        # Try to find content within the template tag
+        # BeautifulSoup includes template contents as children
+        for child in template.children:
+            if isinstance(child, str):
+                continue
+            
+            # Get text from elements inside template
+            text = child.get_text(separator='\n', strip=True)
+            if len(text) > 50:
+                shadow_content.append(text)
+                print(f"      Template #{i+1}: {len(text)} chars - {text[:60]}...")
+    
+    return "\n\n".join(shadow_content) if shadow_content else ""
+
+
+def extract_description_sections(html_str: str) -> dict:
+    """
+    Extract description from different sections, filtering out irrelevant content
+    Returns dict with different content types
+    """
+    print("📝 Extracting description sections...")
+    
+    soup = BeautifulSoup(html_str, "html.parser")
+    
+    sections = {
+        'shadow_dom': "",
+        'rich_text': "",
+        'detail_specs': ""
     }
     
-    # Count known structures
-    structure['richTextContainer_count'] = len(soup.find_all('div', class_=lambda x: x and 'richTextContainer' in x))
-    structure['product_description_count'] = len(soup.find_all('div', id='product-description'))
-    structure['detail_desc_count'] = len(soup.find_all('div', class_=lambda x: x and 'detail-desc-decorate' in x))
-    structure['spec_table_count'] = len(soup.find_all('table'))
+    # SECTION 1: Shadow DOM content (detailed specs)
+    print("   Section 1: Shadow DOM / Template content...")
+    templates = soup.find_all('template', attrs={'shadowrootmode': 'open'})
     
-    # Check for shadow DOM
-    structure['has_shadow_dom'] = bool(soup.find('template', attrs={'shadowrootmode': 'open'}))
+    for template in templates:
+        # Find the inner product-description div
+        inner_desc = template.find('div', id='product-description')
+        if inner_desc:
+            text = inner_desc.get_text(separator='\n', strip=True)
+            if len(text) > 50:
+                sections['shadow_dom'] = text
+                print(f"      ✓ Got {len(text)} chars from shadow DOM")
     
-    # Find divs with description-related classes
-    for div in soup.find_all('div', class_=True):
-        classes = div.get('class', [])
-        class_str = ' '.join(classes) if isinstance(classes, list) else str(classes)
+    # SECTION 2: Detail specs (detail-desc-decorate-richtext)
+    print("   Section 2: Detail specs...")
+    detail_descs = soup.find_all('div', class_=lambda x: x and 'detail-desc-decorate' in x)
+    
+    for detail in detail_descs:
+        # Only get from the first level, not nested
+        text = detail.get_text(separator='\n', strip=True)
+        if len(text) > 50:
+            sections['detail_specs'] = text
+            print(f"      ✓ Got {len(text)} chars from detail specs")
+            break
+    
+    # SECTION 3: Rich text container (but NOT including page junk)
+    print("   Section 3: Rich text container...")
+    
+    # Find richTextContainer divs
+    rich_containers = soup.find_all('div', class_=lambda x: x and 'richTextContainer' in x)
+    print(f"      Found {len(rich_containers)} richTextContainer(s)")
+    
+    for container in rich_containers:
+        text = container.get_text(separator='\n', strip=True)
         
-        if any(kw in class_str.lower() for kw in ['description', 'detail', 'product', 'spec', 'info']):
-            structure['common_description_classes'].append(class_str[:80])
+        # Filter out page junk
+        # Remove if it contains too much pricing/review info
+        lines = text.split('\n')
+        
+        # Check if this looks like junk
+        is_junk = False
+        junk_indicators = [
+            'Positive Feedback',
+            'Free shipping',
+            'Delivery:',
+            'Refund if',
+            'Safe payments',
+            'Quantity',
+            'Buy now',
+            'Add to cart',
+            'Similar items',
+            'People also searched',
+            'Help Center',
+            'Return&refund',
+            'Alibaba Group'
+        ]
+        
+        for indicator in junk_indicators:
+            if indicator in text:
+                is_junk = True
+                break
+        
+        if not is_junk and len(text) > 200:
+            sections['rich_text'] = text
+            print(f"      ✓ Got {len(text)} chars (filtered)")
+            break
+        elif len(text) > 200:
+            print(f"      ✗ Skipped {len(text)} chars (detected as junk/page content)")
     
-    # Get all substantial text containers
-    for div in soup.find_all('div'):
-        text = div.get_text(strip=True)
-        if len(text) > 100 and len(text) < 5000:  # Reasonable size for description
-            div_classes = div.get('class', [])
-            div_id = div.get('id', '')
-            structure['all_divs_with_text'].append({
-                'classes': ' '.join(div_classes) if div_classes else 'none',
-                'id': div_id if div_id else 'none',
-                'text_length': len(text)
-            })
-    
-    return structure
+    return sections
 
 
-def extract_description_adaptive(page) -> tuple:
+def extract_description_intelligent(page) -> str:
     """
-    Adaptively extract description by inspecting HTML structure first
-    Returns (description_text, found_sources)
+    Intelligently extract description from all relevant sources
+    Combines shadow DOM + rich text + detail specs
+    Filters out page noise
     """
-    print("📝 Extracting description (adaptive mode)...")
+    print("📝 Extracting COMPLETE description...")
     
-    all_descriptions = []
-    sources_found = []
+    all_content = []
     
     try:
-        # Wait for content
+        # Wait for content to render
         print("   ⏳ Waiting for page content...")
         page.wait_for_timeout(3000)
         
+        # Get page source
         html = page.content()
-        soup = BeautifulSoup(html, "html.parser")
         
-        # Analyze structure
-        print("   🔍 Analyzing HTML structure...")
-        structure = analyze_html_structure(html)
+        # Extract from different sections
+        sections = extract_description_sections(html)
         
-        print(f"   📊 Structure found:")
-        print(f"      richTextContainer: {structure['richTextContainer_count']}")
-        print(f"      product-description: {structure['product_description_count']}")
-        print(f"      detail-desc: {structure['detail_desc_count']}")
-        print(f"      tables: {structure['spec_table_count']}")
-        print(f"      shadow DOM: {structure['has_shadow_dom']}")
-        print(f"      divs with substantial text: {len(structure['all_divs_with_text'])}")
+        # Combine in order of priority
+        # 1. Shadow DOM content first (most detailed specs)
+        if sections['shadow_dom']:
+            all_content.append(sections['shadow_dom'])
+            print(f"   ✓ Shadow DOM: {len(sections['shadow_dom'])} chars")
         
-        # Strategy 1: Extract from known containers
-        print("   📌 Strategy 1: Known containers...")
+        # 2. Detail specs
+        if sections['detail_specs']:
+            all_content.append(sections['detail_specs'])
+            print(f"   ✓ Detail specs: {len(sections['detail_specs'])} chars")
         
-        # richTextContainer
-        if structure['richTextContainer_count'] > 0:
-            print(f"      Found {structure['richTextContainer_count']} richTextContainer(s)")
-            for container in soup.find_all('div', class_=lambda x: x and 'richTextContainer' in x):
-                text = container.get_text(separator='\n', strip=True)
-                if text and len(text) > 50:
-                    all_descriptions.append(text)
-                    sources_found.append('richTextContainer')
+        # 3. Rich text (full descriptions)
+        if sections['rich_text']:
+            all_content.append(sections['rich_text'])
+            print(f"   ✓ Rich text: {len(sections['rich_text'])} chars")
         
-        # product-description
-        if structure['product_description_count'] > 0:
-            print(f"      Found {structure['product_description_count']} product-description(s)")
-            for desc in soup.find_all('div', id='product-description'):
-                text = desc.get_text(separator='\n', strip=True)
-                if text and len(text) > 50:
-                    # Only add if not already in all_descriptions
-                    if not any(text in existing for existing in all_descriptions):
-                        all_descriptions.append(text)
-                        sources_found.append('product-description')
-        
-        # detail-desc
-        if structure['detail_desc_count'] > 0:
-            print(f"      Found {structure['detail_desc_count']} detail-desc container(s)")
-            for desc in soup.find_all('div', class_=lambda x: x and 'detail-desc-decorate' in x):
-                text = desc.get_text(separator='\n', strip=True)
-                if text and len(text) > 50:
-                    if not any(text in existing for existing in all_descriptions):
-                        all_descriptions.append(text)
-                        sources_found.append('detail-desc')
-        
-        # Strategy 2: If nothing found, try description/detail in class names
-        if not all_descriptions:
-            print("   📌 Strategy 2: Class name matching...")
-            
-            # Look for any div with 'description' or 'detail' or 'product' in class
-            for div in soup.find_all('div', class_=True):
-                classes = div.get('class', [])
-                class_str = ' '.join(classes) if isinstance(classes, list) else str(classes)
-                
-                if any(kw in class_str.lower() for kw in ['description', 'detail', 'product-info', 'spec']):
-                    text = div.get_text(separator='\n', strip=True)
-                    if len(text) > 100 and len(text) < 10000:
-                        if not any(text in existing for existing in all_descriptions):
-                            all_descriptions.append(text)
-                            sources_found.append(f'div[class*={class_str[:30]}]')
-                            print(f"      Found: {class_str[:50]}...")
-        
-        # Strategy 3: Look for any div with substantial text content
-        if not all_descriptions:
-            print("   📌 Strategy 3: Content-based detection...")
-            
-            # Look for divs with description-like content
-            for div in soup.find_all('div'):
-                text = div.get_text(separator='\n', strip=True)
-                
-                # Look for content that looks like descriptions
-                if (len(text) > 200 and len(text) < 10000 and
-                    any(kw in text.lower() for kw in ['material', 'product', 'design', 'features', 'specification', 'quality'])):
-                    
-                    if not any(text in existing for existing in all_descriptions):
-                        all_descriptions.append(text)
-                        sources_found.append('content-detected')
-                        print(f"      Found content: {text[:60]}...")
-        
-        # Combine all
-        if all_descriptions:
-            print(f"   ✅ Found {len(all_descriptions)} description section(s)")
-            combined = "\n\n---\n\n".join(all_descriptions)
+        if all_content:
+            # Combine all sections
+            combined = "\n\n".join(all_content)
             
             # Clean up
             combined = re.sub(r'\n\s*\n+', '\n\n', combined)
             combined = re.sub(r'[ \t]+', ' ', combined)
             combined = combined.strip()
             
-            return combined, sources_found
+            # Verify we got good content
+            print(f"   📊 Combined: {len(combined)} chars")
+            
+            if 'keep hot' in combined.lower():
+                print("   ✅ Includes temperature specs")
+            if 'material' in combined.lower():
+                print("   ✅ Includes material specs")
+            
+            return combined
         else:
-            print("   ⚠️ No descriptions found with any strategy")
-            
-            # Last resort: show what was found
-            if structure['all_divs_with_text']:
-                print(f"   💡 Found {len(structure['all_divs_with_text'])} divs with text content")
-                print("      Largest ones:")
-                sorted_divs = sorted(structure['all_divs_with_text'], key=lambda x: x['text_length'], reverse=True)
-                for div_info in sorted_divs[:3]:
-                    print(f"         {div_info['text_length']} chars - id:{div_info['id']}, class:{div_info['classes'][:40]}")
-            
-            return "", sources_found
+            print("   ⚠️ No description content found")
+            return ""
     
     except Exception as e:
-        print(f"❌ Description extraction error: {e}")
+        print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
-        return "", sources_found
+        return ""
 
 
-def extract_images_adaptive(page) -> list:
-    """Adaptively extract images from any description section"""
-    print("🖼️ Extracting images...")
+def extract_description_images(page) -> list:
+    """Extract ONLY description images (not product thumbnails)"""
+    print("🖼️ Extracting description images...")
     
     images = []
     
@@ -258,27 +272,36 @@ def extract_images_adaptive(page) -> list:
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
         
-        # Look for all images with alicdn
-        print("   🔍 Looking for alicdn.com images...")
+        # Look for images in product-description divs specifically
+        print("   🔍 Looking for images in description sections...")
         
-        all_imgs = soup.find_all('img')
-        print(f"      Found {len(all_imgs)} total images")
+        # Images in templates
+        templates = soup.find_all('template', attrs={'shadowrootmode': 'open'})
+        for template in templates:
+            inner_desc = template.find('div', id='product-description')
+            if inner_desc:
+                imgs = inner_desc.find_all('img')
+                for img in imgs:
+                    src = img.get('src') or img.get('data-src')
+                    if src and 'alicdn.com' in src:
+                        clean_src = src.split('?')[0]
+                        if len(clean_src) > 50 and clean_src not in images:
+                            images.append(clean_src)
         
-        alicdn_count = 0
-        for img in all_imgs:
-            src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-            
-            if src and "alicdn.com" in src:
-                clean_src = src.split('?')[0]
-                
-                # Quality filter
-                if (len(clean_src) > 40 and 
-                    not any(bad in clean_src.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100', '/s.gif']) and
-                    clean_src not in images):
-                    images.append(clean_src)
-                    alicdn_count += 1
+        print(f"      Found {len(images)} from shadow DOM")
         
-        print(f"      ✓ Found {alicdn_count} quality images")
+        # Images in richTextContainer
+        rich_containers = soup.find_all('div', class_=lambda x: x and 'richTextContainer' in x)
+        for container in rich_containers:
+            imgs = container.find_all('img')
+            for img in imgs:
+                src = img.get('src') or img.get('data-src')
+                if src and 'alicdn.com' in src:
+                    clean_src = src.split('?')[0]
+                    if len(clean_src) > 50 and clean_src not in images:
+                        images.append(clean_src)
+        
+        print(f"      Total: {len(images)} description images")
         
         # Limit to 20
         images = images[:20]
@@ -286,7 +309,7 @@ def extract_images_adaptive(page) -> list:
         return images
     
     except Exception as e:
-        print(f"⚠️ Image extraction error: {e}")
+        print(f"⚠️ Image error: {e}")
         return []
 
 
@@ -296,10 +319,10 @@ def extract_title_universal(page) -> str:
     print("📌 Extracting title...")
     
     title_selectors = [
-        ('[data-pl="product-title"]', "data-pl product-title"),
-        ('h1', "h1 heading"),
-        ('[class*="product-title"]', "product-title class"),
-        ('span[class*="title"]', "span title class"),
+        ('[data-pl="product-title"]', "data-pl"),
+        ('h1', "h1"),
+        ('[class*="product-title"]', "class"),
+        ('span[class*="title"]', "span"),
     ]
     
     for selector, desc in title_selectors:
@@ -313,13 +336,13 @@ def extract_title_universal(page) -> str:
         except:
             continue
     
-    print("⚠️ Could not extract title")
     return ""
 
 
 def extract_aliexpress_product(url: str) -> dict:
     """
-    Extract from AliExpress with adaptive detection
+    Extract AliExpress product - Shadow DOM aware
+    Separates description content from page noise
     """
     
     print(f"\n🔍 Scraping: {url}")
@@ -356,32 +379,29 @@ def extract_aliexpress_product(url: str) -> dict:
             
             page = browser.new_page(
                 viewport=random_viewport(),
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 timezone_id='America/New_York'
             )
             
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             
             try:
-                # LOAD PAGE
+                # LOAD
                 print("📡 Loading page...")
                 page.goto(url, timeout=120000, wait_until="domcontentloaded")
                 time.sleep(2)
                 
-                final_url = page.url
-                if final_url != url:
-                    print(f"⚠️ Redirected: {final_url}")
-                
-                # CHECK CAPTCHA
+                # CAPTCHA CHECK
                 if is_captcha_page(page):
-                    print("⚠️ CAPTCHA detected - retrying...")
+                    print("⚠️ CAPTCHA - retrying...")
                     browser.close()
                     continue
                 
-                # WAIT & SCROLL
-                print("⏳ Waiting for page render...")
+                # WAIT
+                print("⏳ Rendering...")
                 time.sleep(8)
                 
+                # SCROLL
                 print("⏳ Scrolling...")
                 for _ in range(5):
                     page.mouse.wheel(0, random.randint(150, 300))
@@ -389,20 +409,21 @@ def extract_aliexpress_product(url: str) -> dict:
                 page.evaluate("window.scrollTo(0, 0)")
                 time.sleep(1)
                 
-                # CHECK CAPTCHA AGAIN
+                # SECOND CAPTCHA CHECK
                 if is_captcha_page(page):
-                    print("⚠️ CAPTCHA after scroll - retrying...")
+                    print("⚠️ CAPTCHA - retrying...")
                     browser.close()
                     continue
                 
                 # EXTRACT
+                print("\n--- EXTRACTING DATA ---")
                 title = extract_title_universal(page)
-                description_text, sources = extract_description_adaptive(page)
-                images = extract_images_adaptive(page)
+                description_text = extract_description_intelligent(page)
+                images = extract_description_images(page)
                 
-                # RESULTS
                 browser.close()
                 
+                # RESULTS
                 result = {
                     "title": title,
                     "description_text": description_text,
@@ -410,11 +431,11 @@ def extract_aliexpress_product(url: str) -> dict:
                     "store_info": {}
                 }
                 
-                print(f"\n✅ Results:")
+                print(f"\n✅ SUCCESS:")
                 print(f"   Title: {len(title)} chars")
-                print(f"   Description: {len(description_text)} chars (from {sources})")
+                print(f"   Description: {len(description_text)} chars")
                 print(f"   Images: {len(images)}")
-                print(f"\n✅ Success on attempt {attempt + 1}")
+                
                 return result
                 
             except PlaywrightTimeoutError as e:
@@ -432,5 +453,5 @@ def extract_aliexpress_product(url: str) -> dict:
                     pass
                 continue
     
-    print(f"❌ Failed after {max_retries} attempts")
+    print("❌ Failed")
     return empty_result
