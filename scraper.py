@@ -33,7 +33,7 @@ def random_viewport():
 
 
 def rotate_tor_circuit():
-    """Rotate Tor circuit to get new exit IP - wait longer for actual change"""
+    """Rotate Tor circuit to get new exit IP"""
     try:
         with Controller.from_port(port=9051) as controller:
             controller.authenticate()
@@ -95,14 +95,14 @@ def extract_store_info_universal(page) -> dict:
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
         
-        print("   🔍 Search 1: Looking for store-detail elements...")
+        print("   🔍 Looking for store info...")
         store_elem = soup.find('div', class_=lambda x: x and 'store-detail' in x)
         
         if store_elem:
             print(f"   ✓ Found store element")
             table = store_elem.find('table')
             if table:
-                print(f"   ✓ Found table with store info")
+                print(f"   ✓ Found table")
                 for row in table.find_all('tr'):
                     cols = row.find_all('td')
                     if len(cols) >= 2:
@@ -110,7 +110,6 @@ def extract_store_info_universal(page) -> dict:
                         value = clean_text(cols[1].get_text()).strip()
                         if key and value:
                             store_info[key] = value
-                            print(f"      {key}: {value}")
         
         if not store_info:
             print("   ⚠️ Could not extract store information")
@@ -139,7 +138,7 @@ def extract_title_universal(page) -> str:
             if elem.count() > 0:
                 title = elem.inner_text().strip()
                 if title and len(title) > 10:
-                    print(f"✅ Title ({desc}): {title[:80]}...")
+                    print(f"✅ Title: {title[:80]}...")
                     return title
         except:
             continue
@@ -148,262 +147,201 @@ def extract_title_universal(page) -> str:
     return ""
 
 
-def wait_for_description_tab_and_click(page):
+def find_all_images_on_page(page) -> list:
     """
-    Find and click the Description tab to ensure content loads.
-    Waits for the tab to be clickable and then clicks it.
+    Comprehensive image extraction using multiple methods.
+    Searches EVERY img tag on the entire page.
     """
-    print("   🔍 Looking for Description tab...")
+    print("   🖼️ Searching for ALL images on page...")
     
-    # Multiple possible selectors for description tab
-    tab_selectors = [
-        ('text=Description', 'text=Description'),
-        ('a:has-text("Description")', 'a:has-text("Description")'),
-        ('[role="tab"]:has-text("Description")', '[role="tab"]:has-text("Description")'),
-        ('button:has-text("Description")', 'button:has-text("Description")'),
-        ('.comet-v2-tabs-content-tab:has-text("Description")', 'comet-v2-tabs-content-tab'),
-    ]
-    
-    for selector, desc in tab_selectors:
-        try:
-            tab = page.locator(selector).first
-            if tab.count() > 0:
-                print(f"   ✓ Found Description tab ({desc})")
-                try:
-                    tab.click(timeout=3000, force=True)
-                    print(f"   ✓ Clicked Description tab")
-                    # Wait for content to load
-                    page.wait_for_timeout(2000)
-                    return True
-                except:
-                    continue
-        except:
-            continue
-    
-    print("   ⚠️ Could not find/click Description tab (might already be active)")
-    return False
-
-
-def scroll_description_into_view(page):
-    """Scroll description section into view to trigger lazy loading"""
-    print("   ⏳ Scrolling description into view...")
-    try:
-        page.locator('#product-description').first.scroll_into_view()
-        page.wait_for_timeout(2000)
-        print("   ✓ Scrolled into view")
-        return True
-    except Exception as e:
-        print(f"   ⚠️ Scroll error: {e}")
-        return False
-
-
-def extract_from_shadow_dom_js(page) -> tuple:
-    """
-    Extract description and images directly from shadow DOM using JavaScript.
-    This is the MOST RELIABLE method.
-    """
-    print("   🔍 Method 1: Extracting from Shadow DOM (JavaScript)...")
+    images = []
     
     try:
-        # JavaScript to extract shadow DOM content
-        result = page.evaluate("""
-            () => {
-                try {
-                    // Find template
-                    const template = document.querySelector('#product-description > template');
-                    if (!template) {
-                        return { success: false, error: 'No template found' };
-                    }
-                    
-                    // Get shadow root
-                    const shadowRoot = template.shadowRoot;
-                    if (!shadowRoot) {
-                        return { success: false, error: 'No shadowRoot' };
-                    }
-                    
-                    // Find product-description div in shadow
-                    const descDiv = shadowRoot.querySelector('.product-description');
-                    if (!descDiv) {
-                        return { success: false, error: 'No .product-description in shadow' };
-                    }
-                    
-                    // Extract text content
-                    const textContent = descDiv.innerText || descDiv.textContent;
-                    
-                    // Extract all images
-                    const images = [];
-                    const imgElements = descDiv.querySelectorAll('img');
-                    imgElements.forEach(img => {
-                        const src = img.src || img.getAttribute('data-src') || img.getAttribute('data-lazy-src');
-                        if (src && (src.includes('alicdn.com') || src.includes('ae01.alicdn.com'))) {
-                            const cleanSrc = src.split('?')[0];
-                            if (!images.includes(cleanSrc)) {
-                                images.push(cleanSrc);
-                            }
-                        }
-                    });
-                    
-                    // Also get HTML for parsing
-                    const htmlContent = descDiv.innerHTML;
-                    
-                    return { 
-                        success: true, 
-                        text: textContent, 
-                        html: htmlContent,
-                        images: images,
-                        imgCount: imgElements.length
-                    };
-                } catch (e) {
-                    return { success: false, error: e.toString() };
-                }
-            }
-        """)
+        # Method 1: Use Playwright to find all img tags
+        print("      Method 1: Locating all img elements...")
+        img_locators = page.locator('img').all()
+        print(f"         Found {len(img_locators)} img tags")
         
-        if not result:
-            print("   ⚠️ JavaScript returned null")
-            return "", []
-        
-        if not result.get('success', False):
-            print(f"   ⚠️ Shadow DOM extraction failed: {result.get('error', 'Unknown error')}")
-            return "", []
-        
-        text = result.get('text', '').strip()
-        images = result.get('images', [])
-        html = result.get('html', '')
-        img_count = result.get('imgCount', 0)
-        
-        print(f"   ✓ JavaScript successful:")
-        print(f"      Text: {len(text)} chars")
-        print(f"      Images found: {img_count} (extracted: {len(images)})")
-        
-        # Clean text
-        text = re.sub(r'\s+', ' ', text).strip()
-        
-        # Parse HTML for any missed images
-        if html and len(html) > 100:
-            soup = BeautifulSoup(html, 'html.parser')
-            for img in soup.find_all('img'):
-                src = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
-                if src and ('alicdn.com' in src or 'ae01.alicdn.com' in src):
+        for img in img_locators:
+            try:
+                src = (img.get_attribute("src") or 
+                       img.get_attribute("data-src") or 
+                       img.get_attribute("data-lazy-src"))
+                
+                if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
                     clean_src = src.split('?')[0]
                     if clean_src not in images and len(clean_src) > 50:
                         images.append(clean_src)
+                        print(f"         ✓ {src[:70]}...")
+            except:
+                continue
         
-        # Filter images
-        quality_images = [img for img in images if len(img) > 50]
-        quality_images = quality_images[:20]  # Limit to 20
+        print(f"      After Method 1: {len(images)} images")
         
-        print(f"   ✓ Final: {len(text)} chars text, {len(quality_images)} quality images")
-        
-        return text, quality_images
-        
-    except Exception as e:
-        print(f"   ❌ Shadow DOM JS extraction failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return "", []
-
-
-def extract_from_richtext_dom(page) -> tuple:
-    """
-    Extract from richTextContainer (fallback).
-    """
-    print("   🔍 Method 2: Extracting from richTextContainer (fallback)...")
-    
-    try:
-        # Get full page HTML
+        # Method 2: Parse entire HTML with BeautifulSoup
+        print("      Method 2: Parsing HTML for img tags...")
         html = page.content()
         soup = BeautifulSoup(html, 'html.parser')
+        all_imgs = soup.find_all('img')
+        print(f"         Found {len(all_imgs)} img tags in HTML")
         
-        # Find all richTextContainer divs
-        rich_elems = soup.find_all('div', class_='richTextContainer')
-        print(f"   Found {len(rich_elems)} richTextContainer elements")
+        for img in all_imgs:
+            src = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
+            if src and ('alicdn.com' in src or 'ae01.alicdn.com' in src):
+                clean_src = src.split('?')[0]
+                if clean_src not in images and len(clean_src) > 50:
+                    images.append(clean_src)
         
-        if not rich_elems:
-            print("   ⚠️ No richTextContainer found")
-            return "", []
+        print(f"      After Method 2: {len(images)} images")
         
-        text_parts = []
-        images = []
+        # Method 3: Search for images in picture elements
+        print("      Method 3: Looking for picture/source elements...")
+        pictures = soup.find_all('picture')
+        print(f"         Found {len(pictures)} picture elements")
         
-        for idx, elem in enumerate(rich_elems):
-            # Extract text
-            text = elem.get_text(' ', strip=True)
-            if text and len(text) > 20:
-                text_parts.append(text)
-                print(f"      Container {idx}: {len(text)} chars")
-            
-            # Extract images
-            for img in elem.find_all('img'):
-                src = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
-                if src and ('alicdn.com' in src or 'ae01.alicdn.com' in src):
-                    clean_src = src.split('?')[0]
-                    if clean_src not in images:
-                        images.append(clean_src)
+        for pic in pictures:
+            for src in pic.find_all('source'):
+                srcset = src.get('srcset') or src.get('data-srcset')
+                if srcset:
+                    # Extract URL from srcset
+                    urls = re.findall(r'(https?://[^\s]+(?:alicdn\.com|ae01\.alicdn\.com)[^\s]*)', srcset)
+                    for url in urls:
+                        clean_url = url.split('?')[0]
+                        if clean_url not in images and len(clean_url) > 50:
+                            images.append(clean_url)
         
-        # Combine text
-        full_text = ' '.join(text_parts)
-        full_text = re.sub(r'\s+', ' ', full_text).strip()
+        print(f"      After Method 3: {len(images)} images")
         
-        # Filter images
-        quality_images = [img for img in images if len(img) > 50]
-        quality_images = quality_images[:20]
+        # Method 4: Search for images in data-url attributes
+        print("      Method 4: Searching for data-url attributes...")
+        data_url_elems = soup.find_all(attrs={'data-url': True})
+        print(f"         Found {len(data_url_elems)} elements with data-url")
         
-        print(f"   ✓ richTextContainer: {len(full_text)} chars text, {len(quality_images)} images")
+        for elem in data_url_elems:
+            data_url = elem.get('data-url')
+            if data_url and ('alicdn.com' in data_url or 'ae01.alicdn.com' in data_url):
+                clean_url = data_url.split('?')[0]
+                if clean_url not in images and len(clean_url) > 50:
+                    images.append(clean_url)
         
-        return full_text, quality_images
+        print(f"      After Method 4: {len(images)} images")
+        
+        # Method 5: Use JavaScript to extract all visible image URLs
+        print("      Method 5: Using JavaScript to find images...")
+        js_images = page.evaluate("""
+            () => {
+                const urls = new Set();
+                // Find all img src
+                document.querySelectorAll('img').forEach(img => {
+                    const src = img.src || img.getAttribute('data-src') || img.getAttribute('data-lazy-src');
+                    if (src && (src.includes('alicdn.com') || src.includes('ae01.alicdn.com'))) {
+                        urls.add(src.split('?')[0]);
+                    }
+                });
+                // Find in background-image styles
+                document.querySelectorAll('[style*="background-image"]').forEach(el => {
+                    const match = el.getAttribute('style').match(/url\\(['"]?([^'")]+)['\"]?\\)/);
+                    if (match && (match[1].includes('alicdn.com') || match[1].includes('ae01.alicdn.com'))) {
+                        urls.add(match[1].split('?')[0]);
+                    }
+                });
+                return Array.from(urls);
+            }
+        """)
+        
+        if js_images:
+            print(f"         JavaScript found {len(js_images)} image URLs")
+            for url in js_images:
+                if url not in images and len(url) > 50:
+                    images.append(url)
+        
+        print(f"      After Method 5: {len(images)} images")
+        
+        # Deduplicate and filter
+        images = list(set(images))
+        
+        # Filter out low-quality/tiny images
+        quality_images = []
+        for img in images:
+            # Skip if too short (likely a placeholder)
+            if len(img) < 50:
+                continue
+            # Skip common placeholder patterns
+            if any(bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100', 'placeholder', 'avatar']):
+                continue
+            quality_images.append(img)
+        
+        # Limit to 30 images
+        quality_images = quality_images[:30]
+        
+        print(f"   ✓ Final: {len(quality_images)} quality images after filtering")
+        
+        return quality_images
         
     except Exception as e:
-        print(f"   ❌ richTextContainer extraction failed: {e}")
-        return "", []
+        print(f"   ❌ Image extraction error: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 
 def extract_description_universal(page) -> tuple:
     """
-    Extract description using dual strategy:
-    1. Shadow DOM via JavaScript (primary - most complete)
-    2. richTextContainer (fallback)
+    Extract description text (already working via richTextContainer).
+    Focus on improving image extraction.
     """
-    print("📝 Extracting description and images...")
+    print("📝 Extracting description...")
     
     try:
-        # Step 1: Try to click description tab if exists
-        wait_for_description_tab_and_click(page)
+        # Try to click description tab
+        print("   🔍 Looking for Description tab...")
+        try:
+            tab_selectors = [
+                'text=Description',
+                'a:has-text("Description")',
+                '[role="tab"]:has-text("Description")',
+            ]
+            
+            for selector in tab_selectors:
+                try:
+                    tab = page.locator(selector).first
+                    if tab.count() > 0:
+                        print(f"   ✓ Found and clicking Description tab")
+                        tab.click(timeout=3000, force=True)
+                        page.wait_for_timeout(2000)
+                        break
+                except:
+                    continue
+        except Exception as e:
+            print(f"   ⚠️ Could not click Description tab: {e}")
         
-        # Step 2: Scroll into view
-        scroll_description_into_view(page)
+        # Get description text from richTextContainer
+        description_text = ""
+        try:
+            html = page.content()
+            soup = BeautifulSoup(html, 'html.parser')
+            rich_elems = soup.find_all('div', class_='richTextContainer')
+            
+            if rich_elems:
+                text_parts = []
+                for elem in rich_elems:
+                    text = elem.get_text(' ', strip=True)
+                    if text and len(text) > 20:
+                        text_parts.append(text)
+                
+                description_text = ' '.join(text_parts)
+                description_text = re.sub(r'\s+', ' ', description_text).strip()
+                print(f"   ✓ Description text: {len(description_text)} chars")
+            else:
+                print("   ⚠️ No richTextContainer found")
         
-        # Step 3: Wait for shadow DOM to load
-        print("   ⏳ Waiting for shadow DOM to render...")
-        page.wait_for_timeout(3000)
+        except Exception as e:
+            print(f"   ⚠️ Description text extraction error: {e}")
         
-        # Step 4: Try Shadow DOM first
-        shadow_text, shadow_images = extract_from_shadow_dom_js(page)
+        # Extract ALL images
+        images = find_all_images_on_page(page)
         
-        if shadow_text and len(shadow_text) > 100:
-            print("   ✅ Using Shadow DOM content")
-            return shadow_text, shadow_images
-        
-        if shadow_text:
-            print(f"   ⚠️ Shadow text too short ({len(shadow_text)} chars), trying fallback...")
-        
-        # Step 5: Fallback to richTextContainer
-        rich_text, rich_images = extract_from_richtext_dom(page)
-        
-        if rich_text and len(rich_text) > 100:
-            print("   ✅ Using richTextContainer content")
-            return rich_text, rich_images
-        
-        # Step 6: Combine if both have partial content
-        if shadow_text or rich_text:
-            print("   ⚠️ Combining partial content from both methods")
-            combined_text = (shadow_text + ' ' + rich_text).strip()
-            combined_text = re.sub(r'\s+', ' ', combined_text)
-            combined_images = list(set(shadow_images + rich_images))
-            return combined_text, combined_images
-        
-        print("   ❌ Could not extract description from either method")
-        return "", []
+        return description_text, images
         
     except Exception as e:
         print(f"⚠️ Description extraction error: {e}")
@@ -414,7 +352,7 @@ def extract_description_universal(page) -> tuple:
 
 def extract_aliexpress_product(url: str) -> dict:
     """
-    Extract AliExpress product data with Tor routing and anti-detection.
+    Extract AliExpress product data with Tor routing.
     """
     
     print(f"\n🔍 Scraping: {url}")
@@ -473,9 +411,8 @@ def extract_aliexpress_product(url: str) -> dict:
                 page.goto(url, timeout=120000, wait_until="domcontentloaded")
                 time.sleep(2)
                 
-                current_url = page.url
-                if current_url != url:
-                    print(f"⚠️ Redirected to: {current_url}")
+                final_url = page.url
+                print(f"📍 Final URL: {final_url}")
                 
                 # CAPTCHA CHECK
                 if is_captcha_page(page):
@@ -483,16 +420,16 @@ def extract_aliexpress_product(url: str) -> dict:
                     browser.close()
                     continue
                 
-                # Wait for page to load
+                # Wait for page to render
                 print("⏳ Waiting for page to render...")
                 time.sleep(8)
                 
-                # SCROLL
-                print("⏳ Scrolling to load content...")
+                # SCROLL to load lazy images
+                print("⏳ Scrolling to load images...")
                 try:
-                    for _ in range(3):
-                        page.mouse.wheel(0, random.randint(150, 300))
-                        time.sleep(random.uniform(0.2, 0.6))
+                    for _ in range(5):
+                        page.mouse.wheel(0, random.randint(200, 400))
+                        time.sleep(random.uniform(0.3, 0.7))
                     page.evaluate("window.scrollTo(0, 0)")
                     time.sleep(1)
                 except Exception as e:
@@ -504,13 +441,9 @@ def extract_aliexpress_product(url: str) -> dict:
                     browser.close()
                     continue
                 
-                # EXTRACT TITLE
+                # EXTRACT DATA
                 title = extract_title_universal(page)
-                
-                # EXTRACT STORE INFO
                 store_info = extract_store_info_universal(page)
-                
-                # EXTRACT DESCRIPTION
                 description_text, description_images = extract_description_universal(page)
                 
                 # SUCCESS
@@ -527,8 +460,9 @@ def extract_aliexpress_product(url: str) -> dict:
                 print(f"   Title: {len(result['title'])} chars")
                 print(f"   Description: {len(result['description_text'])} chars")
                 print(f"   Images: {len(result['images'])}")
-                print(f"   Store Info: {len(result['store_info'])} fields")
-                print(f"✅ Success on attempt {attempt + 1}\n")
+                if result['images']:
+                    print(f"   First image: {result['images'][0][:80]}...")
+                print(f"   Store Info: {len(result['store_info'])} fields\n")
                 return result
                 
             except PlaywrightTimeoutError as e:
