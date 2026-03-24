@@ -89,20 +89,21 @@ def is_captcha_page(page) -> bool:
 def extract_store_info_universal(page) -> dict:
     """Extract store info"""
     store_info = {}
+    
     print("📦 Extracting store info...")
     
     try:
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
         
-        print("   🔍 Looking for store info...")
+        print("   🔍 Looking for store-detail elements...")
         store_elem = soup.find('div', class_=lambda x: x and 'store-detail' in x)
         
         if store_elem:
             print(f"   ✓ Found store element")
             table = store_elem.find('table')
             if table:
-                print(f"   ✓ Found table")
+                print(f"   ✓ Found table with store info")
                 for row in table.find_all('tr'):
                     cols = row.find_all('td')
                     if len(cols) >= 2:
@@ -110,6 +111,7 @@ def extract_store_info_universal(page) -> dict:
                         value = clean_text(cols[1].get_text()).strip()
                         if key and value:
                             store_info[key] = value
+                            print(f"      {key}: {value}")
         
         if not store_info:
             print("   ⚠️ Could not extract store information")
@@ -122,6 +124,7 @@ def extract_store_info_universal(page) -> dict:
 
 def extract_title_universal(page) -> str:
     """Extract title"""
+    
     print("📌 Extracting title...")
     
     title_selectors = [
@@ -138,7 +141,7 @@ def extract_title_universal(page) -> str:
             if elem.count() > 0:
                 title = elem.inner_text().strip()
                 if title and len(title) > 10:
-                    print(f"✅ Title: {title[:80]}...")
+                    print(f"✅ Title ({desc}): {title[:80]}...")
                     return title
         except:
             continue
@@ -147,316 +150,212 @@ def extract_title_universal(page) -> str:
     return ""
 
 
-def expand_all_collapsed_sections(page):
+def extract_complete_description(page) -> str:
     """
-    Click all 'See More', 'Show More', 'Expand' buttons to reveal hidden content.
+    COMPLETE REWRITE: Extract description from ALL sources
+    - richTextContainer divs (primary descriptions)
+    - product-description containers (specs)
+    - Handles multiple content sections
     """
-    print("   🔓 Expanding collapsed sections...")
+    print("📝 Extracting COMPLETE description from all sources...")
     
-    expand_labels = ["See More", "Show More", "Expand", "More", "view more", "view details"]
+    all_descriptions = []
     
-    for label in expand_labels:
-        try:
-            selectors = [
-                f'text="{label}"',
-                f'button:has-text("{label}")',
-                f'a:has-text("{label}")',
-                f'span:has-text("{label}")',
-            ]
-            
-            expanded_count = 0
-            for sel in selectors:
-                try:
-                    buttons = page.locator(sel).all()
-                    print(f"      Found {len(buttons)} buttons with '{label}'")
-                    
-                    for i in range(len(buttons)):
-                        try:
-                            btn = page.locator(sel).nth(i)
-                            if btn.count() > 0:
-                                btn.click(timeout=1500, force=True)
-                                expanded_count += 1
-                                page.wait_for_timeout(800)
-                        except Exception as e:
-                            continue
-                except Exception:
-                    continue
-            
-            if expanded_count > 0:
-                print(f"      ✓ Expanded {expanded_count} sections with '{label}'")
+    try:
+        # Wait for dynamic content
+        print("   ⏳ Waiting for page content to fully render...")
+        page.wait_for_timeout(5000)
         
-        except Exception:
-            continue
+        # Get full page HTML
+        html = page.content()
+        soup = BeautifulSoup(html, "html.parser")
+        
+        print("   🔍 SOURCE 1: Looking for richTextContainer divs...")
+        # richTextContainer divs contain the main descriptions
+        rich_containers = soup.find_all('div', class_=lambda x: x and 'richTextContainer' in x)
+        print(f"      Found {len(rich_containers)} richTextContainer divs")
+        
+        for i, container in enumerate(rich_containers):
+            print(f"      Processing richTextContainer #{i+1}...")
+            
+            # Get all text from this container
+            text_content = container.get_text(separator='\n', strip=True)
+            
+            if text_content and len(text_content) > 50:
+                # Clean up
+                text_content = re.sub(r'\n+', '\n', text_content)
+                text_content = re.sub(r'[ \t]+', ' ', text_content)
+                
+                if text_content not in all_descriptions:  # Avoid duplicates
+                    all_descriptions.append(text_content)
+                    print(f"         ✓ Extracted {len(text_content)} chars")
+                else:
+                    print(f"         ~ Duplicate (skipped)")
+        
+        print("   🔍 SOURCE 2: Looking for product-description divs...")
+        # Also get from product-description
+        prod_descs = soup.find_all('div', id='product-description')
+        print(f"      Found {len(prod_descs)} product-description divs")
+        
+        for i, desc in enumerate(prod_descs):
+            print(f"      Processing product-description #{i+1}...")
+            
+            # Get all text
+            text_content = desc.get_text(separator='\n', strip=True)
+            
+            if text_content and len(text_content) > 30:
+                # Clean up
+                text_content = re.sub(r'\n+', '\n', text_content)
+                text_content = re.sub(r'[ \t]+', ' ', text_content)
+                
+                if text_content not in all_descriptions:
+                    all_descriptions.append(text_content)
+                    print(f"         ✓ Extracted {len(text_content)} chars")
+                else:
+                    print(f"         ~ Duplicate (skipped)")
+        
+        print("   🔍 SOURCE 3: Looking for detail-desc-decorate-richtext...")
+        # Detail-desc-decorate-richtext sections
+        detail_descs = soup.find_all('div', class_=lambda x: x and 'detail-desc-decorate-richtext' in x)
+        print(f"      Found {len(detail_descs)} detail-desc-decorate-richtext divs")
+        
+        for i, desc in enumerate(detail_descs):
+            print(f"      Processing detail-desc-decorate-richtext #{i+1}...")
+            
+            text_content = desc.get_text(separator='\n', strip=True)
+            
+            if text_content and len(text_content) > 30:
+                text_content = re.sub(r'\n+', '\n', text_content)
+                text_content = re.sub(r'[ \t]+', ' ', text_content)
+                
+                if text_content not in all_descriptions:
+                    all_descriptions.append(text_content)
+                    print(f"         ✓ Extracted {len(text_content)} chars")
+                else:
+                    print(f"         ~ Duplicate (skipped)")
+        
+        print("   🔍 SOURCE 4: Looking for all p, span elements with product info...")
+        # Get all paragraphs and spans that might contain product info
+        all_text_nodes = []
+        
+        # Look for elements that might contain descriptions
+        for element in soup.find_all(['p', 'span', 'div']):
+            text = element.get_text(strip=True)
+            
+            # Filter for relevant content (at least 20 chars)
+            if text and len(text) > 20:
+                # Skip if too long (probably a wrapper)
+                if len(text) < 2000:
+                    all_text_nodes.append(text)
+        
+        print(f"      Found {len(all_text_nodes)} individual text nodes")
+        
+        # Combine all sources
+        if all_descriptions:
+            print(f"   ✅ Found {len(all_descriptions)} description sections")
+            
+            # Join all descriptions with a separator
+            combined = "\n\n---\n\n".join(all_descriptions)
+            
+            # Clean up excessive whitespace
+            combined = re.sub(r'\n\s*\n+', '\n\n', combined)
+            combined = re.sub(r'[ \t]+', ' ', combined)
+            combined = combined.strip()
+            
+            print(f"   📊 Combined description: {len(combined)} chars")
+            
+            # Verify key content
+            if 'keep hot' in combined.lower():
+                print("   ✅ Includes 'Keep hot' specifications")
+            if 'keep cold' in combined.lower():
+                print("   ✅ Includes 'Keep cold' specifications")
+            if 'material' in combined.lower():
+                print("   ✅ Includes material specifications")
+            
+            return combined
+        else:
+            print("   ⚠️ No descriptions found in any source")
+            return ""
     
-    print("   ✓ Finished expanding sections")
-
-
-def extract_full_description_text(page) -> str:
-    """
-    Extract description text from ALL possible containers.
-    Aggregates from richTextContainer, overview-content, detailmodule_html, etc.
-    """
-    print("   🔍 Extracting description text from all containers...")
-    
-    html = page.content()
-    soup = BeautifulSoup(html, "html.parser")
-    
-    # List of all possible description containers
-    selectors = [
-        'div.richTextContainer',
-        'div.overview-content',
-        'div[class*="detailmodule_html"]',
-        'div[class*="product-description"]',
-        'div[class*="d-main-description"]',
-        'div[class*="description"]',
-        '[data-spm="product-description"]',
-    ]
-    
-    containers = []
-    for selector in selectors:
-        found = soup.select(selector)
-        if found:
-            print(f"      Found {len(found)} containers for: {selector}")
-            containers.extend(found)
-    
-    # Extract text from all containers
-    text_blocks = []
-    seen_text = set()
-    
-    for container in containers:
-        try:
-            text = container.get_text(' ', strip=True)
-            if text and len(text) > 30:
-                # Avoid duplicates
-                if text not in seen_text:
-                    text_blocks.append(text)
-                    seen_text.add(text)
-        except:
-            continue
-    
-    print(f"      Found {len(text_blocks)} text blocks")
-    
-    # Also try meta tags as fallback/supplement
-    print("      Checking meta tags...")
-    meta_description = soup.find('meta', attrs={'name': 'description'})
-    if meta_description and meta_description.get('content'):
-        meta_text = meta_description['content'].strip()
-        if meta_text and meta_text not in seen_text and len(meta_text) > 20:
-            text_blocks.append(meta_text)
-            print(f"        Added meta description: {len(meta_text)} chars")
-    
-    og_description = soup.find('meta', attrs={'property': 'og:description'})
-    if og_description and og_description.get('content'):
-        og_text = og_description['content'].strip()
-        if og_text and og_text not in seen_text and len(og_text) > 20:
-            text_blocks.append(og_text)
-            print(f"        Added OG description: {len(og_text)} chars")
-    
-    # Combine all text blocks
-    if text_blocks:
-        description_text = ' '.join(text_blocks)
-        # Clean up excessive whitespace
-        description_text = re.sub(r'\s+', ' ', description_text).strip()
-        print(f"   ✓ Total description: {len(description_text)} chars")
-        return description_text
-    else:
-        print("   ⚠️ No description text found")
+    except Exception as e:
+        print(f"❌ Description extraction error: {e}")
+        import traceback
+        traceback.print_exc()
         return ""
 
 
-def find_all_images_on_page(page) -> list:
-    """
-    Comprehensive image extraction using multiple methods.
-    Searches EVERY img tag on the entire page.
-    """
-    print("   🖼️ Searching for ALL images on page...")
+def extract_description_images(page) -> list:
+    """Extract images from all description sources"""
+    print("🖼️ Extracting description images...")
     
-    images = []
+    description_images = []
     
     try:
-        # Method 1: Use Playwright to find all img tags
-        print("      Method 1: Locating all img elements...")
-        img_locators = page.locator('img').all()
-        print(f"         Found {len(img_locators)} img tags")
+        html = page.content()
+        soup = BeautifulSoup(html, "html.parser")
         
-        for img in img_locators:
-            try:
-                src = (img.get_attribute("src") or 
-                       img.get_attribute("data-src") or 
-                       img.get_attribute("data-lazy-src"))
-                
+        # Find all images in product description areas
+        print("   🔍 Looking for images in product-description...")
+        
+        # Images in product-description
+        prod_desc = soup.find('div', id='product-description')
+        if prod_desc:
+            imgs = prod_desc.find_all('img')
+            print(f"      Found {len(imgs)} images in product-description")
+            
+            for img in imgs:
+                src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
                 if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
                     clean_src = src.split('?')[0]
-                    if clean_src not in images and len(clean_src) > 50:
-                        images.append(clean_src)
-            except:
-                continue
+                    if len(clean_src) > 50 and clean_src not in description_images:
+                        description_images.append(clean_src)
         
-        print(f"      After Method 1: {len(images)} images")
-        
-        # Method 2: Parse entire HTML with BeautifulSoup
-        print("      Method 2: Parsing HTML for img tags...")
-        html = page.content()
-        soup = BeautifulSoup(html, 'html.parser')
-        all_imgs = soup.find_all('img')
-        print(f"         Found {len(all_imgs)} img tags in HTML")
-        
-        for img in all_imgs:
-            src = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
-            if src and ('alicdn.com' in src or 'ae01.alicdn.com' in src):
-                clean_src = src.split('?')[0]
-                if clean_src not in images and len(clean_src) > 50:
-                    images.append(clean_src)
-        
-        print(f"      After Method 2: {len(images)} images")
-        
-        # Method 3: Search for images in picture elements
-        print("      Method 3: Looking for picture/source elements...")
-        pictures = soup.find_all('picture')
-        print(f"         Found {len(pictures)} picture elements")
-        
-        for pic in pictures:
-            for src in pic.find_all('source'):
-                srcset = src.get('srcset') or src.get('data-srcset')
-                if srcset:
-                    urls = re.findall(r'(https?://[^\s]+(?:alicdn\.com|ae01\.alicdn\.com)[^\s]*)', srcset)
-                    for url in urls:
-                        clean_url = url.split('?')[0]
-                        if clean_url not in images and len(clean_url) > 50:
-                            images.append(clean_url)
-        
-        print(f"      After Method 3: {len(images)} images")
-        
-        # Method 4: Search for images in data-url attributes
-        print("      Method 4: Searching for data-url attributes...")
-        data_url_elems = soup.find_all(attrs={'data-url': True})
-        print(f"         Found {len(data_url_elems)} elements with data-url")
-        
-        for elem in data_url_elems:
-            data_url = elem.get('data-url')
-            if data_url and ('alicdn.com' in data_url or 'ae01.alicdn.com' in data_url):
-                clean_url = data_url.split('?')[0]
-                if clean_url not in images and len(clean_url) > 50:
-                    images.append(clean_url)
-        
-        print(f"      After Method 4: {len(images)} images")
-        
-        # Method 5: Use JavaScript to extract all visible image URLs
-        print("      Method 5: Using JavaScript to find images...")
-        try:
-            js_images = page.evaluate("""
-                () => {
-                    const urls = new Set();
-                    // Find all img src
-                    document.querySelectorAll('img').forEach(img => {
-                        const src = img.src || img.getAttribute('data-src') || img.getAttribute('data-lazy-src');
-                        if (src && (src.includes('alicdn.com') || src.includes('ae01.alicdn.com'))) {
-                            urls.add(src.split('?')[0]);
-                        }
-                    });
-                    // Find in background-image styles
-                    document.querySelectorAll('[style*="background-image"]').forEach(el => {
-                        const match = el.getAttribute('style').match(/url\\(['"]?([^'")]+)['\"]?\\)/);
-                        if (match && (match[1].includes('alicdn.com') || match[1].includes('ae01.alicdn.com'))) {
-                            urls.add(match[1].split('?')[0]);
-                        }
-                    });
-                    return Array.from(urls);
-                }
-            """)
+        # Images in richTextContainer
+        print("   🔍 Looking for images in richTextContainer...")
+        rich_containers = soup.find_all('div', class_=lambda x: x and 'richTextContainer' in x)
+        for container in rich_containers:
+            imgs = container.find_all('img')
+            print(f"      Found {len(imgs)} images in richTextContainer")
             
-            if js_images:
-                print(f"         JavaScript found {len(js_images)} image URLs")
-                for url in js_images:
-                    if url not in images and len(url) > 50:
-                        images.append(url)
+            for img in imgs:
+                src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
+                if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
+                    clean_src = src.split('?')[0]
+                    if len(clean_src) > 50 and clean_src not in description_images:
+                        description_images.append(clean_src)
+        
+        # Images in detail-desc-decorate-richtext
+        print("   🔍 Looking for images in detail-desc-decorate-richtext...")
+        detail_descs = soup.find_all('div', class_=lambda x: x and 'detail-desc-decorate-richtext' in x)
+        for desc in detail_descs:
+            imgs = desc.find_all('img')
+            print(f"      Found {len(imgs)} images in detail-desc-decorate-richtext")
             
-            print(f"      After Method 5: {len(images)} images")
-        except Exception as e:
-            print(f"      Method 5 error: {e}")
+            for img in imgs:
+                src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
+                if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
+                    clean_src = src.split('?')[0]
+                    if len(clean_src) > 50 and clean_src not in description_images:
+                        description_images.append(clean_src)
         
-        # Deduplicate and filter
-        images = list(set(images))
+        print(f"   ✓ Extracted {len(description_images)} images")
         
-        # Filter out low-quality/tiny images
-        quality_images = []
-        for img in images:
-            if len(img) < 50:
-                continue
-            if any(bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100', 'placeholder', 'avatar']):
-                continue
-            quality_images.append(img)
+        # Limit to 20 and remove quality filter
+        description_images = description_images[:20]
         
-        # Limit to 30 images
-        quality_images = quality_images[:30]
-        
-        print(f"   ✓ Final: {len(quality_images)} quality images")
-        
-        return quality_images
-        
-    except Exception as e:
-        print(f"   ❌ Image extraction error: {e}")
-        import traceback
-        traceback.print_exc()
-        return []
-
-
-def extract_description_universal(page) -> tuple:
-    """
-    Extract full description text AND images.
-    1. Expand all collapsed sections
-    2. Extract text from ALL containers
-    3. Extract all images
-    """
-    print("📝 Extracting complete description...")
+        if description_images:
+            for i, img_url in enumerate(description_images[:3], 1):
+                print(f"      {i}. {img_url[:60]}...")
     
-    try:
-        # Step 1: Try to click description tab
-        print("   🔍 Looking for Description tab...")
-        try:
-            tab_selectors = [
-                'text=Description',
-                'a:has-text("Description")',
-                '[role="tab"]:has-text("Description")',
-            ]
-            
-            for selector in tab_selectors:
-                try:
-                    tab = page.locator(selector).first
-                    if tab.count() > 0:
-                        print(f"   ✓ Found and clicking Description tab")
-                        tab.click(timeout=3000, force=True)
-                        page.wait_for_timeout(2000)
-                        break
-                except:
-                    continue
-        except Exception as e:
-            print(f"   ⚠️ Could not click Description tab: {e}")
-        
-        # Step 2: Expand all collapsed/hidden sections
-        expand_all_collapsed_sections(page)
-        
-        # Wait for DOM to update after clicking
-        page.wait_for_timeout(2500)
-        
-        # Step 3: Extract full description text from all containers
-        description_text = extract_full_description_text(page)
-        
-        # Step 4: Extract all images
-        images = find_all_images_on_page(page)
-        
-        return description_text, images
-        
     except Exception as e:
-        print(f"⚠️ Description extraction error: {e}")
-        import traceback
-        traceback.print_exc()
-        return "", []
+        print(f"❌ Image extraction error: {e}")
+    
+    return description_images
 
 
 def extract_aliexpress_product(url: str) -> dict:
     """
-    Extract AliExpress product data with Tor routing.
+    Extract AliExpress product data - COMPLETE REWRITE for multi-source extraction
     """
     
     print(f"\n🔍 Scraping: {url}")
@@ -515,8 +414,9 @@ def extract_aliexpress_product(url: str) -> dict:
                 page.goto(url, timeout=120000, wait_until="domcontentloaded")
                 time.sleep(2)
                 
-                final_url = page.url
-                print(f"📍 Final URL: {final_url}")
+                current_url = page.url
+                if current_url != url:
+                    print(f"⚠️ Redirected to: {current_url}")
                 
                 # CAPTCHA CHECK
                 if is_captcha_page(page):
@@ -524,16 +424,16 @@ def extract_aliexpress_product(url: str) -> dict:
                     browser.close()
                     continue
                 
-                # Wait for page to render
+                # Wait for page to load
                 print("⏳ Waiting for page to render...")
                 time.sleep(8)
                 
-                # SCROLL to load lazy images
-                print("⏳ Scrolling to load images...")
+                # SCROLL
+                print("⏳ Scrolling to load content...")
                 try:
                     for _ in range(5):
-                        page.mouse.wheel(0, random.randint(200, 400))
-                        time.sleep(random.uniform(0.3, 0.7))
+                        page.mouse.wheel(0, random.randint(150, 300))
+                        time.sleep(random.uniform(0.2, 0.6))
                     page.evaluate("window.scrollTo(0, 0)")
                     time.sleep(1)
                 except Exception as e:
@@ -545,10 +445,17 @@ def extract_aliexpress_product(url: str) -> dict:
                     browser.close()
                     continue
                 
-                # EXTRACT DATA
+                # EXTRACT TITLE
                 title = extract_title_universal(page)
+                
+                # EXTRACT STORE INFO
                 store_info = extract_store_info_universal(page)
-                description_text, description_images = extract_description_universal(page)
+                
+                # EXTRACT DESCRIPTION - NEW MULTI-SOURCE METHOD
+                description_text = extract_complete_description(page)
+                
+                # EXTRACT IMAGES
+                description_images = extract_description_images(page)
                 
                 # SUCCESS
                 browser.close()
@@ -560,13 +467,12 @@ def extract_aliexpress_product(url: str) -> dict:
                     "store_info": store_info if isinstance(store_info, dict) else {}
                 }
                 
-                print(f"\n✅ EXTRACTION COMPLETE:")
+                print(f"\n✅ Extraction Results:")
                 print(f"   Title: {len(result['title'])} chars")
                 print(f"   Description: {len(result['description_text'])} chars")
-                print(f"   Images: {len(result['images'])}")
-                if result['images']:
-                    print(f"   First image: {result['images'][0][:80]}...")
-                print(f"   Store Info: {len(result['store_info'])} fields\n")
+                print(f"   Images: {len(result['images'])} images")
+                print(f"   Store info: {len(result['store_info'])} fields")
+                print(f"\n✅ Extraction successful on attempt {attempt + 1}\n")
                 return result
                 
             except PlaywrightTimeoutError as e:
