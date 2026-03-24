@@ -388,150 +388,76 @@ def extract_aliexpress_product(url: str) -> dict:
                             desc_html = desc_container.inner_html(timeout=5000)
                             print(f"   📊 inner_html size (retry): {len(desc_html)} chars")
                         
-                        # NEW RECURSIVE TEXT EXTRACTION - goes through ALL child elements
-                        print(f"   🎯 Method 1: Recursive extraction from ALL child elements...")
-                        
-                        def extract_text_from_element(element):
-                            """Recursively extract text from element and all children"""
+                        # EXTRACT TEXT using Playwright (not BeautifulSoup)
+                        try:
+                            print(f"   🎯 Method 1: Targeting description paragraph elements directly...")
+                            
+                            # Get all title and content paragraphs directly
+                            titles = page.locator('#product-description p.detail-desc-decorate-title').all()
+                            contents = page.locator('#product-description p.detail-desc-decorate-content').all()
+                            
+                            print(f"      Found {len(titles)} titles, {len(contents)} content paragraphs")
+                            
                             text_parts = []
                             
-                            try:
-                                # Get text from current element
-                                current_text = element.inner_text(timeout=1000).strip()
-                                if current_text and len(current_text) > 2:
-                                    text_parts.append(current_text)
-                            except:
-                                pass
+                            # Extract title text
+                            for title in titles:
+                                try:
+                                    text = title.inner_text(timeout=2000).strip()
+                                    if text:
+                                        text_parts.append(text)
+                                        print(f"      Title: {text[:50]}...")
+                                except:
+                                    pass
                             
-                            # Get all child elements and recurse
-                            try:
-                                children = element.locator('*').all()  # All child elements
-                                for child in children:
-                                    child_text = extract_text_from_element(child)
-                                    text_parts.extend(child_text)
-                            except:
-                                pass
+                            # Extract content text
+                            for content in contents:
+                                try:
+                                    text = content.inner_text(timeout=2000).strip()
+                                    if text:
+                                        text_parts.append(text)
+                                        print(f"      Content: {text[:50]}...")
+                                except:
+                                    pass
                             
-                            return text_parts
-                        
-                        # Extract text recursively from container and all children
-                        all_text_parts = extract_text_from_element(desc_container)
-                        print(f"      Found {len(all_text_parts)} text parts from recursive extraction")
-                        
-                        # Combine and clean
-                        if all_text_parts:
-                            description_text = ' '.join(all_text_parts)
-                            description_text = re.sub(r'\s+', ' ', description_text).strip()
-                            print(f"   ✓ Recursive text extraction: {len(description_text)} chars")
-                        else:
-                            print(f"   ⚠️ No text found in recursive extraction")
-                            
-                            # Fallback Method 2: Use inner_text() on container
-                            print(f"   🎯 Method 2: Using Playwright inner_text() on container...")
-                            inner_text = desc_container.inner_text(timeout=5000).strip()
-                            print(f"      Got {len(inner_text)} chars")
-                            
-                            if inner_text and len(inner_text) > 100:
-                                description_text = inner_text
-                                print(f"   ✓ Text extracted via container: {len(description_text)} chars")
+                            if text_parts:
+                                description_text = ' '.join(text_parts)
+                                description_text = re.sub(r'\s+', ' ', description_text).strip()
+                                print(f"   ✓ Text extracted directly: {len(description_text)} chars")
                             else:
-                                print(f"   ⚠️ Container inner_text too short ({len(inner_text)})")
-                                print(f"   ⏳ Waiting 5 more seconds...")
-                                page.wait_for_timeout(5000)
+                                print(f"   ⚠️ No text found in paragraph elements ({len(titles)} titles, {len(contents)} contents)")
                                 
-                                # Try one more time
+                                # Fallback Method 2: Use inner_text() on container
+                                print(f"   🎯 Method 2: Using Playwright inner_text() on container...")
                                 inner_text = desc_container.inner_text(timeout=5000).strip()
+                                print(f"      Got {len(inner_text)} chars")
+                                
                                 if inner_text and len(inner_text) > 100:
                                     description_text = inner_text
-                                    print(f"   ✓ Text extracted after wait: {len(description_text)} chars")
+                                    print(f"   ✓ Text extracted via container: {len(description_text)} chars")
                                 else:
-                                    print(f"   ❌ FAILED: Could not extract description text")
+                                    print(f"   ⚠️ Container inner_text too short ({len(inner_text)})")
+                                    print(f"   ⏳ Waiting 5 more seconds...")
+                                    page.wait_for_timeout(5000)
+                                    
+                                    # Try one more time
+                                    inner_text = desc_container.inner_text(timeout=5000).strip()
+                                    if inner_text and len(inner_text) > 100:
+                                        description_text = inner_text
+                                        print(f"   ✓ Text extracted after wait: {len(description_text)} chars")
+                                    else:
+                                        print(f"   ❌ FAILED: Could not extract description text")
+                        
+                        except Exception as e:
+                            print(f"   ❌ Text extraction error: {e}")
+                            import traceback
+                            traceback.print_exc()
                         
                         if description_text:
                             print(f"   ✅ Final description length: {len(description_text)} chars")
                         else:
                             print(f"   ⚠️ No description text extracted")
                         
-                        # EXTRACT IMAGES (INDEPENDENT of text extraction)
-                        try:
-                            print(f"   🖼️ Starting image extraction...")
-                            
-                            # Method 1: Target specific image class in Playwright
-                            print(f"   Method 1: Looking for detail-desc-decorate-image class...")
-                            
-                            # Find all img.detail-desc-decorate-image
-                            imgs = desc_container.locator('img.detail-desc-decorate-image').all()
-                            print(f"      Found {len(imgs)} detail-desc-decorate-image tags")
-                            
-                            for img in imgs:
-                                src = (img.get_attribute("src") or 
-                                      img.get_attribute("data-src") or 
-                                      img.get_attribute("data-lazy-src"))
-                                if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
-                                    clean_src = src.split('?')[0]
-                                    description_images.append(clean_src)
-                                    print(f"      Added: {src[:60]}...")
-                            
-                            print(f"      After Method 1: {len(description_images)} images")
-                            
-                            # Method 2: Also look for all images in case structure varies
-                            print(f"   Method 2: Looking for all images...")
-                            all_imgs = desc_container.locator('img').all()
-                            print(f"      Found {len(all_imgs)} total <img> tags")
-                            
-                            for img in all_imgs:
-                                src = (img.get_attribute("src") or 
-                                      img.get_attribute("data-src") or 
-                                      img.get_attribute("data-lazy-src"))
-                                if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
-                                    clean_src = src.split('?')[0]
-                                    if clean_src not in description_images:  # Avoid duplicates
-                                        description_images.append(clean_src)
-                            
-                            print(f"      After Method 2: {len(description_images)} total images")
-                            
-                            # Method 3: HTML parsing (catches any missed images)
-                            print(f"   Method 3: Using HTML parsing...")
-                            if desc_html and len(desc_html) > 50:
-                                soup_desc = BeautifulSoup(desc_html, "html.parser")
-                                html_imgs = soup_desc.find_all("img")
-                                print(f"      Found {len(html_imgs)} <img> in HTML")
-                                
-                                for img in html_imgs:
-                                    src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-                                    if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
-                                        clean_src = src.split('?')[0]
-                                        if clean_src not in description_images:
-                                            description_images.append(clean_src)
-                            else:
-                                print(f"      Skipping (desc_html too small)")
-                            
-                            print(f"      After Method 3: {len(description_images)} total before dedup")
-                            
-                            # Dedupe + quality filter
-                            unique_desc_images = list(set(description_images))
-                            print(f"      After dedupe: {len(unique_desc_images)} unique images")
-                            
-                            quality_images = [img for img in unique_desc_images 
-                                            if len(img) > 50 and not any(bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100'])]
-                            print(f"      After quality filter: {len(quality_images)} quality images")
-                            
-                            description_images = quality_images[:20]  # Limit to 20
-                            print(f"   ✓ Images: {len(description_images)} extracted")
-                            
-                            if description_images:
-                                for i, img_url in enumerate(description_images[:3], 1):
-                                    print(f"      {i}. {img_url[:60]}...")
-                        except Exception as e:
-                            print(f"   ❌ Image extraction error: {e}")
-                            import traceback
-                            traceback.print_exc()
-                            description_images = []
-                    else:
-                        print("   ❌ #product-description not found")
-                
-                except Exception as e:
-                    print(f"⚠️ Description extraction error: {e}")        
                         # EXTRACT IMAGES (INDEPENDENT of text extraction)
                         try:
                             print(f"   🖼️ Starting image extraction...")
