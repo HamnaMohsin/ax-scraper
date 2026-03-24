@@ -580,7 +580,7 @@ def extract_aliexpress_product(url: str) -> dict:
                     "title": title if isinstance(title, str) else "",
                     "description_text": description_text if isinstance(description_text, str) else "",
                     "images": description_images if isinstance(description_images, list) else [],
-                    #"store_info": store_info if isinstance(store_info, dict) else {}
+                    "store_info": store_info if isinstance(store_info, dict) else {}
                 }
                 
                 print(f"\n🔍 DEBUG RETURN VALUES:")
