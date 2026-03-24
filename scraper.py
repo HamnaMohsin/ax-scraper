@@ -316,6 +316,9 @@ def extract_aliexpress_product(url: str) -> dict:
                 store_info = extract_store_info_universal(page)
                 
                 # EXTRACT DESCRIPTION using inner_html (working method)
+                # Replace the description extraction section (around line 285-360) with:
+
+                # EXTRACT DESCRIPTION using inner_html (working method)
                 print("📝 Loading description...")
                 description_text = ""
                 description_images = []
@@ -388,65 +391,56 @@ def extract_aliexpress_product(url: str) -> dict:
                             desc_html = desc_container.inner_html(timeout=5000)
                             print(f"   📊 inner_html size (retry): {len(desc_html)} chars")
                         
-                        # EXTRACT TEXT using Playwright (not BeautifulSoup)
+                        # EXTRACT TEXT - IMPROVED METHOD: Get all text recursively without class restrictions
                         try:
-                            print(f"   🎯 Method 1: Targeting description paragraph elements directly...")
+                            print(f"   🎯 Extracting all text from description container...")
                             
-                            # Get all title and content paragraphs directly
-                            titles = page.locator('#product-description p.detail-desc-decorate-title').all()
-                            contents = page.locator('#product-description p.detail-desc-decorate-content').all()
+                            # Method 1: Use Playwright to get all text content recursively
+                            inner_text = desc_container.inner_text(timeout=5000).strip()
                             
-                            print(f"      Found {len(titles)} titles, {len(contents)} content paragraphs")
-                            
-                            text_parts = []
-                            
-                            # Extract title text
-                            for title in titles:
-                                try:
-                                    text = title.inner_text(timeout=2000).strip()
-                                    if text:
-                                        text_parts.append(text)
-                                        print(f"      Title: {text[:50]}...")
-                                except:
-                                    pass
-                            
-                            # Extract content text
-                            for content in contents:
-                                try:
-                                    text = content.inner_text(timeout=2000).strip()
-                                    if text:
-                                        text_parts.append(text)
-                                        print(f"      Content: {text[:50]}...")
-                                except:
-                                    pass
-                            
-                            if text_parts:
-                                description_text = ' '.join(text_parts)
-                                description_text = re.sub(r'\s+', ' ', description_text).strip()
-                                print(f"   ✓ Text extracted directly: {len(description_text)} chars")
+                            if inner_text and len(inner_text) > 100:
+                                description_text = inner_text
+                                # Clean up excessive whitespace
+                                description_text = re.sub(r'\n\s*\n', '\n', description_text)  # Remove multiple blank lines
+                                description_text = re.sub(r'[ \t]+', ' ', description_text)    # Remove extra spaces/tabs
+                                print(f"   ✓ Text extracted via inner_text: {len(description_text)} chars")
                             else:
-                                print(f"   ⚠️ No text found in paragraph elements ({len(titles)} titles, {len(contents)} contents)")
+                                print(f"   ⚠️ inner_text too short ({len(inner_text)} chars), trying HTML parsing...")
                                 
-                                # Fallback Method 2: Use inner_text() on container
-                                print(f"   🎯 Method 2: Using Playwright inner_text() on container...")
-                                inner_text = desc_container.inner_text(timeout=5000).strip()
-                                print(f"      Got {len(inner_text)} chars")
-                                
-                                if inner_text and len(inner_text) > 100:
-                                    description_text = inner_text
-                                    print(f"   ✓ Text extracted via container: {len(description_text)} chars")
-                                else:
-                                    print(f"   ⚠️ Container inner_text too short ({len(inner_text)})")
-                                    print(f"   ⏳ Waiting 5 more seconds...")
-                                    page.wait_for_timeout(5000)
+                                # Method 2: Fallback - Parse HTML with BeautifulSoup more aggressively
+                                if desc_html and len(desc_html) > 50:
+                                    soup_desc = BeautifulSoup(desc_html, "html.parser")
                                     
-                                    # Try one more time
-                                    inner_text = desc_container.inner_text(timeout=5000).strip()
-                                    if inner_text and len(inner_text) > 100:
-                                        description_text = inner_text
-                                        print(f"   ✓ Text extracted after wait: {len(description_text)} chars")
+                                    # Remove script and style tags
+                                    for script in soup_desc(["script", "style"]):
+                                        script.decompose()
+                                    
+                                    # Get text from all elements (p, div, span, h1-h6, etc.)
+                                    text_content = soup_desc.get_text(separator='\n', strip=True)
+                                    
+                                    if text_content and len(text_content) > 100:
+                                        description_text = text_content
+                                        # Clean up excessive whitespace
+                                        description_text = re.sub(r'\n\s*\n', '\n', description_text)
+                                        description_text = re.sub(r'[ \t]+', ' ', description_text)
+                                        print(f"   ✓ Text extracted via HTML parsing: {len(description_text)} chars")
                                     else:
-                                        print(f"   ❌ FAILED: Could not extract description text")
+                                        print(f"   ⚠️ HTML parsing also returned short text ({len(text_content)} chars)")
+                                        
+                                        # Method 3: Last resort - Wait longer and retry
+                                        print(f"   ⏳ Waiting 5 more seconds for dynamic content...")
+                                        page.wait_for_timeout(5000)
+                                        
+                                        desc_html = desc_container.inner_html(timeout=5000)
+                                        inner_text = desc_container.inner_text(timeout=5000).strip()
+                                        
+                                        if inner_text and len(inner_text) > 100:
+                                            description_text = inner_text
+                                            description_text = re.sub(r'\n\s*\n', '\n', description_text)
+                                            description_text = re.sub(r'[ \t]+', ' ', description_text)
+                                            print(f"   ✓ Text extracted after extended wait: {len(description_text)} chars")
+                                        else:
+                                            print(f"   ❌ Still unable to extract sufficient description text")
                         
                         except Exception as e:
                             print(f"   ❌ Text extraction error: {e}")
@@ -538,7 +532,6 @@ def extract_aliexpress_product(url: str) -> dict:
                     
                 except Exception as e:
                     print(f"⚠️ Description extraction error: {e}")
-                
                 # SUCCESS
                 browser.close()
                 
