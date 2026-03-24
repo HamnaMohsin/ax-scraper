@@ -7,14 +7,6 @@ from stem import Signal
 from stem.control import Controller
 
 
-def clean_text(text: str) -> str:
-    """Clean and normalize text"""
-    if not text:
-        return ""
-    text = BeautifulSoup(text, "html.parser").get_text(" ")
-    return re.sub(r"\s+", " ", text).strip()
-
-
 def random_viewport():
     """Return random viewport size"""
     viewports = [
@@ -51,257 +43,209 @@ def is_captcha_page(page) -> bool:
     if any(kw in page_url for kw in captcha_url_keywords):
         return True
     
-    captcha_selectors = [
-        "iframe[src*='recaptcha']",
-        ".baxia-punish",
-        "#captcha-verify",
-        "iframe[src*='geetest']",
-    ]
-    
-    for selector in captcha_selectors:
-        try:
-            if page.locator(selector).count() > 0:
-                return True
-        except:
-            continue
+    try:
+        if page.locator("iframe[src*='recaptcha']").count() > 0:
+            return True
+        if page.locator(".baxia-punish").count() > 0:
+            return True
+    except:
+        pass
     
     return False
 
 
-def extract_shadow_dom_text(html_str: str) -> str:
+def extract_description_from_rendered_page(page) -> str:
     """
-    Extract text from template/shadow DOM elements
-    This gets the detailed specs that are hidden in template tags
+    Extract description from the RENDERED page (not raw HTML)
+    This can access Shadow DOM content because Playwright renders it
     """
-    print("   🔍 Checking for Shadow DOM content...")
-    
-    # Parse the HTML
-    soup = BeautifulSoup(html_str, "html.parser")
-    
-    # Find template elements with shadowrootmode
-    templates = soup.find_all('template', attrs={'shadowrootmode': 'open'})
-    print(f"      Found {len(templates)} shadow DOM template(s)")
-    
-    shadow_content = []
-    
-    for i, template in enumerate(templates):
-        # Get the content inside the template
-        template_html = str(template)
-        
-        # Parse the template content
-        # The content is inside the <template> tag
-        if template.string:
-            # Extract text from template
-            pass
-        
-        # Try to find content within the template tag
-        # BeautifulSoup includes template contents as children
-        for child in template.children:
-            if isinstance(child, str):
-                continue
-            
-            # Get text from elements inside template
-            text = child.get_text(separator='\n', strip=True)
-            if len(text) > 50:
-                shadow_content.append(text)
-                print(f"      Template #{i+1}: {len(text)} chars - {text[:60]}...")
-    
-    return "\n\n".join(shadow_content) if shadow_content else ""
-
-
-def extract_description_sections(html_str: str) -> dict:
-    """
-    Extract description from different sections, filtering out irrelevant content
-    Returns dict with different content types
-    """
-    print("📝 Extracting description sections...")
-    
-    soup = BeautifulSoup(html_str, "html.parser")
-    
-    sections = {
-        'shadow_dom': "",
-        'rich_text': "",
-        'detail_specs': ""
-    }
-    
-    # SECTION 1: Shadow DOM content (detailed specs)
-    print("   Section 1: Shadow DOM / Template content...")
-    templates = soup.find_all('template', attrs={'shadowrootmode': 'open'})
-    
-    for template in templates:
-        # Find the inner product-description div
-        inner_desc = template.find('div', id='product-description')
-        if inner_desc:
-            text = inner_desc.get_text(separator='\n', strip=True)
-            if len(text) > 50:
-                sections['shadow_dom'] = text
-                print(f"      ✓ Got {len(text)} chars from shadow DOM")
-    
-    # SECTION 2: Detail specs (detail-desc-decorate-richtext)
-    print("   Section 2: Detail specs...")
-    detail_descs = soup.find_all('div', class_=lambda x: x and 'detail-desc-decorate' in x)
-    
-    for detail in detail_descs:
-        # Only get from the first level, not nested
-        text = detail.get_text(separator='\n', strip=True)
-        if len(text) > 50:
-            sections['detail_specs'] = text
-            print(f"      ✓ Got {len(text)} chars from detail specs")
-            break
-    
-    # SECTION 3: Rich text container (but NOT including page junk)
-    print("   Section 3: Rich text container...")
-    
-    # Find richTextContainer divs
-    rich_containers = soup.find_all('div', class_=lambda x: x and 'richTextContainer' in x)
-    print(f"      Found {len(rich_containers)} richTextContainer(s)")
-    
-    for container in rich_containers:
-        text = container.get_text(separator='\n', strip=True)
-        
-        # Filter out page junk
-        # Remove if it contains too much pricing/review info
-        lines = text.split('\n')
-        
-        # Check if this looks like junk
-        is_junk = False
-        junk_indicators = [
-            'Positive Feedback',
-            'Free shipping',
-            'Delivery:',
-            'Refund if',
-            'Safe payments',
-            'Quantity',
-            'Buy now',
-            'Add to cart',
-            'Similar items',
-            'People also searched',
-            'Help Center',
-            'Return&refund',
-            'Alibaba Group'
-        ]
-        
-        for indicator in junk_indicators:
-            if indicator in text:
-                is_junk = True
-                break
-        
-        if not is_junk and len(text) > 200:
-            sections['rich_text'] = text
-            print(f"      ✓ Got {len(text)} chars (filtered)")
-            break
-        elif len(text) > 200:
-            print(f"      ✗ Skipped {len(text)} chars (detected as junk/page content)")
-    
-    return sections
-
-
-def extract_description_intelligent(page) -> str:
-    """
-    Intelligently extract description from all relevant sources
-    Combines shadow DOM + rich text + detail specs
-    Filters out page noise
-    """
-    print("📝 Extracting COMPLETE description...")
-    
-    all_content = []
+    print("📝 Extracting description from rendered page...")
     
     try:
-        # Wait for content to render
-        print("   ⏳ Waiting for page content...")
+        # Wait for dynamic content
         page.wait_for_timeout(3000)
         
-        # Get page source
-        html = page.content()
+        # Get the RENDERED content (includes Shadow DOM)
+        # Target the main description area
+        print("   🔍 Finding description container...")
         
-        # Extract from different sections
-        sections = extract_description_sections(html)
+        # Try to find the product-description container
+        desc_container = page.locator('[data-pl="product-description"]').first
         
-        # Combine in order of priority
-        # 1. Shadow DOM content first (most detailed specs)
-        if sections['shadow_dom']:
-            all_content.append(sections['shadow_dom'])
-            print(f"   ✓ Shadow DOM: {len(sections['shadow_dom'])} chars")
+        if desc_container.count() == 0:
+            desc_container = page.locator('#product-description').first
         
-        # 2. Detail specs
-        if sections['detail_specs']:
-            all_content.append(sections['detail_specs'])
-            print(f"   ✓ Detail specs: {len(sections['detail_specs'])} chars")
+        if desc_container.count() == 0:
+            desc_container = page.locator('[class*="description"]').first
         
-        # 3. Rich text (full descriptions)
-        if sections['rich_text']:
-            all_content.append(sections['rich_text'])
-            print(f"   ✓ Rich text: {len(sections['rich_text'])} chars")
-        
-        if all_content:
-            # Combine all sections
-            combined = "\n\n".join(all_content)
+        if desc_container.count() > 0:
+            print("   ✓ Found description container")
             
-            # Clean up
-            combined = re.sub(r'\n\s*\n+', '\n\n', combined)
-            combined = re.sub(r'[ \t]+', ' ', combined)
-            combined = combined.strip()
+            # Get inner text (this includes rendered Shadow DOM content!)
+            try:
+                inner_text = desc_container.inner_text(timeout=5000)
+                print(f"   ✓ Got {len(inner_text)} chars from description area")
+                
+                if len(inner_text) > 100:
+                    # Clean up the text
+                    # Remove excessive whitespace
+                    lines = inner_text.split('\n')
+                    
+                    # Filter out junk lines
+                    junk_patterns = [
+                        'Positive Feedback',
+                        'Free shipping',
+                        'Delivery:',
+                        'Refund if',
+                        'Buy now',
+                        'Add to cart',
+                        'Similar items',
+                        'Help Center',
+                        'Safe payments',
+                        'Secure personal',
+                        'Shop sustainably',
+                        'Quantity',
+                        'Max. ',
+                        'Follow',
+                        'Message',
+                        'Recommended from',
+                        'People also searched',
+                        'This product belongs',
+                        'Alibaba Group',
+                        'Russian',
+                        'Portuguese',
+                        'Spanish',
+                        'French',
+                        'German',
+                        'Italian',
+                        'Dutch',
+                        'Turkish',
+                        'Japanese',
+                        'Korean',
+                        'Thai',
+                        'Arabic',
+                        'Hebrew',
+                        'Polish',
+                        'All Popular',
+                        'Promotion',
+                        'Low Price',
+                        'Great Value',
+                        'Wiki',
+                        'Blog',
+                        'Video',
+                    ]
+                    
+                    # Keep lines that are description-related
+                    description_lines = []
+                    for line in lines:
+                        line = line.strip()
+                        
+                        # Skip empty lines temporarily, keep them for formatting
+                        if not line:
+                            continue
+                        
+                        # Skip if line matches junk patterns
+                        is_junk = False
+                        for pattern in junk_patterns:
+                            if pattern.lower() in line.lower():
+                                is_junk = True
+                                break
+                        
+                        if not is_junk and len(line) > 2:
+                            description_lines.append(line)
+                    
+                    # Combine lines
+                    if description_lines:
+                        combined = "\n".join(description_lines)
+                        
+                        # Clean up whitespace
+                        combined = re.sub(r'\n\s*\n+', '\n', combined)
+                        combined = combined.strip()
+                        
+                        print(f"   ✓ Extracted {len(combined)} chars after filtering")
+                        return combined
+        
+        # Fallback: Get all text and try to extract description
+        print("   ⚠️ Container not found, trying full page extraction...")
+        
+        page_text = page.inner_text(timeout=5000)
+        print(f"   Got {len(page_text)} chars from full page")
+        
+        # Try to extract just the description part
+        # Usually starts with product name/model and ends before pricing
+        lines = page_text.split('\n')
+        
+        description_lines = []
+        capture = False
+        price_started = False
+        
+        for line in lines:
+            stripped = line.strip()
             
-            # Verify we got good content
-            print(f"   📊 Combined: {len(combined)} chars")
+            # Start capturing from product info
+            if any(kw in stripped.lower() for kw in ['thermos', 'material', 'stainless', 'product', 'description', 'specification', 'feature']):
+                capture = True
             
-            if 'keep hot' in combined.lower():
-                print("   ✅ Includes temperature specs")
-            if 'material' in combined.lower():
-                print("   ✅ Includes material specs")
+            # Stop capturing when we hit pricing/seller info
+            if any(kw in stripped.lower() for kw in ['$', 'price', 'sold by', 'seller', 'shipping', 'delivery:', 'refund']):
+                if capture and any(c.isdigit() for c in stripped):
+                    price_started = True
             
-            return combined
-        else:
-            print("   ⚠️ No description content found")
-            return ""
+            if capture and not price_started:
+                # Filter junk
+                is_junk = any(junk.lower() in stripped.lower() for junk in [
+                    'positive feedback', 'help center', 'add to cart', 'buy now',
+                    'similar items', 'people also', 'russian', 'portuguese'
+                ])
+                
+                if not is_junk and len(stripped) > 2:
+                    description_lines.append(stripped)
+        
+        if description_lines:
+            result = "\n".join(description_lines)
+            result = re.sub(r'\n\s*\n+', '\n', result)
+            print(f"   ✓ Extracted {len(result)} chars from fallback method")
+            return result
+        
+        return ""
     
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"   ❌ Error: {e}")
         import traceback
         traceback.print_exc()
         return ""
 
 
 def extract_description_images(page) -> list:
-    """Extract ONLY description images (not product thumbnails)"""
-    print("🖼️ Extracting description images...")
+    """Extract images from the page"""
+    print("🖼️ Extracting images...")
     
     images = []
     
     try:
-        html = page.content()
-        soup = BeautifulSoup(html, "html.parser")
+        # Get all images on the page
+        img_elements = page.locator('img').all()
+        print(f"   Found {len(img_elements)} total images on page")
         
-        # Look for images in product-description divs specifically
-        print("   🔍 Looking for images in description sections...")
-        
-        # Images in templates
-        templates = soup.find_all('template', attrs={'shadowrootmode': 'open'})
-        for template in templates:
-            inner_desc = template.find('div', id='product-description')
-            if inner_desc:
-                imgs = inner_desc.find_all('img')
-                for img in imgs:
-                    src = img.get('src') or img.get('data-src')
-                    if src and 'alicdn.com' in src:
-                        clean_src = src.split('?')[0]
-                        if len(clean_src) > 50 and clean_src not in images:
-                            images.append(clean_src)
-        
-        print(f"      Found {len(images)} from shadow DOM")
-        
-        # Images in richTextContainer
-        rich_containers = soup.find_all('div', class_=lambda x: x and 'richTextContainer' in x)
-        for container in rich_containers:
-            imgs = container.find_all('img')
-            for img in imgs:
-                src = img.get('src') or img.get('data-src')
+        alicdn_count = 0
+        for img in img_elements:
+            try:
+                src = img.get_attribute('src') or img.get_attribute('data-src') or img.get_attribute('data-lazy-src')
+                
                 if src and 'alicdn.com' in src:
+                    # Clean up URL
                     clean_src = src.split('?')[0]
-                    if len(clean_src) > 50 and clean_src not in images:
+                    
+                    # Quality check
+                    if (len(clean_src) > 50 and 
+                        not any(bad in clean_src.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100', '/s.gif']) and
+                        clean_src not in images):
                         images.append(clean_src)
+                        alicdn_count += 1
+            except:
+                continue
         
-        print(f"      Total: {len(images)} description images")
+        print(f"   ✓ Found {alicdn_count} quality images")
         
         # Limit to 20
         images = images[:20]
@@ -309,7 +253,7 @@ def extract_description_images(page) -> list:
         return images
     
     except Exception as e:
-        print(f"⚠️ Image error: {e}")
+        print(f"   ⚠️ Error: {e}")
         return []
 
 
@@ -319,13 +263,13 @@ def extract_title_universal(page) -> str:
     print("📌 Extracting title...")
     
     title_selectors = [
-        ('[data-pl="product-title"]', "data-pl"),
-        ('h1', "h1"),
-        ('[class*="product-title"]', "class"),
-        ('span[class*="title"]', "span"),
+        '[data-pl="product-title"]',
+        'h1',
+        '[class*="product-title"]',
+        'span[class*="title"]',
     ]
     
-    for selector, desc in title_selectors:
+    for selector in title_selectors:
         try:
             elem = page.locator(selector).first
             if elem.count() > 0:
@@ -341,8 +285,8 @@ def extract_title_universal(page) -> str:
 
 def extract_aliexpress_product(url: str) -> dict:
     """
-    Extract AliExpress product - Shadow DOM aware
-    Separates description content from page noise
+    Extract from AliExpress using Playwright's rendered content
+    This can access Shadow DOM content
     """
     
     print(f"\n🔍 Scraping: {url}")
@@ -386,22 +330,22 @@ def extract_aliexpress_product(url: str) -> dict:
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             
             try:
-                # LOAD
+                # LOAD PAGE
                 print("📡 Loading page...")
                 page.goto(url, timeout=120000, wait_until="domcontentloaded")
                 time.sleep(2)
                 
                 # CAPTCHA CHECK
                 if is_captcha_page(page):
-                    print("⚠️ CAPTCHA - retrying...")
+                    print("⚠️ CAPTCHA detected - retrying...")
                     browser.close()
                     continue
                 
-                # WAIT
-                print("⏳ Rendering...")
+                # WAIT FOR RENDERING
+                print("⏳ Waiting for page to render...")
                 time.sleep(8)
                 
-                # SCROLL
+                # SCROLL TO LOAD CONTENT
                 print("⏳ Scrolling...")
                 for _ in range(5):
                     page.mouse.wheel(0, random.randint(150, 300))
@@ -411,19 +355,19 @@ def extract_aliexpress_product(url: str) -> dict:
                 
                 # SECOND CAPTCHA CHECK
                 if is_captcha_page(page):
-                    print("⚠️ CAPTCHA - retrying...")
+                    print("⚠️ CAPTCHA after scroll - retrying...")
                     browser.close()
                     continue
                 
-                # EXTRACT
+                # EXTRACT DATA
                 print("\n--- EXTRACTING DATA ---")
                 title = extract_title_universal(page)
-                description_text = extract_description_intelligent(page)
+                description_text = extract_description_from_rendered_page(page)
                 images = extract_description_images(page)
                 
                 browser.close()
                 
-                # RESULTS
+                # RETURN RESULTS
                 result = {
                     "title": title,
                     "description_text": description_text,
@@ -431,10 +375,19 @@ def extract_aliexpress_product(url: str) -> dict:
                     "store_info": {}
                 }
                 
-                print(f"\n✅ SUCCESS:")
+                print(f"\n✅ RESULTS:")
                 print(f"   Title: {len(title)} chars")
                 print(f"   Description: {len(description_text)} chars")
                 print(f"   Images: {len(images)}")
+                
+                # Validation
+                if description_text:
+                    if 'keep hot' in description_text.lower():
+                        print("   ✅ Includes temperature specs")
+                    if 'material' in description_text.lower():
+                        print("   ✅ Includes material")
+                    if len(description_text) > 500:
+                        print("   ✅ Substantial content")
                 
                 return result
                 
@@ -453,5 +406,5 @@ def extract_aliexpress_product(url: str) -> dict:
                     pass
                 continue
     
-    print("❌ Failed")
+    print("❌ Failed after all retries")
     return empty_result
