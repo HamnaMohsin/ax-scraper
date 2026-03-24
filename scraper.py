@@ -216,94 +216,106 @@ def extract_title_universal(page) -> str:
     return ""
 
 
+def get_shadow_dom_html(page) -> str:
+    """
+    Access Shadow DOM content using JavaScript injection.
+    Returns the inner HTML of the shadow root's .product-description element.
+    """
+    print("   🔍 Accessing Shadow DOM via JavaScript...")
+    
+    try:
+        # JavaScript to extract shadow DOM content
+        shadow_html = page.evaluate("""
+            () => {
+                // Find the template element with shadow root
+                const template = document.querySelector('#product-description > template');
+                if (!template) {
+                    console.log('Template not found');
+                    return null;
+                }
+                
+                // Get the shadow root
+                const shadowRoot = template.shadowRoot;
+                if (!shadowRoot) {
+                    console.log('Shadow root not accessible');
+                    return null;
+                }
+                
+                // Find the product-description div in shadow DOM
+                const descDiv = shadowRoot.querySelector('.product-description');
+                if (!descDiv) {
+                    console.log('product-description div not found in shadow root');
+                    return null;
+                }
+                
+                // Return the inner HTML
+                return descDiv.innerHTML;
+            }
+        """)
+        
+        if shadow_html:
+            print(f"   ✓ Shadow DOM HTML retrieved: {len(shadow_html)} chars")
+            return shadow_html
+        else:
+            print("   ⚠️ Shadow DOM returned null (template or shadow root not found)")
+            return ""
+            
+    except Exception as e:
+        print(f"   ❌ Shadow DOM access failed: {e}")
+        return ""
+
+
 def extract_description_from_shadow_dom(page) -> tuple:
     """
     Extract description and images from Shadow DOM (primary method).
+    Uses JavaScript to pierce the shadow root.
     Returns: (description_text, images_list)
     """
     print("   🔍 Method 1: Extracting from Shadow DOM...")
     
     try:
-        # Check if shadow template exists
-        template_elem = page.locator("#product-description > template").first
+        # Get shadow DOM HTML
+        shadow_html = get_shadow_dom_html(page)
         
-        if template_elem.count() == 0:
-            print("   ⚠️ No shadow template found, skipping Shadow DOM extraction")
+        if not shadow_html or len(shadow_html) < 50:
+            print("   ⚠️ Shadow DOM HTML empty or too small, skipping")
             return "", []
         
-        print("   ✓ Found shadow template")
+        print(f"   ✓ Shadow HTML size: {len(shadow_html)} chars")
         
-        # Access shadow root using Playwright's shadow DOM selector
-        try:
-            shadow_content = page.locator("#product-description > template >> shadow=.product-description").first
-            
-            if shadow_content.count() == 0:
-                print("   ⚠️ Shadow .product-description not found")
-                return "", []
-            
-            print("   ✓ Accessed shadow DOM content")
-            
-            # Extract HTML from shadow root
-            desc_html = shadow_content.inner_html(timeout=5000)
-            print(f"   📊 Shadow HTML size: {len(desc_html)} chars")
-            
-            if len(desc_html) < 50:
-                print("   ⚠️ Shadow HTML too small, content might not be loaded")
-                # Wait and retry
-                page.wait_for_timeout(3000)
-                desc_html = shadow_content.inner_html(timeout=5000)
-                print(f"   📊 Shadow HTML size (retry): {len(desc_html)} chars")
-            
-            # Extract text from shadow HTML
-            soup_shadow = BeautifulSoup(desc_html, "html.parser")
-            description_text = soup_shadow.get_text(" ", strip=True)
-            description_text = re.sub(r'\s+', ' ', description_text).strip()
-            
-            print(f"   ✓ Shadow text extracted: {len(description_text)} chars")
-            if description_text:
-                print(f"      Preview: {description_text[:100]}...")
-            
-            # Extract images from shadow DOM
-            shadow_images = []
-            
-            # Method 1: Use Playwright to find all img in shadow content
-            img_elems = shadow_content.locator("img").all()
-            print(f"   🖼️ Found {len(img_elems)} img tags in shadow DOM")
-            
-            for img in img_elems:
-                try:
-                    src = (img.get_attribute("src") or 
-                           img.get_attribute("data-src") or 
-                           img.get_attribute("data-lazy-src"))
-                    if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
-                        clean_src = src.split('?')[0]
-                        shadow_images.append(clean_src)
-                except:
-                    continue
-            
-            # Method 2: Parse HTML with BeautifulSoup for any missed images
-            html_imgs = soup_shadow.find_all("img")
-            print(f"   📊 Found {len(html_imgs)} img tags in HTML parse")
-            
-            for img in html_imgs:
-                src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-                if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
-                    clean_src = src.split('?')[0]
-                    if clean_src not in shadow_images:
-                        shadow_images.append(clean_src)
-            
-            # Dedupe and filter
-            shadow_images = list(set(shadow_images))
-            quality_images = [img for img in shadow_images 
-                             if len(img) > 50 and not any(bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100'])]
-            
-            print(f"   ✓ Shadow images: {len(quality_images)} extracted")
-            
-            if description_text or quality_images:
-                return description_text, quality_images
-            
-        except Exception as e:
-            print(f"   ⚠️ Shadow DOM access error: {e}")
+        # Parse shadow HTML with BeautifulSoup
+        soup_shadow = BeautifulSoup(shadow_html, "html.parser")
+        
+        # Extract text
+        description_text = soup_shadow.get_text(" ", strip=True)
+        description_text = re.sub(r'\s+', ' ', description_text).strip()
+        
+        print(f"   ✓ Shadow text extracted: {len(description_text)} chars")
+        if description_text:
+            print(f"      Preview: {description_text[:100]}...")
+        
+        # Extract images from shadow HTML
+        shadow_images = []
+        html_imgs = soup_shadow.find_all("img")
+        print(f"   🖼️ Found {len(html_imgs)} img tags in shadow DOM")
+        
+        for img in html_imgs:
+            src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
+            if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
+                clean_src = src.split('?')[0]
+                shadow_images.append(clean_src)
+        
+        # Dedupe and filter
+        shadow_images = list(set(shadow_images))
+        quality_images = [img for img in shadow_images 
+                         if len(img) > 50 and not any(bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100'])]
+        
+        print(f"   ✓ Shadow images: {len(quality_images)} extracted")
+        
+        if description_text or quality_images:
+            return description_text, quality_images
+        else:
+            print("   ⚠️ Shadow DOM returned empty text and images")
             return "", []
             
     except Exception as e:
@@ -385,7 +397,7 @@ def extract_description_from_richtext(page) -> tuple:
 def extract_description_universal(page) -> tuple:
     """
     Extract description and images using dual strategy:
-    1. Try Shadow DOM first (most complete)
+    1. Try Shadow DOM first (most complete) - uses JavaScript
     2. Fall back to richTextContainer if needed
     
     Returns: (description_text, images_list)
@@ -533,7 +545,7 @@ def extract_aliexpress_product(url: str) -> dict:
                 # EXTRACT STORE INFO
                 store_info = extract_store_info_universal(page)
                 
-                # EXTRACT DESCRIPTION (with Shadow DOM support)
+                # EXTRACT DESCRIPTION (with Shadow DOM support via JavaScript)
                 description_text, description_images = extract_description_universal(page)
                 
                 # SUCCESS
