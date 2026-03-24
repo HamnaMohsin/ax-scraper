@@ -7,7 +7,7 @@ from stem import Signal
 from stem.control import Controller
 
 def extract_description_shadow_dom(page):
-    print("   🌐 Extracting via Shadow DOM traversal...")
+    print("   🌐 Extracting FULL Shadow DOM (no filtering)...")
 
     description_text = ""
     description_images = []
@@ -23,53 +23,48 @@ def extract_description_shadow_dom(page):
             const shadow = rootContainer.shadowRoot;
             if (!shadow) return result;
 
-            const nodes = shadow.querySelectorAll('*');
-            const textSet = new Set();
-            const imgSet = new Set();
+            const walker = document.createTreeWalker(
+                shadow,
+                NodeFilter.SHOW_ELEMENT,
+                null,
+                false
+            );
 
-            nodes.forEach(node => {
-                // TEXT (only meaningful tags)
-                if (['P','SPAN','DIV'].includes(node.tagName)) {
-                    let txt = node.innerText?.trim();
-                    if (txt && txt.length > 2 && txt.length < 500) {
-                        textSet.add(txt);
-                    }
+            let node;
+            while (node = walker.nextNode()) {
+
+                // TEXT → NO FILTERING
+                if (node.innerText) {
+                    result.texts.push(node.innerText);
                 }
 
                 // IMAGES
                 if (node.tagName === 'IMG') {
                     let src = node.src || node.getAttribute('data-src') || node.getAttribute('data-lazy-src');
-                    if (src && src.includes('alicdn.com')) {
-                        imgSet.add(src.split('?')[0]);
+                    if (src) {
+                        result.images.push(src);
                     }
                 }
-            });
-
-            result.texts = Array.from(textSet);
-            result.images = Array.from(imgSet);
+            }
 
             return result;
         }
         """)
 
+        # 🔥 NO set(), NO filtering
         if data.get("texts"):
-            description_text = ' '.join(data["texts"])
-            description_text = re.sub(r"\s+", " ", description_text).strip()
-            print(f"   ✅ Shadow text: {len(description_text)} chars")
+            description_text = " ".join(data["texts"])
+            print(f"   ✅ RAW Shadow text: {len(description_text)} chars")
 
         if data.get("images"):
-            description_images = [
-                img for img in data["images"]
-                if len(img) > 50 and not any(b in img.lower() for b in ['icon','logo','50x50'])
-            ][:20]
-
-            print(f"   🖼️ Shadow images: {len(description_images)}")
+            description_images = data["images"]
+            print(f"   🖼️ RAW images: {len(description_images)}")
 
     except Exception as e:
         print(f"   ⚠️ Shadow DOM extraction failed: {e}")
 
     return description_text, description_images
-
+    
 def clean_text(text: str) -> str:
     """Clean and normalize text"""
     if not text:
@@ -560,9 +555,9 @@ def extract_aliexpress_product(url: str) -> dict:
                             description_text = re.sub(r"\s+", " ", combined).strip()
                         
                         # ✅ REMOVE DUPLICATE SENTENCES (smart cleanup)
-                        if description_text:
-                            sentences = list(set(description_text.split('. ')))
-                            description_text = '. '.join(sentences)
+                        # if description_text:
+                        #     sentences = list(set(description_text.split('. ')))
+                        #     description_text = '. '.join(sentences)
                         
                         # ✅ MERGE IMAGES
                         if shadow_images:
