@@ -452,7 +452,7 @@ def extract_aliexpress_product(url: str) -> dict:
                             print(f"   ✓ Extracted from ALL <p>: {len(description_text)} chars")
                     except Exception as e:
                         print(f"   ⚠️ Method 0 failed: {e}")
-                    print("method 0 <p>",description_text)
+                    
                     if desc_container.count() > 0:
                         print("   ✓ Found #product-description container")
                         
@@ -513,9 +513,8 @@ def extract_aliexpress_product(url: str) -> dict:
                                     pass
                             
                             if text_parts:
-                                description_text1 = text_parts
-                                description_text1 = re.sub(r'\s+', ' ', description_text).strip()
-                                print("method 1:",text_parts)
+                                description_text = ' '.join(text_parts)
+                                description_text = re.sub(r'\s+', ' ', description_text).strip()
                                 print(f"   ✓ Text extracted directly: {len(description_text)} chars")
                             else:
                                 print(f"   ⚠️ No text found in paragraph elements ({len(titles)} titles, {len(contents)} contents)")
@@ -523,13 +522,11 @@ def extract_aliexpress_product(url: str) -> dict:
                                 # Fallback Method 2: Use inner_text() on container
                                 print(f"   🎯 Method 2: Using Playwright inner_text() on container...")
                                 inner_text = desc_container.inner_text(timeout=5000).strip()
-                                print("method 2:",inner_text)
                                 print(f"      Got {len(inner_text)} chars")
                                 
                                 if inner_text and len(inner_text) > 100:
                                     description_text = inner_text
                                     print(f"   ✓ Text extracted via container: {len(description_text)} chars")
-                                    
                                 else:
                                     print(f"   ⚠️ Container inner_text too short ({len(inner_text)})")
                                     print(f"   ⏳ Waiting 5 more seconds...")
@@ -537,10 +534,9 @@ def extract_aliexpress_product(url: str) -> dict:
                                     
                                     # Try one more time
                                     inner_text = desc_container.inner_text(timeout=5000).strip()
-                                    if inner_text:
-                                        description_text += inner_text
+                                    if inner_text and len(inner_text) > 100:
+                                        description_text = inner_text
                                         print(f"   ✓ Text extracted after wait: {len(description_text)} chars")
-                                        
                                     else:
                                         print(f"   ❌ FAILED: Could not extract description text")
                         
@@ -550,13 +546,14 @@ def extract_aliexpress_product(url: str) -> dict:
                             traceback.print_exc()
                         
                         print("   🔁 Enhancing description using Shadow DOM...")
-                     
+
                         shadow_text, shadow_images = extract_description_shadow_dom(page)
-                        print("method 3:", shadow_text)
+                        
                         # ✅ MERGE TEXT (VERY IMPORTANT)
-                        # Priority-based selection
-                        #description_text = shadow_text + description_text
-                                                
+                        if shadow_text:
+                            combined = description_text + " " + shadow_text
+                            description_text = re.sub(r"\s+", " ", combined).strip()
+                        
                         # ✅ REMOVE DUPLICATE SENTENCES (smart cleanup)
                         # if description_text:
                         #     sentences = list(set(description_text.split('. ')))
