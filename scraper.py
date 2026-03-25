@@ -432,92 +432,92 @@ def extract_aliexpress_product(url: str) -> dict:
                     # Get the MAIN description container using Playwright's inner_html
                     desc_container = page.locator('#product-description').first
                     # NEW: Extract ALL visible text inside description (handles shadow + normal DOM fallback)
-                    print("   🎯 Method 0: Extracting ALL paragraph text...")
+                    # print("   🎯 Method 0: Extracting ALL paragraph text...")
 
-                    try:
-                        all_paragraphs = page.locator('#product-description p').all()
+                    # try:
+                    #     all_paragraphs = page.locator('#product-description p').all()
                         
-                        all_text_parts = []
-                        for p in all_paragraphs:
-                            try:
-                                txt = p.inner_text(timeout=2000).strip()
-                                if txt and len(txt) > 2:
-                                    all_text_parts.append(txt)
-                            except:
-                                pass
+                    #     all_text_parts = []
+                    #     for p in all_paragraphs:
+                    #         try:
+                    #             txt = p.inner_text(timeout=2000).strip()
+                    #             if txt and len(txt) > 2:
+                    #                 all_text_parts.append(txt)
+                    #         except:
+                    #             pass
 
-                        if all_text_parts:
-                            description_text = ' '.join(all_text_parts)
-                            description_text = re.sub(r'\s+', ' ', description_text).strip()
-                            print(f"   ✓ Extracted from ALL <p>: {len(description_text)} chars")
-                    except Exception as e:
-                        print(f"   ⚠️ Method 0 failed: {e}")
+                    #     if all_text_parts:
+                    #         description_text = ' '.join(all_text_parts)
+                    #         description_text = re.sub(r'\s+', ' ', description_text).strip()
+                    #         print(f"   ✓ Extracted from ALL <p>: {len(description_text)} chars")
+                    # except Exception as e:
+                    #     print(f"   ⚠️ Method 0 failed: {e}")
                     
-                    if desc_container.count() > 0:
-                        print("   ✓ Found #product-description container")
+                    # if desc_container.count() > 0:
+                    #     print("   ✓ Found #product-description container")
                         
-                        # GET HTML FROM RENDERED PAGE
-                        desc_html = page.evaluate("""
-                        () => {
-                            const el = document.querySelector('#product-description');
-                            if (!el) return "";
+                        # # GET HTML FROM RENDERED PAGE
+                        # desc_html = page.evaluate("""
+                        # () => {
+                        #     const el = document.querySelector('#product-description');
+                        #     if (!el) return "";
 
-                            // Check shadow root
-                            const shadowHost = el.querySelector('[shadowrootmode]');
-                            if (shadowHost && shadowHost.shadowRoot) {
-                                return shadowHost.shadowRoot.innerHTML;
-                            }
+                        #     // Check shadow root
+                        #     const shadowHost = el.querySelector('[shadowrootmode]');
+                        #     if (shadowHost && shadowHost.shadowRoot) {
+                        #         return shadowHost.shadowRoot.innerHTML;
+                        #     }
 
-                            return el.innerHTML;
-                        }
-                        """)
-                        print(f"   📊 inner_html size: {len(desc_html)} chars")
+                        #     return el.innerHTML;
+                        # }
+                        # """)
+                        # print(f"   📊 inner_html size: {len(desc_html)} chars")
                         
-                        # If inner_html is too small, content might still be loading - wait and retry
-                        if desc_html and len(desc_html) < 50:
-                            print(f"   ⏳ Content still loading, waiting 2s and retrying...")
-                            page.wait_for_timeout(2000)
-                            desc_html = desc_container.inner_html(timeout=5000)
-                            print(f"   📊 inner_html size (retry): {len(desc_html)} chars")
+                        # # If inner_html is too small, content might still be loading - wait and retry
+                        # if desc_html and len(desc_html) < 50:
+                        #     print(f"   ⏳ Content still loading, waiting 2s and retrying...")
+                        #     page.wait_for_timeout(2000)
+                        #     desc_html = desc_container.inner_html(timeout=5000)
+                        #     print(f"   📊 inner_html size (retry): {len(desc_html)} chars")
                         
                         # EXTRACT TEXT using Playwright (not BeautifulSoup)
-                        try:
-                            print(f"   🎯 Method 1: Targeting description paragraph elements directly...")
+                        # try:
+                        #     print(f"   🎯 Method 1: Targeting description paragraph elements directly...")
                             
-                            # Get all title and content paragraphs directly
-                            titles = page.locator('#product-description p.detail-desc-decorate-title').all()
-                            contents = page.locator('#product-description p.detail-desc-decorate-content').all()
+                        #     # Get all title and content paragraphs directly
+                        #     titles = page.locator('#product-description p.detail-desc-decorate-title').all()
+                        #     contents = page.locator('#product-description p.detail-desc-decorate-content').all()
                             
-                            print(f"      Found {len(titles)} titles, {len(contents)} content paragraphs")
+                        #     print(f"      Found {len(titles)} titles, {len(contents)} content paragraphs")
                             
-                            text_parts = []
+                        #     text_parts = []
                             
-                            # Extract title text
-                            for title in titles:
-                                try:
-                                    text = title.inner_text(timeout=2000).strip()
-                                    if text:
-                                        text_parts.append(text)
-                                        print(f"      Title: {text[:50]}...")
-                                except:
-                                    pass
+                        #     # Extract title text
+                        #     for title in titles:
+                        #         try:
+                        #             text = title.inner_text(timeout=2000).strip()
+                        #             if text:
+                        #                 text_parts.append(text)
+                        #                 print(f"      Title: {text[:50]}...")
+                        #         except:
+                        #             pass
                             
-                            # Extract content text
-                            for content in contents:
-                                try:
-                                    text = content.inner_text(timeout=2000).strip()
-                                    if text:
-                                        text_parts.append(text)
-                                        print(f"      Content: {text[:50]}...")
-                                except:
-                                    pass
+                        #     # Extract content text
+                        #     for content in contents:
+                        #         try:
+                        #             text = content.inner_text(timeout=2000).strip()
+                        #             if text:
+                        #                 text_parts.append(text)
+                        #                 print(f"      Content: {text[:50]}...")
+                        #         except:
+                        #             pass
                             
-                            if text_parts:
-                                description_text = ' '.join(text_parts)
-                                description_text = re.sub(r'\s+', ' ', description_text).strip()
-                                print(f"   ✓ Text extracted directly: {len(description_text)} chars")
-                            else:
-                                print(f"   ⚠️ No text found in paragraph elements ({len(titles)} titles, {len(contents)} contents)")
+                        #     if text_parts:
+                        #         description_text = ' '.join(text_parts)
+                        #         description_text = re.sub(r'\s+', ' ', description_text).strip()
+                        #         print(f"   ✓ Text extracted directly: {len(description_text)} chars")
+                        #     else:
+                        #         print(f"   ⚠️ No text found in paragraph elements ({len(titles)} titles, {len(contents)} contents)")
                                 
                                 # Fallback Method 2: Use inner_text() on container
                                 print(f"   🎯 Method 2: Using Playwright inner_text() on container...")
@@ -550,9 +550,9 @@ def extract_aliexpress_product(url: str) -> dict:
                         shadow_text, shadow_images = extract_description_shadow_dom(page)
                         
                         # ✅ MERGE TEXT (VERY IMPORTANT)
-                        if shadow_text:
-                            combined = description_text + " " + shadow_text
-                            description_text = re.sub(r"\s+", " ", combined).strip()
+                        # if shadow_text:
+                        #     combined = description_text + " " + shadow_text
+                        #     description_text = re.sub(r"\s+", " ", combined).strip()
                         
                         # ✅ REMOVE DUPLICATE SENTENCES (smart cleanup)
                         # if description_text:
