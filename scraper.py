@@ -551,7 +551,7 @@ def extract_aliexpress_product(url: str) -> dict:
                         
                         # ✅ MERGE TEXT (VERY IMPORTANT)
                         # Priority-based selection
-                        description_text = shadow_text + description_text
+                        #description_text = shadow_text + description_text
                                                 
                         # ✅ REMOVE DUPLICATE SENTENCES (smart cleanup)
                         # if description_text:
