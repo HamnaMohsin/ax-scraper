@@ -323,23 +323,52 @@ def extract_aliexpress_product(url: str) -> dict:
                     except Exception as e:
                         print(f"   ⚠️ Description tab click error: {e}")
 
-                    # Single extraction: inner_text() on container
+                    # METHOD 0: Extract all <p> tags inside #product-description
+                    print("   🎯 Method 0: Extracting paragraph text...")
+                    method0_text = ""
+                    try:
+                        all_paragraphs = page.locator('#product-description p').all()
+                        all_text_parts = []
+                        for p in all_paragraphs:
+                            try:
+                                txt = p.inner_text(timeout=2000).strip()
+                                if txt and len(txt) > 2:
+                                    all_text_parts.append(txt)
+                            except:
+                                pass
+                        if all_text_parts:
+                            method0_text = ' '.join(all_text_parts)
+                            method0_text = re.sub(r'\s+', ' ', method0_text).strip()
+                            print(f"   ✓ Method 0: {len(method0_text)} chars")
+                        else:
+                            print("   ⚠️ Method 0: no <p> content found")
+                    except Exception as e:
+                        print(f"   ⚠️ Method 0 failed: {e}")
+
+                    # METHOD 1: inner_text() on full container
                     desc_container = page.locator('#product-description').first
 
                     if desc_container.count() > 0:
                         print("   ✓ Found #product-description container")
+                        print("   🎯 Method 1: inner_text() on container...")
 
-                        description_text = desc_container.inner_text(timeout=5000).strip()
-                        description_text = re.sub(r'\s+', ' ', description_text).strip()
-                        print(f"   ✓ Extracted: {len(description_text)} chars")
+                        method1_text = desc_container.inner_text(timeout=5000).strip()
+                        method1_text = re.sub(r'\s+', ' ', method1_text).strip()
+                        print(f"   ✓ Method 1: {len(method1_text)} chars")
 
                         # Retry once if too short
-                        if len(description_text) < 100:
+                        if len(method1_text) < 100:
                             print("   ⏳ Content short, waiting 5s and retrying...")
                             page.wait_for_timeout(5000)
-                            description_text = desc_container.inner_text(timeout=5000).strip()
-                            description_text = re.sub(r'\s+', ' ', description_text).strip()
-                            print(f"   ✓ After retry: {len(description_text)} chars")
+                            method1_text = desc_container.inner_text(timeout=5000).strip()
+                            method1_text = re.sub(r'\s+', ' ', method1_text).strip()
+                            print(f"   ✓ Method 1 after retry: {len(method1_text)} chars")
+
+                        # CONCATENATE: Method 0 + Method 1
+                        parts = [t for t in [method0_text, method1_text] if t]
+                        description_text = ' '.join(parts)
+                        description_text = re.sub(r'\s+', ' ', description_text).strip()
+                        print(f"   ✅ Combined (Method 0 + Method 1): {len(description_text)} chars")
 
                         # IMAGE EXTRACTION: direct locator on container
                         print("   🖼️ Extracting images...")
