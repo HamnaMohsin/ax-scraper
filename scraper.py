@@ -86,88 +86,104 @@ def is_captcha_page(page) -> bool:
     return False
 
 
+
 def extract_store_info_universal(page) -> dict:
-    """Extract store info - try multiple selectors with debugging"""
+    """Extract store info by hovering over the store element to trigger the popup."""
     store_info = {}
-
+ 
     print("📦 Extracting store info...")
-
+ 
     try:
-        html = page.content()
-        soup = BeautifulSoup(html, "html.parser")
-
-        # Search 1: Direct class selector
-        print("   🔍 Search 1: Looking for store-detail elements...")
-        store_elem = soup.find('div', class_=lambda x: x and 'store-detail' in x)
-
-        if store_elem:
-            print(f"   ✓ Found store element")
-            table = store_elem.find('table')
-            if table:
-                print(f"   ✓ Found table with store info")
-                for row in table.find_all('tr'):
-                    cols = row.find_all('td')
-                    if len(cols) >= 2:
-                        key = clean_text(cols[0].get_text()).replace(":", "").strip()
-                        value = clean_text(cols[1].get_text()).strip()
-                        if key and value:
-                            store_info[key] = value
-                            print(f"      {key}: {value}")
-            else:
-                print(f"   ⚠️ No table found in store element")
-                elem_text = store_elem.get_text(" ", strip=True)[:200]
-                print(f"   Element content: {elem_text}...")
-
-        # Search 2: Broader search
-        if not store_info:
-            print("   🔍 Search 2: Broader search for store information...")
-            all_divs = soup.find_all('div', class_=lambda x: x and any(s in str(x).lower() for s in ['store', 'seller', 'shop']))
-            print(f"   Found {len(all_divs)} potential store divs")
-
-            for div in all_divs[:5]:
-                tbl = div.find('table')
-                if tbl:
-                    print(f"   ✓ Found table in div")
-                    for row in tbl.find_all('tr'):
-                        cols = row.find_all('td')
+        # Step 1: Extract store name directly from known selector (always visible)
+        print("   🔍 Step 1: Extracting store name...")
+        store_name_selector = "span[class*='store-detail--storeName']"
+        store_name_elem = page.locator(store_name_selector).first
+ 
+        if store_name_elem.count() > 0:
+            store_name = store_name_elem.inner_text().strip()
+            if store_name:
+                store_info["Store Name"] = store_name
+                print(f"   ✓ Store name: {store_name}")
+        else:
+            print("   ⚠️ Store name element not found")
+ 
+        # Step 2: Hover over the store link to trigger the popup
+        print("   🔍 Step 2: Hovering to reveal store detail popup...")
+        store_link_selector = "div[class*='store-detail--storeNameWrap']"
+        store_link_elem = page.locator(store_link_selector).first
+ 
+        if store_link_elem.count() > 0:
+            store_link_elem.hover()
+            page.wait_for_timeout(1500)
+            print("   ✓ Hovered over store element")
+        else:
+            print("   ⚠️ Store link element not found, skipping hover")
+ 
+        # Step 3: Extract all key-value rows from the popup (renders after hover)
+        print("   🔍 Step 3: Extracting popup store details...")
+ 
+        row_selectors = [
+            "div[class*='store-detail'] table tr",
+            "div[class*='storeDetail'] table tr",
+            "[class*='store-detail--detail'] tr",
+        ]
+ 
+        for row_selector in row_selectors:
+            rows = page.locator(row_selector).all()
+            if rows:
+                print(f"   ✓ Found {len(rows)} rows with: {row_selector}")
+                for row in rows:
+                    try:
+                        cols = row.locator('td').all()
                         if len(cols) >= 2:
-                            key = clean_text(cols[0].get_text()).replace(":", "").strip()
-                            value = clean_text(cols[1].get_text()).strip()
+                            key = cols[0].inner_text().strip().replace(":", "")
+                            value = cols[1].inner_text().strip()
                             if key and value:
                                 store_info[key] = value
                                 print(f"      {key}: {value}")
-                    if store_info:
+                    except:
+                        continue
+                if len(store_info) > 1:
+                    break
+ 
+        # Step 4: Fallback — read visible popup text and parse key: value lines
+        if len(store_info) <= 1:
+            print("   🔍 Step 4: Fallback — reading popup text directly...")
+            popup_selectors = [
+                "div[class*='store-detail--storePopup']",
+                "div[class*='store-detail--popup']",
+                "div[class*='storePopup']",
+                "div[class*='store-detail']:not(a)",
+            ]
+ 
+            for popup_selector in popup_selectors:
+                popup = page.locator(popup_selector).first
+                if popup.count() > 0:
+                    text = popup.inner_text().strip()
+                    if text:
+                        print(f"   ✓ Popup text ({popup_selector}):\n      {text[:200]}")
+                        for line in text.split('\n'):
+                            line = line.strip()
+                            if ':' in line:
+                                parts = line.split(':', 1)
+                                key = parts[0].strip()
+                                value = parts[1].strip()
+                                if key and value and len(key) < 50:
+                                    store_info[key] = value
+                                    print(f"      {key}: {value}")
+                    if len(store_info) > 1:
                         break
-
-        # Search 3: Text-based fallback
-        if not store_info:
-            print("   🔍 Search 3: Looking for store info in text elements...")
-            all_text = soup.get_text()
-            if 'store no' in all_text.lower():
-                print("   📝 Store info text found on page but table structure not matching")
-                containers = soup.find_all(['div', 'span'], class_=lambda x: x and any(s in str(x).lower() for s in ['store', 'seller', 'shop', 'info']))
-                for container in containers:
-                    text = container.get_text()
-                    if 'store' in text.lower() or 'seller' in text.lower():
-                        lines = [line.strip() for line in text.split('\n') if line.strip()]
-                        for i, line in enumerate(lines):
-                            if ':' in line or (i + 1 < len(lines) and line.endswith(('Store', 'no.', 'Location', 'since'))):
-                                if ':' in line:
-                                    parts = line.split(':', 1)
-                                    key = parts[0].strip()
-                                    value = parts[1].strip() if len(parts) > 1 else ""
-                                    if key and value and len(key) < 50:
-                                        store_info[key] = value
-                                        print(f"      {key}: {value}")
-
+ 
         if not store_info:
             print("   ⚠️ Could not extract store information")
-
+        else:
+            print(f"   ✅ Store info extracted: {store_info}")
+ 
     except Exception as e:
         print(f"⚠️ Store extraction error: {e}")
         import traceback
         traceback.print_exc()
-
+ 
     return store_info
 
 
