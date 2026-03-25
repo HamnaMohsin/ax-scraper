@@ -523,6 +523,7 @@ def extract_aliexpress_product(url: str) -> dict:
                                 # Fallback Method 2: Use inner_text() on container
                                 print(f"   🎯 Method 2: Using Playwright inner_text() on container...")
                                 inner_text = desc_container.inner_text(timeout=5000).strip()
+                                print("method 2:",inner_text)
                                 print(f"      Got {len(inner_text)} chars")
                                 
                                 if inner_text and len(inner_text) > 100:
@@ -539,7 +540,7 @@ def extract_aliexpress_product(url: str) -> dict:
                                     if inner_text and len(inner_text) > 100:
                                         description_text = inner_text
                                         print(f"   ✓ Text extracted after wait: {len(description_text)} chars")
-                                        print("method 2:",inner_text)
+                                        
                                     else:
                                         print(f"   ❌ FAILED: Could not extract description text")
                         
