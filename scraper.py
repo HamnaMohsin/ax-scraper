@@ -513,8 +513,8 @@ def extract_aliexpress_product(url: str) -> dict:
                                     pass
                             
                             if text_parts:
-                                description_text = ' '.join(text_parts)
-                                description_text = re.sub(r'\s+', ' ', description_text).strip()
+                                description_text1 = text_parts
+                                description_text1 = re.sub(r'\s+', ' ', description_text).strip()
                                 print("method 1:",text_parts)
                                 print(f"   ✓ Text extracted directly: {len(description_text)} chars")
                             else:
@@ -537,8 +537,8 @@ def extract_aliexpress_product(url: str) -> dict:
                                     
                                     # Try one more time
                                     inner_text = desc_container.inner_text(timeout=5000).strip()
-                                    if inner_text and len(inner_text) > 100:
-                                        description_text = inner_text
+                                    if inner_text:
+                                        description_text += inner_text
                                         print(f"   ✓ Text extracted after wait: {len(description_text)} chars")
                                         
                                     else:
@@ -555,7 +555,7 @@ def extract_aliexpress_product(url: str) -> dict:
                         print("method 3:", shadow_text)
                         # ✅ MERGE TEXT (VERY IMPORTANT)
                         # Priority-based selection
-                        description_text = shadow_text + description_text
+                        #description_text = shadow_text + description_text
                                                 
                         # ✅ REMOVE DUPLICATE SENTENCES (smart cleanup)
                         # if description_text:
