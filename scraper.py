@@ -6,73 +6,6 @@ from bs4 import BeautifulSoup
 from stem import Signal
 from stem.control import Controller
 
-def extract_description_shadow_dom(page):
-    print("   🌐 Extracting FULL Shadow DOM (no filtering)...")
-
-    description_text = ""
-    description_images = []
-
-    try:
-        data = page.evaluate("""
-        () => {
-            const result = { texts: [], images: [] };
-
-            const rootContainer = document.querySelector('#product-description > div');
-            if (!rootContainer) return result;
-
-            const shadow = rootContainer.shadowRoot;
-            if (!shadow) return result;
-
-            const walker = document.createTreeWalker(
-                shadow,
-                NodeFilter.SHOW_ELEMENT,
-                null,
-                false
-            );
-
-            let node;
-            while (node = walker.nextNode()) {
-
-                // TEXT → NO FILTERING
-                if (node.innerText) {
-                    result.texts.push(node.innerText);
-                }
-
-                // IMAGES
-                if (node.tagName === 'IMG') {
-                    let src = node.src || node.getAttribute('data-src') || node.getAttribute('data-lazy-src');
-                    if (src) {
-                        result.images.push(src);
-                    }
-                }
-            }
-
-            return result;
-        }
-        """)
-
-        # 🔥 NO set(), NO filtering
-        if data.get("texts"):
-            description_text = " ".join(data["texts"])
-            print(f"   ✅ RAW Shadow text: {len(description_text)} chars")
-
-        if data.get("images"):
-            description_images = data["images"]
-            print(f"   🖼️ RAW images: {len(description_images)}")
-
-    except Exception as e:
-        print(f"   ⚠️ Shadow DOM extraction failed: {e}")
-
-    return description_text, description_images
-
-    
-def clean_text(text: str) -> str:
-    """Clean and normalize text"""
-    if not text:
-        return ""
-    text = BeautifulSoup(text, "html.parser").get_text(" ")
-    return re.sub(r"\s+", " ", text).strip()
-
 
 def random_viewport():
     """Return random viewport size"""
@@ -106,29 +39,62 @@ def rotate_tor_circuit():
 def is_captcha_page(page) -> bool:
     """Detect CAPTCHA"""
     page_url = page.url.lower()
-    captcha_url_keywords = ["baxia", "punish", "captcha", "verify"]
-    if any(kw in page_url for kw in captcha_url_keywords):
+    if any(kw in page_url for kw in ["baxia", "punish", "captcha", "verify"]):
         return True
-    
     try:
         if page.locator("iframe[src*='recaptcha']").count() > 0:
             return True
     except:
         pass
+    return False
+
+
+def is_css_garbage(text: str) -> bool:
+    """Check if text is CSS or other garbage"""
+    # CSS indicators
+    css_keywords = [
+        '.product-description {',
+        'overflow: hidden',
+        'margin: 0;',
+        'line-height: inherit',
+        'word-break: break-word',
+        'box-sizing: content-box',
+        'list-style-type',
+        'padding-inline-start',
+        'margin-block-start',
+        'margin-block-end',
+        'margin-inline-start',
+        'margin-inline-end',
+        'vertical-align: middle',
+        'max-width:',
+        'font-family:',
+        'font-size:',
+        'font-weight:',
+        'border-radius:',
+        'background-color:',
+        '@media',
+        'display:',
+        'position:',
+        'white-space:',
+    ]
+    
+    if any(kw in text for kw in css_keywords):
+        return True
+    
+    if len(text.strip()) < 3:
+        return True
     
     return False
 
 
 def extract_title_universal(page) -> str:
-    """Extract title - try multiple selectors"""
-    
+    """Extract title"""
     print("📌 Extracting title...")
     
     title_selectors = [
-        ('[data-pl="product-title"]', "data-pl product-title"),
-        ('h1', "h1 heading"),
-        ('[class*="product-title"]', "product-title class"),
-        ('span[class*="title"]', "span title class"),
+        ('[data-pl="product-title"]', "data-pl"),
+        ('h1', "h1"),
+        ('[class*="product-title"]', "class"),
     ]
     
     for selector, desc in title_selectors:
@@ -137,19 +103,228 @@ def extract_title_universal(page) -> str:
             if elem.count() > 0:
                 title = elem.inner_text().strip()
                 if title and len(title) > 5:
-                    print(f"✅ Title ({desc}): {title[:80]}...")
+                    print(f"✅ Title: {title[:80]}...")
                     return title
         except:
             continue
     
-    print("⚠️ Could not extract title from selectors")
     return ""
 
 
+def extract_description_method0(page) -> str:
+    """
+    Method 0: Extract from regular <p> paragraphs
+    Returns content if found, or empty string if not found
+    """
+    print("   🎯 Method 0: Extracting paragraph text...")
+    
+    try:
+        all_paragraphs = page.locator('#product-description p').all()
+        print(f"      Found {len(all_paragraphs)} <p> elements")
+        
+        all_text_parts = []
+        
+        for p in all_paragraphs:
+            try:
+                txt = p.inner_text(timeout=2000).strip()
+                
+                # Filter out garbage
+                if txt and not is_css_garbage(txt):
+                    all_text_parts.append(txt)
+            except:
+                pass
+        
+        if all_text_parts:
+            combined = ' '.join(all_text_parts)
+            combined = re.sub(r'\s+', ' ', combined).strip()
+            print(f"      ✓ Extracted {len(combined)} chars")
+            return combined
+        else:
+            print(f"      ⚠️ No content found in paragraphs")
+            return ""
+    
+    except Exception as e:
+        print(f"      ❌ Error: {e}")
+        return ""
+
+
+def extract_description_shadow_dom(page) -> str:
+    """
+    Fallback: Extract from Shadow DOM with CSS filtering
+    Only used if Method 0 returns nothing
+    """
+    print("   🎯 Fallback: Shadow DOM extraction (with filtering)...")
+    
+    try:
+        data = page.evaluate("""
+        () => {
+            const result = { texts: [] };
+
+            const rootContainer = document.querySelector('#product-description > div');
+            if (!rootContainer) return result;
+
+            const shadow = rootContainer.shadowRoot;
+            if (!shadow) return result;
+
+            const walker = document.createTreeWalker(
+                shadow,
+                NodeFilter.SHOW_ELEMENT,
+                null,
+                false
+            );
+
+            let node;
+            while (node = walker.nextNode()) {
+                if (node.innerText) {
+                    result.texts.push(node.innerText);
+                }
+            }
+
+            return result;
+        }
+        """)
+
+        if data.get("texts"):
+            all_text = " ".join(data["texts"])
+            
+            # Filter CSS garbage
+            lines = all_text.split('\n')
+            filtered_lines = []
+            
+            for line in lines:
+                line = line.strip()
+                if line and not is_css_garbage(line):
+                    filtered_lines.append(line)
+            
+            if filtered_lines:
+                result = ' '.join(filtered_lines)
+                result = re.sub(r'\s+', ' ', result).strip()
+                print(f"      ✓ Extracted {len(result)} chars from Shadow DOM (filtered)")
+                return result
+        
+        print(f"      ⚠️ No content in Shadow DOM")
+        return ""
+    
+    except Exception as e:
+        print(f"      ❌ Error: {e}")
+        return ""
+
+
+def extract_description_hybrid(page) -> str:
+    """
+    HYBRID approach:
+    1. Try Method 0 (regular paragraphs)
+    2. If nothing, fall back to Shadow DOM extraction
+    3. Filter CSS garbage
+    4. Deduplicate
+    """
+    print("📝 Extracting description (Hybrid method)...")
+    
+    # Method 0 first
+    method0_result = extract_description_method0(page)
+    
+    # If Method 0 got good content, use it
+    if len(method0_result) > 500:
+        print(f"   ✅ Using Method 0 ({len(method0_result)} chars)")
+        description_text = method0_result
+    # Otherwise try Shadow DOM
+    elif len(method0_result) == 0:
+        print(f"   ⚠️ Method 0 got nothing, trying Shadow DOM...")
+        shadow_result = extract_description_shadow_dom(page)
+        description_text = shadow_result
+    else:
+        # Method 0 got something but small, combine both
+        print(f"   ℹ️ Method 0 got {len(method0_result)} chars, adding Shadow DOM...")
+        shadow_result = extract_description_shadow_dom(page)
+        if shadow_result:
+            combined = method0_result + " " + shadow_result
+            description_text = re.sub(r'\s+', ' ', combined).strip()
+        else:
+            description_text = method0_result
+    
+    # Deduplicate sentences
+    if description_text:
+        print(f"   🔄 Removing duplicates...")
+        sentences = description_text.split('. ')
+        unique_sentences = []
+        seen = set()
+        dup_count = 0
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if sentence and sentence not in seen:
+                unique_sentences.append(sentence)
+                seen.add(sentence)
+            elif sentence in seen:
+                dup_count += 1
+        
+        if dup_count > 0:
+            print(f"      ✓ Removed {dup_count} duplicate sentences")
+        
+        result = '. '.join(unique_sentences)
+        if not result.endswith('.'):
+            result += '.'
+        
+        print(f"   ✅ Final: {len(result)} chars")
+        return result
+    
+    return ""
+
+
+def extract_images_simple(page) -> list:
+    """Extract images, deduplicate"""
+    print("🖼️ Extracting images...")
+    
+    images = []
+    
+    try:
+        desc_container = page.locator('#product-description').first
+        
+        if desc_container.count() > 0:
+            imgs = desc_container.locator('img').all()
+            print(f"   Found {len(imgs)} <img> tags")
+            
+            for img in imgs:
+                try:
+                    src = img.get_attribute('src') or img.get_attribute('data-src')
+                    
+                    if src and 'alicdn.com' in src:
+                        clean_src = src.split('?')[0]
+                        
+                        if len(clean_src) > 50:
+                            images.append(clean_src)
+                except:
+                    pass
+            
+            # Deduplicate
+            unique_images = []
+            seen = set()
+            dup_count = 0
+            
+            for img in images:
+                if img not in seen:
+                    unique_images.append(img)
+                    seen.add(img)
+                else:
+                    dup_count += 1
+            
+            if dup_count > 0:
+                print(f"   ✓ Removed {dup_count} duplicate images")
+            
+            unique_images = unique_images[:20]
+            
+            print(f"   ✓ Final: {len(unique_images)} unique images")
+            
+            return unique_images
+    
+    except Exception as e:
+        print(f"   ⚠️ Error: {e}")
+    
+    return []
+
+
 def extract_aliexpress_product(url: str) -> dict:
-    """
-    Extract AliExpress product data
-    """
+    """Extract from AliExpress - HYBRID METHOD"""
     
     print(f"\n🔍 Scraping: {url}")
     
@@ -166,7 +341,7 @@ def extract_aliexpress_product(url: str) -> dict:
         print(f"\n📍 Attempt {attempt + 1}/{max_retries}")
         
         if attempt > 0:
-            print("🔄 Rotating Tor circuit...")
+            print("🔄 Rotating Tor...")
             rotate_tor_circuit()
             wait_time = 20 + (attempt * 5)
             print(f"   Waiting {wait_time}s...")
@@ -176,11 +351,7 @@ def extract_aliexpress_product(url: str) -> dict:
             browser = p.chromium.launch(
                 headless=True,
                 proxy={"server": "socks5://127.0.0.1:9050"},
-                args=[
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-dev-shm-usage',
-                    '--no-sandbox',
-                ]
+                args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
             )
             
             page = browser.new_page(
@@ -203,11 +374,10 @@ def extract_aliexpress_product(url: str) -> dict:
                     browser.close()
                     continue
                 
-                # WAIT
+                # WAIT & SCROLL
                 print("⏳ Rendering...")
                 time.sleep(8)
                 
-                # SCROLL
                 print("⏳ Scrolling...")
                 for _ in range(5):
                     page.mouse.wheel(0, random.randint(150, 300))
@@ -221,118 +391,28 @@ def extract_aliexpress_product(url: str) -> dict:
                     browser.close()
                     continue
                 
-                # EXTRACT TITLE
+                # EXTRACT
                 title = extract_title_universal(page)
-                
-                # ✅ VALIDATION: Ensure title is captured
-                if not title or len(title) == 0:
-                    print("⚠️ Title extraction failed, trying fallback...")
-                    try:
-                        page_title = page.title()
-                        if page_title and len(page_title) > 5:
-                            # Try to extract just the product name part
-                            title = page_title.split(' | ')[0] if ' | ' in page_title else page_title
-                            print(f"   ✓ Got title from page.title(): {title[:80]}")
-                    except:
-                        pass
-                
-                # ✅ GUARD: Make sure title doesn't get cleared later
                 original_title = title
-                print(f"🔐 Title backed up: {len(original_title)} chars")
+                print(f"🔐 Title backup: {len(original_title)} chars")
                 
-                # EXTRACT DESCRIPTION
-                print("📝 Extracting description...")
-                description_text = ""
-                description_images = []
-                
-                try:
-                    # Get paragraph text
-                    print("   🎯 Method 0: Extracting ALL paragraph text...")
-                    try:
-                        all_paragraphs = page.locator('#product-description p').all()
-                        all_text_parts = []
-                        
-                        for p in all_paragraphs:
-                            try:
-                                txt = p.inner_text(timeout=2000).strip()
-                                if txt and len(txt) > 2:
-                                    all_text_parts.append(txt)
-                            except:
-                                pass
-
-                        if all_text_parts:
-                            description_text = ' '.join(all_text_parts)
-                            description_text = re.sub(r'\s+', ' ', description_text).strip()
-                            print(f"   ✓ Got {len(description_text)} chars from paragraphs")
-                    except Exception as e:
-                        print(f"   ⚠️ Method 0 failed: {e}")
-                    
-                    # Get container inner text
-                    print("   🎯 Method 1: Container inner_text...")
-                    try:
-                        desc_container = page.locator('#product-description').first
-                        if desc_container.count() > 0:
-                            inner_text = desc_container.inner_text(timeout=5000).strip()
-                            if inner_text and len(inner_text) > 100:
-                                description_text = inner_text
-                                print(f"   ✓ Got {len(description_text)} chars")
-                    except Exception as e:
-                        print(f"   ⚠️ Method 1 failed: {e}")
-                    
-                    # Extract from Shadow DOM
-                    print("   🎯 Method 2: Shadow DOM extraction...")
-                    try:
-                        shadow_text, shadow_images = extract_description_shadow_dom(page)
-                        
-                        if shadow_text:
-                            combined = description_text + " " + shadow_text
-                            description_text = re.sub(r"\s+", " ", combined).strip()
-                            print(f"   ✓ Combined with shadow: {len(description_text)} chars")
-                        
-                        if shadow_images:
-                            description_images = list(set(description_images + shadow_images))
-                    except Exception as e:
-                        print(f"   ⚠️ Shadow DOM error: {e}")
-                    
-                    # Extract images
-                    print("🖼️ Extracting images...")
-                    try:
-                        desc_container = page.locator('#product-description').first
-                        if desc_container.count() > 0:
-                            imgs = desc_container.locator('img').all()
-                            for img in imgs:
-                                src = img.get_attribute('src') or img.get_attribute('data-src')
-                                if src and 'alicdn.com' in src:
-                                    clean_src = src.split('?')[0]
-                                    if len(clean_src) > 50 and clean_src not in description_images:
-                                        description_images.append(clean_src)
-                        
-                        description_images = description_images[:20]
-                        print(f"   ✓ Got {len(description_images)} images")
-                    except Exception as e:
-                        print(f"   ⚠️ Image error: {e}")
-                
-                except Exception as e:
-                    print(f"❌ Error: {e}")
-                    import traceback
-                    traceback.print_exc()
+                description_text = extract_description_hybrid(page)
+                images = extract_images_simple(page)
                 
                 browser.close()
                 
-                # ✅ RESTORE TITLE IF NEEDED
+                # Restore title if needed
                 if not title or len(title) == 0:
                     title = original_title
-                    print(f"🔐 Restored title from backup: {len(title)} chars")
                 
-                # BUILD RESULT
                 result = {
                     "title": title if isinstance(title, str) and len(title) > 0 else original_title,
                     "description_text": description_text if isinstance(description_text, str) else "",
-                    "images": description_images if isinstance(description_images, list) else [],
+                    "images": images if isinstance(images, list) else [],
                     "store_info": {}
                 }
                 
-                print(f"\n✅ FINAL RESULT:")
+                print(f"\n✅ RESULT:")
                 print(f"   Title: {len(result['title'])} chars")
                 print(f"   Description: {len(result['description_text'])} chars")
                 print(f"   Images: {len(result['images'])}")
