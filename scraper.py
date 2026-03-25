@@ -452,7 +452,7 @@ def extract_aliexpress_product(url: str) -> dict:
                             print(f"   ✓ Extracted from ALL <p>: {len(description_text)} chars")
                     except Exception as e:
                         print(f"   ⚠️ Method 0 failed: {e}")
-                    
+                    print("method 0 <p>",description_text)
                     if desc_container.count() > 0:
                         print("   ✓ Found #product-description container")
                         
@@ -515,6 +515,7 @@ def extract_aliexpress_product(url: str) -> dict:
                             if text_parts:
                                 description_text = ' '.join(text_parts)
                                 description_text = re.sub(r'\s+', ' ', description_text).strip()
+                                print("method 1:",text_parts)
                                 print(f"   ✓ Text extracted directly: {len(description_text)} chars")
                             else:
                                 print(f"   ⚠️ No text found in paragraph elements ({len(titles)} titles, {len(contents)} contents)")
@@ -527,6 +528,7 @@ def extract_aliexpress_product(url: str) -> dict:
                                 if inner_text and len(inner_text) > 100:
                                     description_text = inner_text
                                     print(f"   ✓ Text extracted via container: {len(description_text)} chars")
+                                    
                                 else:
                                     print(f"   ⚠️ Container inner_text too short ({len(inner_text)})")
                                     print(f"   ⏳ Waiting 5 more seconds...")
@@ -537,6 +539,7 @@ def extract_aliexpress_product(url: str) -> dict:
                                     if inner_text and len(inner_text) > 100:
                                         description_text = inner_text
                                         print(f"   ✓ Text extracted after wait: {len(description_text)} chars")
+                                        print("method 2:",inner_text)
                                     else:
                                         print(f"   ❌ FAILED: Could not extract description text")
                         
@@ -546,12 +549,12 @@ def extract_aliexpress_product(url: str) -> dict:
                             traceback.print_exc()
                         
                         print("   🔁 Enhancing description using Shadow DOM...")
-
+                     
                         shadow_text, shadow_images = extract_description_shadow_dom(page)
-                        
+                        print("method 3:", shadow_text)
                         # ✅ MERGE TEXT (VERY IMPORTANT)
                         # Priority-based selection
-                        #description_text = shadow_text + description_text
+                        description_text = shadow_text + description_text
                                                 
                         # ✅ REMOVE DUPLICATE SENTENCES (smart cleanup)
                         # if description_text:
