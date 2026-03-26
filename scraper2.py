@@ -498,31 +498,62 @@ def extract_aliexpress_product(url: str) -> dict:
                         print(f"   ✅ Combined (Method 0 + Method 1): {len(description_text)} chars")
 
                         # IMAGE EXTRACTION: direct locator on container
+                       # 🖼️ UNIVERSAL IMAGE EXTRACTION (Amazon + AliExpress)
                         print("   🖼️ Extracting images...")
                         all_imgs = desc_container.locator('img').all()
                         print(f"      Found {len(all_imgs)} <img> tags")
-
+                        
+                        description_images = set()  # Use set to avoid duplicates
+                        
                         for img in all_imgs:
-                            src = (img.get_attribute("src") or
-                                   img.get_attribute("data-src") or
-                                   img.get_attribute("data-lazy-src"))
-                            if src and "alicdn.com" in src:
-                                clean_src = src.split('?')[0]
-                                if clean_src not in description_images:
-                                    description_images.append(clean_src)
-
-                        # Quality filter + limit
-                        description_images = [
-                            img for img in description_images
-                            if len(img) > 50 and not any(
-                                bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100']
-                            )
-                        ][:20]
-                        print(f"   ✓ Images: {len(description_images)}")
-
-                        if description_images:
-                            for i, img_url in enumerate(description_images[:3], 1):
-                                print(f"      {i}. {img_url[:60]}...")
+                            try:
+                                # ALL possible src attributes (priority order)
+                                src_attrs = [
+                                    'src',           # Standard
+                                    'data-src',      # Lazy load 1
+                                    'data-lazy-src', # Lazy load 2
+                                    'lazy-src',      # AliExpress specific
+                                    'data-orig',     # Some CDNs
+                                ]
+                                
+                                src = None
+                                for attr in src_attrs:
+                                    src = img.get_attribute(attr)
+                                    if src and src.strip():
+                                        break
+                                
+                                if src:
+                                    # Clean URL
+                                    clean_src = src.split('?')[0].split('#')[0].strip()
+                                    
+                                    # VALID IMAGE DOMAINS (Amazon + AliExpress + Generic)
+                                    valid_domains = [
+                                        'alicdn.com', 'ae01.alicdn.com',      # AliExpress
+                                        'm.media-amazon.com',                 # Amazon
+                                        'amazon.com', 'amazonaws.com',        # Amazon CDN
+                                        'media-amazon.com',                   # Amazon
+                                    ]
+                                    
+                                    if (len(clean_src) > 40 and 
+                                        any(domain in clean_src for domain in valid_domains) and
+                                        clean_src not in description_images):
+                                        
+                                        # Quality filters - KEEP good images
+                                        bad_patterns = ['icon', 'logo', 'avatar', '20x20', '30x30', '50x50']
+                                        if not any(bad in clean_src.lower() for bad in bad_patterns):
+                                            description_images.add(clean_src)
+                                            print(f"      ✅ {clean_src[-60:]}")  # Show tail of URL
+                            except Exception as e:
+                                print(f"      ⚠️ Image error: {e}")
+                                continue
+                        
+                        # Convert to list + limit
+                        description_images = list(description_images)[:20]
+                        print(f"   ✓ Extracted {len(description_images)} images")
+                        
+                        # Show first 3
+                        for i, img_url in enumerate(description_images[:3], 1):
+                            print(f"      {i}. {img_url}")
                     else:
                         print("   ❌ #product-description not found")
 
