@@ -364,7 +364,6 @@ def assign_cat(product_id: int, db: Session = Depends(get_db)):
 
     db.commit()
     db.refresh(cat_row)
-    cat_row.category_id = str(cat_row.category_id) if cat_row.category_id is not None else None
 
     return CategoryAssignmentOut.model_validate(cat_row)
 
