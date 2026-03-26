@@ -7,18 +7,17 @@ from stem import Signal
 from stem.control import Controller
 
 def extract_compliance_info(page) -> dict:
-    """Extract using YOUR EXACT data-spm-anchor-id"""
+    """Extracts using YOUR EXACT selectors"""
     compliance = {}
-    print("📋 Extracting compliance/manufacturer info...")
-
+    
+    print("📋 Extracting compliance info...")
+    
     try:
-        # 1. Find & click compliance button (multiple strategies)
-        print("   🔍 Finding compliance trigger...")
+        # 1. Find & click compliance trigger
         triggers = [
             "h2:has-text('Product compliance')",
-            "h2:has-text('compliance')",
-            "[data-spm-anchor-id*='detail']:has-text('compliance')",
             "*:has-text('Product compliance')",
+            ".comet-v2-modal-title:has-text('Product compliance')",  # If already open
         ]
         
         clicked = False
@@ -26,7 +25,7 @@ def extract_compliance_info(page) -> dict:
             try:
                 btn = page.locator(trigger).first
                 if btn.count() > 0:
-                    print(f"   🎯 CLICKING: {trigger}")
+                    print(f"   🎯 Clicking: {trigger}")
                     btn.click(force=True, timeout=5000)
                     page.wait_for_timeout(4000)
                     clicked = True
@@ -35,56 +34,43 @@ def extract_compliance_info(page) -> dict:
                 continue
         
         if not clicked:
-            print("   ⚠️ No trigger found - trying fallback")
-            # Fallback: any link/button with compliance
-            page.locator("*:has-text('compliance')").first.click(timeout=3000)
-
-        # 2. Wait for YOUR EXACT P element to appear!
-        print("   ⏳ Waiting for YOUR exact manufacturer <p>...")
-        page.wait_for_selector("[data-spm-anchor-id*='i28.7753VPEHVPEHmx']", timeout=10000)
+            print("   ⚠️ No trigger - checking if modal already open")
         
-        # 3. EXTRACT YOUR EXACT ELEMENT
-        target_p = page.locator('p[data-spm-anchor-id*="i28.7753VPEHVPEHmx"]').first
-        if target_p.count() > 0:
-            print("   ✅ YOUR EXACT P FOUND!")
-            
-            # Get full HTML
-            html = target_p.inner_html()
-            print(f"   📄 HTML: {html[:200]}...")
-            
-            # Parse with BeautifulSoup
-            soup = BeautifulSoup(html, "html.parser")
-            
-            # Extract section name from <strong>
-            strong = soup.find('strong')
-            section_name = strong.get_text().strip() if strong else "Manufacturer Information"
-            compliance[section_name] = {}
-            
-            # Split <br> lines and parse key:value
-            br_lines = re.split(r'<br\s*/?>', html, flags=re.IGNORECASE)
-            for line in br_lines:
-                line_text = BeautifulSoup(line, "html.parser").get_text().strip()
-                if ':' in line_text and len(line_text) > 5:
-                    key, value = line_text.split(':', 1)
-                    key = key.strip()
-                    value = value.strip()
-                    if key and value:
-                        compliance[section_name][key] = value
-                        print(f"      {key}: {value}")
-        else:
-            print("   ❌ Target P not found")
-
+        # 2. Wait for YOUR EXACT P (most reliable)
+        print("   ⏳ Waiting for YOUR manufacturer P...")
+        page.wait_for_selector('p[data-spm-anchor-id*="i28.7753VPEHVPEHmx"]', timeout=8000)
+        
+        # 3. EXTRACT YOUR EXACT P
+        manufacturer_p = page.locator('p[data-spm-anchor-id*="i28.7753VPEHVPEHmx"]').first
+        html = manufacturer_p.inner_html()
+        
+        print("   ✅ YOUR P FOUND!")
+        print(f"   📄 {manufacturer_p.inner_text()[:150]}...")
+        
+        # Parse YOUR exact structure
+        soup = BeautifulSoup(html, "html.parser")
+        strong = soup.find('strong')
+        section = strong.get_text().strip() if strong else "Manufacturer information"
+        
+        compliance[section] = {}
+        br_lines = re.split(r'<br\s*/?>', html, flags=re.IGNORECASE)
+        
+        for line in br_lines:
+            line_text = BeautifulSoup(line, "html.parser").get_text().strip()
+            if ':' in line_text:
+                key, value = line_text.split(':', 1)
+                key, value = key.strip(), value.strip()
+                if key and value:
+                    compliance[section][key] = value
+                    print(f"      {key}: {value}")
+        
         # 4. Close modal
-        try:
-            page.locator(".comet-v2-modal-close").click(timeout=2000)
-        except:
-            pass
-
-        print(f"   ✅ RESULT: {compliance}")
-
+        page.locator(".comet-v2-modal-close").click(timeout=2000)
+        
     except Exception as e:
         print(f"   ❌ Error: {e}")
-
+    
+    print(f"✅ RESULT: {compliance}")
     return compliance
 def clean_text(text: str) -> str:
     """Clean and normalize text"""
