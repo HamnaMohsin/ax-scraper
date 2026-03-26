@@ -38,7 +38,7 @@ class CategoryAssignmentOut(BaseModel):
     assigned_category:      Optional[str] = None
     category_id:            Optional[str] = None
     similarity_score:       Optional[float] = None
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "coerce_numbers_to_str": True} 
 
 
 # ✅ NEW: Standalone category response (for /categorize endpoint — no product_id)
@@ -48,7 +48,7 @@ class CategoryStandaloneOut(BaseModel):
     category_id:            Optional[str] = None
     category_path:          Optional[str] = None
     similarity_score:       Optional[float] = None
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "coerce_numbers_to_str": True} 
 
 
 # ── Full joined view ───────────────────────────────────────────────────────────
@@ -69,4 +69,4 @@ class ProductFullOut(BaseModel):
     assigned_category:      Optional[str] = None
     category_id:            Optional[str] = None
     similarity_score:       Optional[float] = None
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "coerce_numbers_to_str": True} 
