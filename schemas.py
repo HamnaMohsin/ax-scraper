@@ -70,3 +70,13 @@ class ProductFullOut(BaseModel):
     category_id:            Optional[str] = None
     similarity_score:       Optional[float] = None
     model_config = {"from_attributes": True, "coerce_numbers_to_str": True} 
+
+class ManufacturerInfoOut(BaseModel):
+    store_name: str
+    store_id:   str
+    name:       Optional[str] = None
+    address:    Optional[str] = None
+    email:      Optional[str] = None
+    phone:      Optional[str] = None
+
+    model_config = {"from_attributes": True}
