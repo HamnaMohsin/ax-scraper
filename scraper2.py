@@ -402,7 +402,7 @@ def extract_aliexpress_product(url: str) -> dict:
         if attempt > 0:
             print("🔄 Rotating Tor circuit...")
             rotate_tor_circuit()
-            wait_time = 20 + (attempt * 5)
+            wait_time = 30 + (attempt * 5)
             print(f"   Waiting {wait_time}s before next attempt...")
             time.sleep(wait_time)
 
@@ -451,7 +451,7 @@ def extract_aliexpress_product(url: str) -> dict:
                     continue
 
                 print("⏳ Waiting for page to render...")
-                time.sleep(8)
+                time.sleep(12)
 
                 print("⏳ Scrolling to load images...")
                 try:
