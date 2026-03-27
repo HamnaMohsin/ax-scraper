@@ -394,7 +394,7 @@ def extract_aliexpress_product(url: str) -> dict:
         "store_info": {}
     }
 
-    max_retries = 3
+    max_retries = 5
 
     for attempt in range(max_retries):
         print(f"\n📍 Attempt {attempt + 1}/{max_retries}")
