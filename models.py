@@ -1,7 +1,7 @@
 from sqlalchemy import Column, BigInteger, Integer, String, Float, Text, JSON, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from database import Base
-
+from sqlalchemy import UniqueConstraint
 
 class ProductFetched(Base):
     __tablename__ = "product_fetched"
@@ -40,3 +40,20 @@ class CategoryAssignment(Base):
     similarity_score       = Column(Float, nullable=True)
 
     product = relationship("ProductFetched", back_populates="category")
+
+class ManufacturerInfo(Base):
+    __tablename__ = "manufacturer_info"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    store_name   = Column(String, nullable=False)
+    store_id     = Column(String, nullable=False)
+    name         = Column(String, nullable=True)
+    address      = Column(Text, nullable=True)
+    email        = Column(String, nullable=True)
+    phone        = Column(String, nullable=True)
+    website      = Column(String, nullable=True)
+    raw_data     = Column(JSON, nullable=True)   # stores full compliance_info dict
+
+    __table_args__ = (
+        UniqueConstraint("store_name", "store_id", name="uq_store_name_id"),
+    )
