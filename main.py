@@ -368,17 +368,35 @@ def assign_cat(product_id: int, db: Session = Depends(get_db)):
     return CategoryAssignmentOut.model_validate(cat_row)
 
 
-# ✅ FIXED: /categorize endpoint now uses proper response schema
-@app.post("/categorize", response_model=CategoryStandaloneOut)
-def categorize_standalone(request: CategorizeRequest):
-    """Standalone category lookup — does not touch the DB."""
-    result = assign_category(request.title, request.description)
-    return {
-        "llm_predicted_category": result.get("llm_predicted_category"),
-        "category_id":            result.get("category_id"),
-        "category_path":          result.get("category_path"),
-        "similarity_score":       result.get("similarity_score"),
-    }
+def _upsert_manufacturer(db: Session, store_info: dict, compliance_info: dict):
+    store_name = store_info.get("Store Name") or store_info.get("Name", "")
+    store_id   = store_info.get("Store no.", "")
+
+    if not store_name or not store_id:
+        return
+
+    mfr_data = compliance_info.get("Manufacturer information", {})
+
+    existing = db.query(ManufacturerInfo).filter_by(
+        store_name=store_name, store_id=store_id
+    ).first()
+
+    if existing:
+        existing.name    = mfr_data.get("Name",    existing.name)
+        existing.address = mfr_data.get("Address", existing.address)
+        existing.email   = mfr_data.get("Email",   existing.email)
+        existing.phone   = mfr_data.get("Phone",   existing.phone)
+    else:
+        db.add(ManufacturerInfo(
+            store_name = store_name,
+            store_id   = store_id,
+            name       = mfr_data.get("Name"),
+            address    = mfr_data.get("Address"),
+            email      = mfr_data.get("Email"),
+            phone      = mfr_data.get("Phone"),
+        ))
+    db.commit()
+    print(f"ManufacturerInfo upserted: {store_name} / {store_id}")
 
 
 @app.post("/export-templates")
