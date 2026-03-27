@@ -2,8 +2,8 @@ import re
 import time
 import random
 from camoufox.sync_api import Camoufox
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutErrorfrom bs4
-import BeautifulSoup
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from bs4 import BeautifulSoup
 from stem import Signal
 from stem.control import Controller
 
