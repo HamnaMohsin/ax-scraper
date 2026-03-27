@@ -1,8 +1,8 @@
 import re
 import time
 import random
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-from bs4 import BeautifulSoup
+from camoufox.sync_api import Camoufox
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutErrorfrom bs4 import BeautifulSoup
 from stem import Signal
 from stem.control import Controller
 
@@ -406,34 +406,12 @@ def extract_aliexpress_product(url: str) -> dict:
             print(f"   Waiting {wait_time}s before next attempt...")
             time.sleep(wait_time)
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                proxy={"server": "socks5://127.0.0.1:9050"},
-                args=[
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-dev-shm-usage',
-                    '--no-sandbox',
-                ]
-            )
-
-            page = browser.new_page(
-                viewport=random_viewport(),
-                user_agent=random.choice([
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                ]),
-                timezone_id=random.choice([
-                    'America/New_York',
-                    'America/Chicago',
-                    'America/Denver',
-                    'America/Los_Angeles',
-                ])
-            )
-
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            page.add_init_script("Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]})")
+        with Camoufox(
+            headless=True,
+            proxy={"server": "socks5://127.0.0.1:9050"},
+            geoip=True,
+        ) as browser:
+            page = browser.new_page()
 
             try:
                 # NAVIGATION
