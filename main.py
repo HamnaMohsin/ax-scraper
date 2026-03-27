@@ -133,6 +133,8 @@ def _upsert(db: Session, url: str, data: dict) -> ProductFetched:
 
     db.commit()
     db.refresh(product)
+    _upsert_manufacturer(db, data.get("store_info", {}), data.get("compliance_info", {}))
+
     return product
 
 
@@ -162,6 +164,7 @@ def _scrape_and_save(db: Session, url: str) -> dict:
 
     db.commit()
     db.refresh(product)
+    _upsert_manufacturer(db, data.get("store_info", {}), data.get("compliance_info", {}))
 
     return {
         "url":         url,
@@ -170,6 +173,8 @@ def _scrape_and_save(db: Session, url: str) -> dict:
         "title":       product.title,
         "description": product.description,
         "images":      product.images,
+        "store_info":   data.get("store_info", {}),
+        "compliance_info": data.get("compliance_info", {}),
     }
 
 
