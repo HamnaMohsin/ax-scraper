@@ -409,34 +409,33 @@ def extract_aliexpress_product(url: str) -> dict:
             time.sleep(wait_time)
 
         with Camoufox(
-                headless=True,
-                proxy={"server": "socks5://127.0.0.1:9050"},
-                geoip=True,
-                locale="en-US",
-            ) as browser:
-                page = browser.new_page()
-                # Add Accept-Language header
-                page.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
+            headless=True,
+            proxy={"server": "socks5://127.0.0.1:9050"},
+            geoip=True,
+            locale="en-US",
+        ) as browser:
+            page = browser.new_page()
+            page.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
 
-            try:
-                # NAVIGATION
-                print("📡 Loading page...")
-                page.goto(url, timeout=120000, wait_until="domcontentloaded")
-                time.sleep(2)
-
-                current_url = page.url
-                if current_url != url:
-                    print(f"⚠️ Redirected to: {current_url}")
-
-                if is_captcha_page(page):
-                    print("⚠️ CAPTCHA detected - rotating IP and retrying...")
-                    browser.close()
-                    continue
-
-                print("⏳ Waiting for page to render...")
-                time.sleep(12)
-
-                print("⏳ Scrolling to load images...")
+                try:
+                    # NAVIGATION
+                    print("📡 Loading page...")
+                    page.goto(url, timeout=120000, wait_until="domcontentloaded")
+                    time.sleep(2)
+    
+                    current_url = page.url
+                    if current_url != url:
+                        print(f"⚠️ Redirected to: {current_url}")
+    
+                    if is_captcha_page(page):
+                        print("⚠️ CAPTCHA detected - rotating IP and retrying...")
+                        browser.close()
+                        continue
+    
+                    print("⏳ Waiting for page to render...")
+                    time.sleep(12)
+    
+                    print("⏳ Scrolling to load images...")
                 try:
                     for _ in range(3):
                         page.mouse.wheel(0, random.randint(150, 300))
