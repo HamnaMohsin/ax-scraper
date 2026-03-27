@@ -409,33 +409,34 @@ def extract_aliexpress_product(url: str) -> dict:
             time.sleep(wait_time)
 
         with Camoufox(
-            headless=True,
-            proxy={"server": "socks5://127.0.0.1:9050"},
-            geoip=True,
-            locale="en-US",
-        ) as browser:
+                headless=True,
+                proxy={"server": "socks5://127.0.0.1:9050"},
+                geoip=True,
+                locale="en-US",
+            ) as browser:
+
             page = browser.new_page()
             page.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
 
-                try:
-                    # NAVIGATION
-                    print("📡 Loading page...")
-                    page.goto(url, timeout=120000, wait_until="domcontentloaded")
-                    time.sleep(2)
-    
-                    current_url = page.url
-                    if current_url != url:
-                        print(f"⚠️ Redirected to: {current_url}")
-    
-                    if is_captcha_page(page):
-                        print("⚠️ CAPTCHA detected - rotating IP and retrying...")
-                        browser.close()
-                        continue
-    
-                    print("⏳ Waiting for page to render...")
-                    time.sleep(12)
-    
-                    print("⏳ Scrolling to load images...")
+            try:
+                # NAVIGATION
+                print("📡 Loading page...")
+                page.goto(url, timeout=120000, wait_until="domcontentloaded")
+                time.sleep(2)
+
+                current_url = page.url
+                if current_url != url:
+                    print(f"⚠️ Redirected to: {current_url}")
+
+                if is_captcha_page(page):
+                    print("⚠️ CAPTCHA detected - rotating IP and retrying...")
+                    browser.close()
+                    continue
+
+                print("⏳ Waiting for page to render...")
+                time.sleep(12)
+
+                print("⏳ Scrolling to load images...")
                 try:
                     for _ in range(3):
                         page.mouse.wheel(0, random.randint(150, 300))
@@ -462,7 +463,6 @@ def extract_aliexpress_product(url: str) -> dict:
                 description_images = []
 
                 try:
-                    # Click description tab
                     print("   Clicking Description tab...")
                     try:
                         page.keyboard.press("Escape")
@@ -486,7 +486,6 @@ def extract_aliexpress_product(url: str) -> dict:
                     except Exception as e:
                         print(f"   ⚠️ Description tab click error: {e}")
 
-                    # METHOD 0: Extract all <p> tags inside #product-description
                     print("   🎯 Method 0: Extracting paragraph text...")
                     method0_text = ""
                     try:
@@ -508,7 +507,6 @@ def extract_aliexpress_product(url: str) -> dict:
                     except Exception as e:
                         print(f"   ⚠️ Method 0 failed: {e}")
 
-                    # METHOD 1: inner_text() on full container
                     desc_container = page.locator('#product-description').first
 
                     if desc_container.count() > 0:
@@ -519,7 +517,6 @@ def extract_aliexpress_product(url: str) -> dict:
                         method1_text = re.sub(r'\s+', ' ', method1_text).strip()
                         print(f"   ✓ Method 1: {len(method1_text)} chars")
 
-                        # Retry once if too short
                         if len(method1_text) < 100:
                             print("   ⏳ Content short, waiting 5s and retrying...")
                             page.wait_for_timeout(5000)
@@ -527,67 +524,51 @@ def extract_aliexpress_product(url: str) -> dict:
                             method1_text = re.sub(r'\s+', ' ', method1_text).strip()
                             print(f"   ✓ Method 1 after retry: {len(method1_text)} chars")
 
-                        # CONCATENATE: Method 0 + Method 1
                         parts = [t for t in [method0_text, method1_text] if t]
                         description_text = ' '.join(parts)
                         description_text = re.sub(r'\s+', ' ', description_text).strip()
                         print(f"   ✅ Combined (Method 0 + Method 1): {len(description_text)} chars")
 
-                        # IMAGE EXTRACTION: direct locator on container
-                       # 🖼️ UNIVERSAL IMAGE EXTRACTION (Amazon + AliExpress)
                         print("   🖼️ Extracting images...")
                         all_imgs = desc_container.locator('img').all()
                         print(f"      Found {len(all_imgs)} <img> tags")
-                        
-                        description_images = set()  # Use set to avoid duplicates
-                        
+
+                        description_images = set()
+
                         for img in all_imgs:
                             try:
-                                # ALL possible src attributes (priority order)
-                                src_attrs = [
-                                    'src',           # Standard
-                                    'data-src',      # Lazy load 1
-                                    'data-lazy-src', # Lazy load 2
-                                    'lazy-src',      # AliExpress specific
-                                    'data-orig',     # Some CDNs
-                                ]
-                                
+                                src_attrs = ['src', 'data-src', 'data-lazy-src', 'lazy-src', 'data-orig']
                                 src = None
                                 for attr in src_attrs:
                                     src = img.get_attribute(attr)
                                     if src and src.strip():
                                         break
-                                
+
                                 if src:
-                                    # Clean URL
                                     clean_src = src.split('?')[0].split('#')[0].strip()
-                                    
-                                    # VALID IMAGE DOMAINS (Amazon + AliExpress + Generic)
+
                                     valid_domains = [
-                                        'alicdn.com', 'ae01.alicdn.com',      # AliExpress
-                                        'm.media-amazon.com',                 # Amazon
-                                        'amazon.com', 'amazonaws.com',        # Amazon CDN
-                                        'media-amazon.com',                   # Amazon
+                                        'alicdn.com', 'ae01.alicdn.com',
+                                        'm.media-amazon.com',
+                                        'amazon.com', 'amazonaws.com',
+                                        'media-amazon.com',
                                     ]
-                                    
-                                    if (len(clean_src) > 40 and 
+
+                                    if (len(clean_src) > 40 and
                                         any(domain in clean_src for domain in valid_domains) and
                                         clean_src not in description_images):
-                                        
-                                        # Quality filters - KEEP good images
+
                                         bad_patterns = ['icon', 'logo', 'avatar', '20x20', '30x30', '50x50']
                                         if not any(bad in clean_src.lower() for bad in bad_patterns):
                                             description_images.add(clean_src)
-                                            print(f"      ✅ {clean_src[-60:]}")  # Show tail of URL
+                                            print(f"      ✅ {clean_src[-60:]}")
                             except Exception as e:
                                 print(f"      ⚠️ Image error: {e}")
                                 continue
-                        
-                        # Convert to list + limit
+
                         description_images = list(description_images)[:20]
                         print(f"   ✓ Extracted {len(description_images)} images")
-                        
-                        # Show first 3
+
                         for i, img_url in enumerate(description_images[:3], 1):
                             print(f"      {i}. {img_url}")
                     else:
@@ -595,11 +576,11 @@ def extract_aliexpress_product(url: str) -> dict:
 
                 except Exception as e:
                     print(f"⚠️ Description extraction error: {e}")
-                # ── Extract compliance/manufacturer info ──────────────────────────────
+
                 compliance_info = extract_compliance_info(page)
                 if compliance_info:
                     print(f"compliance info: {compliance_info[:80]}")
-                # SUCCESS
+
                 browser.close()
 
                 result = {
