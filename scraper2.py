@@ -359,12 +359,12 @@ def extract_title_universal(page) -> str:
     print("📌 Extracting title...")
 
     title_selectors = [
-        (title_selectors = [
         ('[data-pl="product-title"]', "data-pl product-title"),
         ('h1[class*="title"]', "h1 title class"),
         ('[class*="product-title"]', "product-title class"),
         ('[class*="ProductTitle"]', "ProductTitle class"),
         ('h1', "h1 heading"),
+        # span removed — too broad, picks up breadcrumbs
     ]
 
     for selector, desc in title_selectors:
