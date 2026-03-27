@@ -36,6 +36,18 @@ def run_migrations():
             conn.execute(text("ALTER TABLE product_refined ADD COLUMN description_marketing TEXT"))
             conn.commit()
             print("Migration: added 'description_marketing' to product_refined ✅")
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS manufacturer_info (
+                store_name TEXT NOT NULL,
+                store_id   TEXT NOT NULL,
+                name       TEXT,
+                address    TEXT,
+                email      TEXT,
+                phone      TEXT,
+                PRIMARY KEY (store_name, store_id)
+            )
+        """))
+       
 
 
 def init_db():
