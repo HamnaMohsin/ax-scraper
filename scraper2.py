@@ -359,11 +359,12 @@ def extract_title_universal(page) -> str:
     print("📌 Extracting title...")
 
     title_selectors = [
+        (title_selectors = [
         ('[data-pl="product-title"]', "data-pl product-title"),
-        ('h1', "h1 heading"),
+        ('h1[class*="title"]', "h1 title class"),
         ('[class*="product-title"]', "product-title class"),
         ('[class*="ProductTitle"]', "ProductTitle class"),
-        ('span[class*="title"]', "span title class"),
+        ('h1', "h1 heading"),
     ]
 
     for selector, desc in title_selectors:
@@ -408,11 +409,14 @@ def extract_aliexpress_product(url: str) -> dict:
             time.sleep(wait_time)
 
         with Camoufox(
-            headless=True,
-            proxy={"server": "socks5://127.0.0.1:9050"},
-            geoip=True,
-        ) as browser:
-            page = browser.new_page()
+                headless=True,
+                proxy={"server": "socks5://127.0.0.1:9050"},
+                geoip=True,
+                locale="en-US",
+            ) as browser:
+                page = browser.new_page()
+                # Add Accept-Language header
+                page.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
 
             try:
                 # NAVIGATION
