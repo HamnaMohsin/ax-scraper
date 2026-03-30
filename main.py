@@ -7,7 +7,6 @@ import os
 import asyncio
 from datetime import datetime
 from typing import Optional
-
 from fastapi import FastAPI, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -251,7 +250,6 @@ def _run_export(only_new: bool = False) -> dict:
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
-
 @app.post("/scrape")
 def scrape_full(request: ScrapeRequest, db: Session = Depends(get_db)):
     """Full pipeline: scrape → refine → categorize → save."""
@@ -259,27 +257,31 @@ def scrape_full(request: ScrapeRequest, db: Session = Depends(get_db)):
 
     results = []
     success_count = 0
-    fail_count    = 0
+    fail_count = 0
 
     for url in urls:
         try:
             data = extract_aliexpress_product(url)
-            fail_count += 1
-            results.append({"url": url, "success": False, "error": "Scrape failed or blocked"})
-            continue
+            
+            # ✅ Check if scrape succeeded BEFORE processing
+            if not data.get("title"):
+                fail_count += 1
+                results.append({"url": url, "success": False, "error": "Scrape failed or blocked"})
+                continue
 
+            # ✅ Now process the successful scrape
             product = _upsert(db, url, data)
             success_count += 1
             results.append({
-                "url":              url,
-                "success":          True,
-                "product_id":       product.product_id,
-                "original_title":   product.title,
-                "enhanced_title":   product.refined.enhanced_title   if product.refined  else None,
-                "assigned_category":product.category.assigned_category if product.category else None,
-                "category_id":      product.category.category_id       if product.category else None,
-                "similarity_score": product.category.similarity_score  if product.category else None,
-                "images":           product.images,
+                "url": url,
+                "success": True,
+                "product_id": product.product_id,
+                "original_title": product.title,
+                "enhanced_title": product.refined.enhanced_title if product.refined else None,
+                "assigned_category": product.category.assigned_category if product.category else None,
+                "category_id": product.category.category_id if product.category else None,
+                "similarity_score": product.category.similarity_score if product.category else None,
+                "images": product.images,
             })
         except Exception as e:
             fail_count += 1
