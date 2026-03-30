@@ -21,6 +21,7 @@ from schemas import (
     CategoryAssignmentOut,
     CategoryStandaloneOut,
     ProductFullOut,
+    ManufacturerInfoOut,
 )
 from scraper3       import extract_aliexpress_product
 from llm_refiner2   import refine_product
@@ -465,7 +466,7 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
 
-@app.get("/manufacturer", response_model=ManufacturerInfoOut)
+@app.get("/manufacturer", response_model=list[ManufacturerInfoOut])
 def get_manufacturers(limit: int = 10, db: Session = Depends(get_db)):
     rows = db.query(ManufacturerInfo).limit(limit).all()
     return rows
