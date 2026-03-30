@@ -265,7 +265,6 @@ def extract_aliexpress_product(url: str) -> dict:
             proxy={"server": "socks5://127.0.0.1:9050"},
             geoip=True,
             locale="en-GB",
-            timezone_id="America/New_York",
         ) as browser:
 
             page = browser.new_page()
