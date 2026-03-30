@@ -9,91 +9,169 @@ from stem.control import Controller
 
 
 def extract_compliance_info(page) -> dict:
+    """
+    Extract manufacturer and compliance info from the product compliance modal.
+    Updated to match the actual HTML structure provided.
+    """
     compliance = {}
     print("📋 Extracting compliance/manufacturer info...")
+
     try:
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(2000)
-
+        # Updated selectors to match the actual compliance button
         compliance_selectors = [
-            "span:has-text('Product compliance information')",
-            "a:has-text('Product compliance')",
-            "div:has-text('Product compliance information') >> nth=0",
-            "[data-spm-anchor-id*='i30']",
+            "h2.title--title--O6xcB1q",  # Exact match from your HTML
+            "h2[class*='title--title']",  # Fallback for dynamic classes
+            "h2:has-text('Product compliance')",  # Text-based selector
+            "[data-spm-anchor-id*='detail'] h2",  # SPM anchor fallback
+            "a[href*='compliance']",
+            "span:has-text('Product compliance')",
         ]
-
+        
         clicked = False
         for sel in compliance_selectors:
             try:
                 btn = page.locator(sel).first
                 if btn.count() > 0:
-                    btn.scroll_into_view_if_needed()
-                    page.wait_for_timeout(500)
-                    btn.click(force=True, timeout=3000)
-                    page.wait_for_timeout(4000)
-                    if page.locator(".comet-v2-modal-body").count() > 0:
-                        print(f"   ✓ Modal opened via: {sel}")
-                        clicked = True
-                        break
-                    else:
-                        print(f"   ⚠️ Clicked {sel} but modal did not open")
-            except Exception:
+                    print(f"   🔍 Trying selector: {sel}")
+                    btn.click(force=True, timeout=5000)
+                    page.wait_for_timeout(3000)  # Give modal time to fully render
+                    print(f"   ✓ Clicked compliance trigger: {sel}")
+                    clicked = True
+                    break
+            except Exception as e:
+                print(f"   ⚠️ Selector failed {sel}: {e}")
                 continue
-
+        
         if not clicked:
-            print("   ⚠️ Compliance trigger not found — skipping")
+            print("   ⚠️ No compliance button found")
             return compliance
 
-        modal = page.locator(".comet-v2-modal-body").first
+        # Wait for modal to appear with multiple selectors
+        modal_selectors = [
+            ".comet-v2-modal-body",
+            ".comet-v2-modal-content",
+            ".comet-v2-modal",
+        ]
+        
+        modal_found = False
+        for modal_sel in modal_selectors:
+            try:
+                page.wait_for_selector(modal_sel, timeout=5000)
+                modal = page.locator(modal_sel).first
+                if modal.count() > 0:
+                    print(f"   ✓ Modal found: {modal_sel}")
+                    modal_found = True
+                    break
+            except:
+                continue
+        
+        if not modal_found:
+            print("   ⚠️ Modal not found")
+            return compliance
+
+        # Get full modal HTML for comprehensive parsing
         modal_html = modal.inner_html(timeout=5000)
         soup = BeautifulSoup(modal_html, "html.parser")
+        print("   📄 Parsing modal HTML...")
 
-        for p in soup.find_all('p'):
-            raw_html = str(p)
-            strong = p.find('strong')
-            section = strong.get_text().strip() if strong else "Info"
-            lines = re.split(r'<br\s*/?>', raw_html, flags=re.IGNORECASE)
-            section_data = {}
-            for line in lines:
-                line_text = BeautifulSoup(line, "html.parser").get_text().strip()
-                if ':' in line_text:
-                    key, _, value = line_text.partition(':')
-                    key = key.strip()
-                    value = value.strip()
-                    if key and value and len(key) < 60 and key != section:
-                        section_data[key] = value
-            if section_data:
-                compliance[section] = section_data
-                print(f"   ✓ {section}: {section_data}")
-
-        # EU responsible person (outside <p> tags)
-        for p in soup.find_all('p'):
-            p.decompose()
-        eu_data = {}
-        in_eu = False
-        for line in soup.get_text("\n").split('\n'):
-            line = line.strip()
-            if 'EU responsible' in line:
-                in_eu = True
+        # Method 1: Parse all <p> tags (handles Manufacturer information perfectly)
+        p_tags = soup.find_all('p')
+        for p in p_tags:
+            text = p.get_text().strip()
+            if not text or len(text) < 10:
                 continue
-            if in_eu and ':' in line:
-                key, _, value = line.partition(':')
-                key, value = key.strip(), value.strip()
-                if key and value and len(key) < 60:
-                    eu_data[key] = value
-        if eu_data:
-            compliance['EU Responsible Person'] = eu_data
-            print(f"   ✓ EU: {eu_data}")
+                
+            # Check for section headings (strong tags)
+            strong = p.find('strong')
+            if strong:
+                heading = strong.get_text().strip()
+                print(f"   🎯 Found heading: {heading}")
+                # Parse key:value pairs after heading
+                lines = []
+                for br in p.find_all('br'):
+                    br.decompose()  # Remove <br> tags temporarily
+                content_text = p.get_text().strip()
+                
+                # Split by common separators and parse key:value
+                for line in content_text.split('\n'):
+                    line = line.strip()
+                    if ':' in line and len(line) > 5:
+                        key, _, value = line.partition(':')
+                        key = key.strip()
+                        value = value.strip()
+                        if key and value and len(key) < 60:
+                            if heading not in compliance:
+                                compliance[heading] = {}
+                            compliance[heading][key] = value
+                            print(f"      {key}: {value}")
+            else:
+                # Parse loose key:value pairs
+                for line in text.split('\n'):
+                    line = line.strip()
+                    if ':' in line and len(line) > 5:
+                        key, _, value = line.partition(':')
+                        key = key.strip()
+                        value = value.strip()
+                        if key and value and len(key) < 60 and key not in compliance:
+                            compliance[key] = value
+                            print(f"      {key}: {value}")
 
+        # Method 2: Handle EU responsible person (text outside <p> tags)
+        modal_text = soup.get_text()
+        eu_section = {}
+        current_section = None
+        
+        for line in modal_text.split('\n'):
+            line = line.strip()
+            if 'EU responsible person' in line:
+                current_section = 'EU Responsible Person'
+                eu_section = {}
+                continue
+            elif ':' in line and current_section:
+                key, _, value = line.partition(':')
+                key = key.strip()
+                value = value.strip()
+                if key and value:
+                    eu_section[key] = value
+                    print(f"   🇪🇺 EU Person - {key}: {value}")
+        
+        if eu_section:
+            compliance['EU Responsible Person'] = eu_section
+
+        # Method 3: Fallback - regex parsing of entire modal
+        if not compliance:
+            patterns = [
+                r'Name:\s*([^\n\r<]+)',
+                r'Address:\s*([^\n\r<]+)',
+                r'Email:\s*([^\n\r<]+)',
+                r'Phone:\s*([^\n\r<]+)',
+                r'Website:\s*([^\n\r<]+)',
+            ]
+            for pattern in patterns:
+                matches = re.findall(pattern, modal_html, re.IGNORECASE | re.DOTALL)
+                for match in matches:
+                    key = pattern.split(':')[0].strip().title()
+                    compliance[key] = match.strip()
+                    print(f"   🔍 Regex - {key}: {match.strip()[:50]}")
+
+        # Close modal
         try:
-            page.locator(".comet-v2-modal-close").first.click(timeout=2000)
+            close_btn = page.locator(".comet-v2-modal-close").first
+            if close_btn.count() > 0:
+                close_btn.click(timeout=2000)
+                print("   ✓ Closed modal")
         except Exception:
+            print("   ⚠️ Could not close modal")
             page.keyboard.press("Escape")
 
-        print(f"   ✅ Compliance extracted: {len(compliance)} sections")
+        print(f"   ✅ Compliance info extracted: {len(compliance)} sections")
+        for section, data in compliance.items():
+            print(f"      📋 {section}: {list(data.keys())}")
 
     except Exception as e:
-        print(f"   ❌ Compliance error: {e}")
+        print(f"   ❌ Compliance extraction error: {e}")
+        import traceback
+        traceback.print_exc()
 
     return compliance
 
