@@ -12,7 +12,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from database import get_db, init_db
-from models import ProductFetched, ProductRefined, CategoryAssignment
+from models import ProductFetched, ProductRefined, CategoryAssignment,ManufacturerInfo
 from schemas import (
     ScrapeRequest,
     CategorizeRequest,
