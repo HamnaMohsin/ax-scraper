@@ -12,9 +12,11 @@ def extract_compliance_info(page) -> dict:
     compliance = {}
     print("📋 Extracting compliance/manufacturer info...")
     try:
+        # Scroll to bottom to reveal compliance link
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
 
+        # Only text-based selectors — never h2 title
         compliance_selectors = [
             "span:has-text('Product compliance information')",
             "a:has-text('Product compliance')",
@@ -146,7 +148,7 @@ def is_captcha_page(page) -> bool:
             if page.locator(selector).count() > 0:
                 print(f"❌ CAPTCHA detected: {selector}")
                 return True
-        except Exception:
+        except:
             continue
 
     is_product_page = "aliexpress" in page_title and len(page_title) > 40
@@ -192,24 +194,19 @@ def extract_store_info_universal(page) -> dict:
                         if len(cols) >= 2:
                             key = cols[0].inner_text().strip().replace(":", "")
                             value = cols[1].inner_text().strip()
-                            # Normalize non-English keys to English
+                            # Normalize German keys to English
                             key_map = {
                                 "Shop-Nr.": "Store no.",
                                 "Standort": "Location",
                                 "Geöffnet seit": "Open since",
                                 "Naam": "Name",
                                 "Locatie": "Location",
-                                "Winkel nr.": "Store no.",
-                                "Geopend sinds": "Open since",
-                                "Numéro de la boutique": "Store no.",
-                                "Localisation": "Location",
-                                "Ouvert depuis": "Open since",
                             }
                             key = key_map.get(key, key)
                             if key and value:
                                 store_info[key] = value
                                 print(f"      {key}: {value}")
-                    except Exception:
+                    except:
                         continue
                 if len(store_info) > 1:
                     break
@@ -236,7 +233,7 @@ def extract_title_universal(page) -> str:
                 if title and len(title) > 20 and '/' not in title:
                     print(f"✅ Title ({desc}): {title[:80]}...")
                     return title
-        except Exception:
+        except:
             continue
     print("⚠️ Could not extract title")
     return ""
@@ -336,7 +333,6 @@ def extract_aliexpress_product(url: str) -> dict:
                         pass
 
                     # Method 0: <p> tags
-                    method0_text = ""
                     try:
                         all_paragraphs = page.locator('#product-description p').all()
                         parts = []
@@ -345,20 +341,21 @@ def extract_aliexpress_product(url: str) -> dict:
                                 txt = p.inner_text(timeout=2000).strip()
                                 if txt and len(txt) > 2:
                                     parts.append(txt)
-                            except Exception:
+                            except:
                                 pass
                         if parts:
                             method0_text = re.sub(r'\s+', ' ', ' '.join(parts)).strip()
                             print(f"   ✓ Method 0: {len(method0_text)} chars")
                         else:
+                            method0_text = ""
                             print("   ⚠️ Method 0: no <p> content")
                     except Exception as e:
+                        method0_text = ""
                         print(f"   ⚠️ Method 0 failed: {e}")
 
-                    # Method 1: full container inner_text
+                    # Method 1: full container
                     desc_container = page.locator('#product-description').first
                     method1_text = ""
-                    method2_text = ""
 
                     if desc_container.count() > 0:
                         print("   ✓ Found #product-description")
@@ -372,34 +369,11 @@ def extract_aliexpress_product(url: str) -> dict:
                             method1_text = re.sub(r'\s+', ' ', method1_text).strip()
                             print(f"   ✓ Method 1 retry: {len(method1_text)} chars")
 
-                        # Method 2: JS evaluate — handles deeply nested divs
-                        if len(method1_text) < 100:
-                            print("   🎯 Method 2: JS innerText evaluation...")
-                            try:
-                                js_text = page.evaluate("""
-                                    () => {
-                                        const container = document.querySelector('#product-description');
-                                        if (!container) return '';
-                                        const clone = container.cloneNode(true);
-                                        clone.querySelectorAll('img, script, style').forEach(el => el.remove());
-                                        return clone.innerText || clone.textContent || '';
-                                    }
-                                """)
-                                if js_text:
-                                    method2_text = re.sub(r'\s+', ' ', js_text).strip()
-                                    print(f"   ✓ Method 2: {len(method2_text)} chars")
-                                else:
-                                    print("   ⚠️ Method 2: empty")
-                            except Exception as e:
-                                print(f"   ⚠️ Method 2 failed: {e}")
-
-                        # Combine all methods
                         description_text = re.sub(r'\s+', ' ',
-                            ' '.join(t for t in [method0_text, method1_text, method2_text] if t)
-                        ).strip()
+                            ' '.join(t for t in [method0_text, method1_text] if t)).strip()
                         print(f"   ✅ Combined: {len(description_text)} chars")
 
-                        # Image extraction
+                        # Images
                         all_imgs = desc_container.locator('img').all()
                         print(f"      Found {len(all_imgs)} <img> tags")
                         description_images_set = set()
@@ -412,11 +386,6 @@ def extract_aliexpress_product(url: str) -> dict:
                                         break
                                 if src:
                                     clean_src = src.split('?')[0].split('#')[0].strip()
-                                    # Fix missing protocol
-                                    if clean_src.startswith('//'):
-                                        clean_src = 'https:' + clean_src
-                                    elif clean_src.startswith('/'):
-                                        clean_src = 'https://ae01.alicdn.com' + clean_src
                                     valid_domains = ['alicdn.com', 'ae01.alicdn.com',
                                                      'm.media-amazon.com', 'amazonaws.com']
                                     bad_patterns = ['icon', 'logo', 'avatar', '20x20', '50x50']
@@ -467,7 +436,7 @@ def extract_aliexpress_product(url: str) -> dict:
                 traceback.print_exc()
                 try:
                     browser.close()
-                except Exception:
+                except:
                     pass
                 continue
 
