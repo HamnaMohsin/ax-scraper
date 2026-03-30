@@ -242,225 +242,10 @@ def extract_title_universal(page) -> str:
     return ""
 
 
-def extract_description_text(page) -> tuple[str, list]:
-    """Enhanced description extraction - tries ALL methods independently"""
-    print("\n📝 === DESCRIPTION EXTRACTION DEBUG ===")
-    description_text = ""
-    description_images = []
-    all_methods_text = {}
-    
-    # Reset any modals first
-    try:
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(500)
-    except:
-        pass
-
-    # Method 0: Click description tab first
-    print("🔍 Method 0: Description tab click...")
-    try:
-        buttons = page.locator('a.comet-v2-anchor-link').all()
-        print(f"   Found {len(buttons)} anchor buttons")
-        clicked_desc = False
-        for i, btn in enumerate(buttons[:10]):  # Limit to first 10
-            try:
-                btn_text = btn.inner_text().strip().lower()
-                print(f"   Button {i}: '{btn_text[:50]}'")
-                if any(word in btn_text for word in ['description', 'product info', 'detail']):
-                    btn.scroll_into_view_if_needed()
-                    page.wait_for_timeout(300)
-                    btn.click(force=True, timeout=2000)
-                    page.wait_for_timeout(3000)
-                    print(f"   ✓ CLICKED Description tab: '{btn_text}'")
-                    clicked_desc = True
-                    break
-            except Exception as e:
-                print(f"   ⚠️ Button {i} error: {e}")
-                continue
-        
-        if not clicked_desc:
-            print("   ⚠️ No description tab found/clicked")
-    except Exception as e:
-        print(f"   ❌ Method 0 error: {e}")
-
-    # Deep scroll to description area
-    print("🔄 Deep scrolling to description...")
-    try:
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(2000)
-        page.locator('#product-description, .product-description, [class*="description"]').scroll_into_view_if_needed() if page.locator('#product-description, .product-description, [class*="description"]').count() > 0 else None
-        page.wait_for_timeout(3000)
-        print("   ✓ Deep scroll complete")
-    except Exception as e:
-        print(f"   ⚠️ Scroll error: {e}")
-
-    # Method 1: #product-description container (PRIMARY)
-    print("\n🔍 Method 1: #product-description container...")
-    method1_text = ""
-    try:
-        desc_container = page.locator('#product-description').first
-        if desc_container.count() > 0:
-            print("   ✓ Found #product-description")
-            method1_text = desc_container.inner_text(timeout=5000).strip()
-            method1_text = re.sub(r'\s+', ' ', method1_text).strip()
-            print(f"   ✓ Raw: {len(method1_text)} chars")
-            print(f"   Preview: {method1_text[:150]}...")
-        else:
-            print("   ❌ #product-description NOT found")
-    except Exception as e:
-        print(f"   ❌ Method 1 error: {e}")
-
-    all_methods_text['method1'] = method1_text
-
-    # Method 2: All <p> tags in description area
-    print("\n🔍 Method 2: All <p> tags...")
-    method2_text = ""
-    try:
-        p_selectors = [
-            '#product-description p',
-            '.product-description p', 
-            '[class*="description"] p',
-            'div[style*="description"] p'
-        ]
-        all_p_texts = []
-        for selector in p_selectors:
-            try:
-                paragraphs = page.locator(selector).all()
-                print(f"   {selector}: {len(paragraphs)} <p> tags")
-                for i, p in enumerate(paragraphs[:20]):  # Limit to 20
-                    txt = p.inner_text(timeout=1000).strip()
-                    if txt and len(txt) > 5:
-                        all_p_texts.append(txt)
-                        if i < 3:  # Show first 3
-                            print(f"     P{i+1}: {txt[:80]}...")
-            except:
-                continue
-        
-        if all_p_texts:
-            method2_text = re.sub(r'\s+', ' ', ' '.join(all_p_texts)).strip()
-            print(f"   ✓ Combined: {len(method2_text)} chars")
-        else:
-            print("   ❌ No valid <p> content")
-    except Exception as e:
-        print(f"   ❌ Method 2 error: {e}")
-    
-    all_methods_text['method2'] = method2_text
-
-    # Method 3: Full page text extraction (fallback)
-    print("\n🔍 Method 3: Full page text (fallback)...")
-    method3_text = ""
-    try:
-        full_text = page.inner_text(timeout=10000).strip()
-        # Filter to likely description content
-        lines = full_text.split('\n')
-        desc_lines = []
-        for line in lines:
-            line = line.strip()
-            if len(line) > 20 and len(line) < 500 and not any(skip in line.lower() for skip in 
-                ['aliexpress', 'free shipping', 'price', 'store', 'add to cart', 'buy now']):
-                desc_lines.append(line)
-        
-        method3_text = re.sub(r'\s+', ' ', ' '.join(desc_lines[:50])).strip()  # Limit lines
-        print(f"   ✓ Filtered: {len(method3_text)} chars")
-    except Exception as e:
-        print(f"   ❌ Method 3 error: {e}")
-    
-    all_methods_text['method3'] = method3_text
-
-    # Method 4: Specific description divs by class patterns
-    print("\n🔍 Method 4: Class pattern divs...")
-    method4_text = ""
-    try:
-        div_selectors = [
-            'div[class*="product-detail"]',
-            'div[class*="description-content"]', 
-            'div[class*="product-info"]',
-            '.html-content',
-            '[class*="detail"]'
-        ]
-        for selector in div_selectors:
-            try:
-                divs = page.locator(selector).all()[:5]  # Limit to 5
-                for div in divs:
-                    txt = div.inner_text(timeout=2000).strip()
-                    if len(txt) > 100 and len(txt) < 10000:
-                        method4_text += txt + " "
-                        print(f"   ✓ {selector}: {len(txt)} chars")
-                        break
-                if method4_text:
-                    break
-            except:
-                continue
-        method4_text = re.sub(r'\s+', ' ', method4_text).strip()
-        print(f"   Final: {len(method4_text)} chars")
-    except Exception as e:
-        print(f"   ❌ Method 4 error: {e}")
-    
-    all_methods_text['method4'] = method4_text
-
-    # COMBINE BEST RESULTS
-    print("\n🔗 Combining results...")
-    combined_parts = [t for t in all_methods_text.values() if t and len(t) > 50]
-    if combined_parts:
-        description_text = re.sub(r'\s+', ' ', ' '.join(combined_parts)).strip()
-        print(f"   ✓ COMBINED: {len(description_text)} chars")
-        print(f"   Preview: {description_text[:200]}...")
-    else:
-        print("   ❌ No valid text from any method")
-    
-    print(f"📊 Method lengths: { {k: len(v) for k,v in all_methods_text.items()} }")
-
-    # EXTRACT IMAGES (always run)
-    print("\n🖼️ Extracting images...")
-    try:
-        img_selectors = ['#product-description img', '.product-description img', '[class*="description"] img', 'img']
-        all_imgs = []
-        for selector in img_selectors:
-            imgs = page.locator(selector).all()
-            all_imgs.extend(imgs)
-            if imgs:
-                print(f"   {selector}: {len(imgs)} images")
-        
-        print(f"   Total unique images to process: {len(all_imgs)}")
-        description_images_set = set()
-        
-        for i, img in enumerate(all_imgs[:50]):  # Limit to 50
-            try:
-                src = None
-                for attr in ['src', 'data-src', 'data-lazy-src', 'lazy-src', 'srcset']:
-                    src = img.get_attribute(attr)
-                    if src and src.strip():
-                        break
-                
-                if src:
-                    clean_src = src.split('?')[0].split('#')[0].split(',')[0].strip()
-                    valid_domains = ['alicdn.com', 'ae01.alicdn.com', 'amazonaws.com']
-                    bad_patterns = ['icon', 'logo', 'avatar', '20x20', '50x50', '100x100']
-                    
-                    if (len(clean_src) > 40 and 
-                        any(d in clean_src for d in valid_domains) and
-                        not any(b in clean_src.lower() for b in bad_patterns)):
-                        
-                        description_images_set.add(clean_src)
-                        if len(description_images_set) <= 5:  # Show first 5
-                            print(f"      ✅ {clean_src[-80:]}")
-            except Exception:
-                continue
-        
-        description_images = list(description_images_set)[:20]
-        print(f"   ✅ Final: {len(description_images)} valid images")
-        
-    except Exception as e:
-        print(f"   ❌ Image extraction error: {e}")
-
-    print("✅ === DESCRIPTION EXTRACTION COMPLETE ===\n")
-    return description_text, description_images
-
-
 def extract_aliexpress_product(url: str) -> dict:
     print(f"\n🔍 Scraping: {url}")
 
-    empty_result = {"title": "", "description_text": "", "images": [], "store_info": {}, "compliance_info": {}}
+    empty_result = {"title": "", "description_text": "", "images": [], "store_info": {}}
     max_retries = 5
 
     for attempt in range(max_retries):
@@ -486,7 +271,11 @@ def extract_aliexpress_product(url: str) -> dict:
             try:
                 print("📡 Loading page...")
                 page.goto(url, timeout=120000, wait_until="domcontentloaded")
-                time.sleep(3)
+                time.sleep(2)
+
+                current_url = page.url
+                if current_url != url:
+                    print(f"⚠️ Redirected to: {current_url}")
 
                 if is_captcha_page(page):
                     print("⚠️ CAPTCHA detected — retrying...")
@@ -494,16 +283,19 @@ def extract_aliexpress_product(url: str) -> dict:
                     continue
 
                 print("⏳ Waiting for page to render...")
-                time.sleep(15)  # Increased wait
+                time.sleep(12)
 
-                # Deep scroll
+                # Deep scroll to trigger lazy loads
                 print("⏳ Deep scrolling...")
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                time.sleep(4)
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.7)")
-                time.sleep(2)
-                page.evaluate("window.scrollTo(0, 0)")
-                time.sleep(2)
+                try:
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    time.sleep(3)
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.5)")
+                    time.sleep(1)
+                    page.evaluate("window.scrollTo(0, 0)")
+                    time.sleep(1)
+                except Exception as e:
+                    print(f"⚠️ Scroll error: {e}")
 
                 if is_captcha_page(page):
                     print("⚠️ CAPTCHA after scroll — retrying...")
@@ -516,8 +308,132 @@ def extract_aliexpress_product(url: str) -> dict:
                 # EXTRACT STORE INFO
                 store_info = extract_store_info_universal(page)
 
-                # EXTRACT DESCRIPTION (NEW ENHANCED FUNCTION)
-                description_text, description_images = extract_description_text(page)
+                # EXTRACT DESCRIPTION
+                print("📝 Loading description...")
+                description_text = ""
+                description_images = []
+
+                try:
+                    # Click description tab
+                    try:
+                        page.keyboard.press("Escape")
+                        page.wait_for_timeout(300)
+                        buttons = page.locator('a.comet-v2-anchor-link').all()
+                        for btn in buttons:
+                            if 'description' in btn.inner_text().strip().lower():
+                                btn.click(force=True, timeout=2000)
+                                print("   ✓ Clicked Description tab")
+                                page.wait_for_timeout(3000)
+                                break
+                    except Exception as e:
+                        print(f"   ⚠️ Description tab error: {e}")
+
+                    # Scroll to #product-description to trigger lazy load
+                    try:
+                        page.locator('#product-description').scroll_into_view_if_needed()
+                        page.wait_for_timeout(3000)
+                    except Exception:
+                        pass
+
+                    # Method 0: <p> tags
+                    method0_text = ""
+                    try:
+                        all_paragraphs = page.locator('#product-description p').all()
+                        parts = []
+                        for p in all_paragraphs:
+                            try:
+                                txt = p.inner_text(timeout=2000).strip()
+                                if txt and len(txt) > 2:
+                                    parts.append(txt)
+                            except Exception:
+                                pass
+                        if parts:
+                            method0_text = re.sub(r'\s+', ' ', ' '.join(parts)).strip()
+                            print(f"   ✓ Method 0: {len(method0_text)} chars")
+                        else:
+                            print("   ⚠️ Method 0: no <p> content")
+                    except Exception as e:
+                        print(f"   ⚠️ Method 0 failed: {e}")
+
+                    # Method 1: full container inner_text
+                    desc_container = page.locator('#product-description').first
+                    method1_text = ""
+                    method2_text = ""
+
+                    if desc_container.count() > 0:
+                        print("   ✓ Found #product-description")
+                        method1_text = desc_container.inner_text(timeout=5000).strip()
+                        method1_text = re.sub(r'\s+', ' ', method1_text).strip()
+                        print(f"   ✓ Method 1: {len(method1_text)} chars")
+
+                        if len(method1_text) < 100:
+                            page.wait_for_timeout(5000)
+                            method1_text = desc_container.inner_text(timeout=5000).strip()
+                            method1_text = re.sub(r'\s+', ' ', method1_text).strip()
+                            print(f"   ✓ Method 1 retry: {len(method1_text)} chars")
+
+                        # Method 2: JS evaluate — handles deeply nested divs
+                        if len(method1_text) < 100:
+                            print("   🎯 Method 2: JS innerText evaluation...")
+                            try:
+                                js_text = page.evaluate("""
+                                    () => {
+                                        const container = document.querySelector('#product-description');
+                                        if (!container) return '';
+                                        const clone = container.cloneNode(true);
+                                        clone.querySelectorAll('img, script, style').forEach(el => el.remove());
+                                        return clone.innerText || clone.textContent || '';
+                                    }
+                                """)
+                                if js_text:
+                                    method2_text = re.sub(r'\s+', ' ', js_text).strip()
+                                    print(f"   ✓ Method 2: {len(method2_text)} chars")
+                                else:
+                                    print("   ⚠️ Method 2: empty")
+                            except Exception as e:
+                                print(f"   ⚠️ Method 2 failed: {e}")
+
+                        # Combine all methods
+                        description_text = re.sub(r'\s+', ' ',
+                            ' '.join(t for t in [method0_text, method1_text, method2_text] if t)
+                        ).strip()
+                        print(f"   ✅ Combined: {len(description_text)} chars")
+
+                        # Image extraction
+                        all_imgs = desc_container.locator('img').all()
+                        print(f"      Found {len(all_imgs)} <img> tags")
+                        description_images_set = set()
+                        for img in all_imgs:
+                            try:
+                                src = None
+                                for attr in ['src', 'data-src', 'data-lazy-src', 'lazy-src']:
+                                    src = img.get_attribute(attr)
+                                    if src and src.strip():
+                                        break
+                                if src:
+                                    clean_src = src.split('?')[0].split('#')[0].strip()
+                                    # Fix missing protocol
+                                    if clean_src.startswith('//'):
+                                        clean_src = 'https:' + clean_src
+                                    elif clean_src.startswith('/'):
+                                        clean_src = 'https://ae01.alicdn.com' + clean_src
+                                    valid_domains = ['alicdn.com', 'ae01.alicdn.com',
+                                                     'm.media-amazon.com', 'amazonaws.com']
+                                    bad_patterns = ['icon', 'logo', 'avatar', '20x20', '50x50']
+                                    if (len(clean_src) > 40 and
+                                            any(d in clean_src for d in valid_domains) and
+                                            not any(b in clean_src.lower() for b in bad_patterns)):
+                                        description_images_set.add(clean_src)
+                                        print(f"      ✅ {clean_src[-60:]}")
+                            except Exception:
+                                continue
+                        description_images = list(description_images_set)[:20]
+                        print(f"   ✓ {len(description_images)} images")
+                    else:
+                        print("   ❌ #product-description not found")
+
+                except Exception as e:
+                    print(f"⚠️ Description error: {e}")
 
                 # COMPLIANCE
                 compliance_info = extract_compliance_info(page)
@@ -525,25 +441,20 @@ def extract_aliexpress_product(url: str) -> dict:
                 browser.close()
 
                 result = {
-                    "title": title or "",
-                    "description_text": description_text or "",
-                    "images": description_images or [],
-                    "store_info": store_info or {},
-                    "compliance_info": compliance_info or {},
+                    "title":            title if isinstance(title, str) else "",
+                    "description_text": description_text if isinstance(description_text, str) else "",
+                    "images":           description_images if isinstance(description_images, list) else [],
+                    "store_info":       store_info if isinstance(store_info, dict) else {},
+                    "compliance_info":  compliance_info,
                 }
 
-                print(f"\n🎉 FINAL RESULT:")
-                print(f"   Title: {len(result['title'])} chars")
-                print(f"   Description: {len(result['description_text'])} chars")
-                print(f"   Images: {len(result['images'])}")
-                print(f"   Store info: {len(result['store_info']) } items")
-                print(f"✅ SUCCESS on attempt {attempt + 1}!\n")
-                
-                # Only return if we have meaningful description
-                if len(description_text) > 50:
-                    return result
-                else:
-                    print("⚠️ Description too short, retrying...\n")
+                print(f"\n🔍 DEBUG RETURN VALUES:")
+                print(f"   title: {len(result['title'])} chars")
+                print(f"   description_text: {len(result['description_text'])} chars")
+                print(f"   images: {len(result['images'])} images")
+                print(f"   store_info: {result['store_info']}")
+                print(f"✅ Extraction successful on attempt {attempt + 1}\n")
+                return result
 
             except PlaywrightTimeoutError as e:
                 print(f"⚠️ Timeout on attempt {attempt + 1}: {e}")
@@ -556,7 +467,7 @@ def extract_aliexpress_product(url: str) -> dict:
                 traceback.print_exc()
                 try:
                     browser.close()
-                except:
+                except Exception:
                     pass
                 continue
 
