@@ -265,14 +265,16 @@ def extract_aliexpress_product(url: str) -> dict:
             proxy={"server": "socks5://127.0.0.1:9050"},
             geoip=True,
             locale="en-GB",
+            timezone_id="America/New_York",
         ) as browser:
 
             page = browser.new_page()
-            page.set_extra_http_headers({"Accept-Language": "en-GB,en;q=0.9"})
+            page.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
 
             try:
                 print("📡 Loading page...")
-                page.goto(url, timeout=120000, wait_until="domcontentloaded")
+                #page.goto(url, timeout=120000, wait_until="domcontentloaded")
+                page.goto(url + "?gatewayAdapt=glo2usa", timeout=120000, wait_until="domcontentloaded")
                 time.sleep(2)
 
                 current_url = page.url
