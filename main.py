@@ -464,3 +464,8 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
+
+@app.get("/manufacturer", response_model=list[ManufacturerInfoOut])
+def get_manufacturers(limit: int = 10, db: Session = Depends(get_db)):
+    rows = db.query(ManufacturerInfo).limit(limit).all()
+    return rows
