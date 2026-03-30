@@ -161,65 +161,104 @@ def is_captcha_page(page) -> bool:
 
 
 def extract_store_info_universal(page) -> dict:
+    """Extract store info by hovering over the store element to trigger the popup."""
     store_info = {}
+ 
     print("📦 Extracting store info...")
+ 
     try:
-        store_name_elem = page.locator("span[class*='store-detail--storeName']").first
+        # Step 1: Extract store name directly from known selector (always visible)
+        print("   🔍 Step 1: Extracting store name...")
+        store_name_selector = "span[class*='store-detail--storeName']"
+        store_name_elem = page.locator(store_name_selector).first
+ 
         if store_name_elem.count() > 0:
             store_name = store_name_elem.inner_text().strip()
             if store_name:
                 store_info["Store Name"] = store_name
                 print(f"   ✓ Store name: {store_name}")
-
-        # Use mouse.move instead of hover for Camoufox compatibility
-        store_link_elem = page.locator("div[class*='store-detail--storeNameWrap']").first
+        else:
+            print("   ⚠️ Store name element not found")
+ 
+        # Step 2: Hover over the store link to trigger the popup
+        print("   🔍 Step 2: Hovering to reveal store detail popup...")
+        store_link_selector = "div[class*='store-detail--storeNameWrap']"
+        store_link_elem = page.locator(store_link_selector).first
+ 
         if store_link_elem.count() > 0:
-            store_link_elem.scroll_into_view_if_needed()
-            page.wait_for_timeout(500)
-            box = store_link_elem.bounding_box()
-            if box:
-                page.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
-                page.wait_for_timeout(2000)
-                print("   ✓ Mouse moved to store element")
-
-        for row_selector in ["div[class*='store-detail'] table tr",
-                              "div[class*='storeDetail'] table tr",
-                              "[class*='store-detail--detail'] tr"]:
+            store_link_elem.hover()
+            page.wait_for_timeout(1500)
+            print("   ✓ Hovered over store element")
+        else:
+            print("   ⚠️ Store link element not found, skipping hover")
+ 
+        # Step 3: Extract all key-value rows from the popup (renders after hover)
+        print("   🔍 Step 3: Extracting popup store details...")
+ 
+        row_selectors = [
+            "div[class*='store-detail'] table tr",
+            "div[class*='storeDetail'] table tr",
+            "[class*='store-detail--detail'] tr",
+        ]
+ 
+        for row_selector in row_selectors:
             rows = page.locator(row_selector).all()
             if rows:
-                print(f"   ✓ Found {len(rows)} rows")
+                print(f"   ✓ Found {len(rows)} rows with: {row_selector}")
                 for row in rows:
                     try:
                         cols = row.locator('td').all()
                         if len(cols) >= 2:
                             key = cols[0].inner_text().strip().replace(":", "")
                             value = cols[1].inner_text().strip()
-                            # Normalize non-English keys to English
-                            key_map = {
-                                "Shop-Nr.": "Store no.",
-                                "Standort": "Location",
-                                "Geöffnet seit": "Open since",
-                                "Naam": "Name",
-                                "Locatie": "Location",
-                                "Winkel nr.": "Store no.",
-                                "Geopend sinds": "Open since",
-                                "Numéro de la boutique": "Store no.",
-                                "Localisation": "Location",
-                                "Ouvert depuis": "Open since",
-                            }
-                            key = key_map.get(key, key)
                             if key and value:
                                 store_info[key] = value
                                 print(f"      {key}: {value}")
-                    except Exception:
+                    except:
                         continue
                 if len(store_info) > 1:
                     break
-
-        print(f"   ✅ Store info: {store_info}")
+ 
+        # Step 4: Fallback — read visible popup text and parse key: value lines
+        if len(store_info) <= 1:
+            print("   🔍 Step 4: Fallback — reading popup text directly...")
+            popup_selectors = [
+                "div[class*='store-detail--storePopup']",
+                "div[class*='store-detail--popup']",
+                "div[class*='storePopup']",
+                "div[class*='store-detail']:not(a)",
+            ]
+ 
+            for popup_selector in popup_selectors:
+                popup = page.locator(popup_selector).first
+                if popup.count() > 0:
+                    text = popup.inner_text().strip()
+                    if text:
+                        print(f"   ✓ Popup text ({popup_selector}):\n      {text[:200]}")
+                        for line in text.split('\n'):
+                            line = line.strip()
+                            if ':' in line:
+                                parts = line.split(':', 1)
+                                key = parts[0].strip()
+                                value = parts[1].strip()
+                                if key and value and len(key) < 50:
+                                    store_info[key] = value
+                                    print(f"      {key}: {value}")
+                    if len(store_info) > 1:
+                        break
+ 
+        if not store_info:
+            print("   ⚠️ Could not extract store information")
+        else:
+            print(f"   ✅ Store info extracted: {store_info}")
+ 
     except Exception as e:
         print(f"⚠️ Store extraction error: {e}")
+        import traceback
+        traceback.print_exc()
+ 
     return store_info
+
 
 
 def extract_title_universal(page) -> str:
