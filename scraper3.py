@@ -310,6 +310,9 @@ def extract_aliexpress_product(url: str) -> dict:
                 # EXTRACT STORE INFO
                 store_info = extract_store_info_universal(page)
 
+                # COMPLIANCE
+                compliance_info = extract_compliance_info(page)
+
                 # EXTRACT DESCRIPTION
                 print("📝 Loading description...")
                 description_text = ""
@@ -437,8 +440,7 @@ def extract_aliexpress_product(url: str) -> dict:
                 except Exception as e:
                     print(f"⚠️ Description error: {e}")
 
-                # COMPLIANCE
-                compliance_info = extract_compliance_info(page)
+                
 
                 browser.close()
 
