@@ -39,13 +39,6 @@ COMPLIANCE_TRIGGER_SELECTORS = [
     "[data-spm-anchor-id*='i30']",
 ]
 
-TITLE_SELECTORS = [
-    ('[data-pl="product-title"]',  "data-pl product-title"),
-    ('h1[class*="title"]',         "h1 title class"),        # kept from v1
-    ('[class*="product-title"]',   "product-title class"),
-    ('[class*="ProductTitle"]',    "ProductTitle class"),
-    ('h1',                         "h1 heading"),
-]
 
 STORE_ROW_SELECTORS = [
     "div[class*='store-detail'] table tr",
@@ -163,21 +156,31 @@ def is_captcha_page(page) -> bool:
 # Extractors
 # ---------------------------------------------------------------------------
 
-def extract_title(page) -> str:
-    """Try multiple selectors to extract the product title."""
+def extract_title_universal(page) -> str:
+    """Extract title - try multiple selectors"""
+
     print("📌 Extracting title...")
-    for selector, desc in TITLE_SELECTORS:
+
+    title_selectors = [
+        ('[data-pl="product-title"]', "data-pl product-title"),
+        ('h1', "h1 heading"),
+        ('[class*="product-title"]', "product-title class"),
+        ('[class*="ProductTitle"]', "ProductTitle class"),
+        ('span[class*="title"]', "span title class"),
+    ]
+
+    for selector, desc in title_selectors:
         try:
             elem = page.locator(selector).first
             if elem.count() > 0:
                 title = elem.inner_text().strip()
-                # Must be substantial and not a breadcrumb fragment
-                if title and len(title) > 20 and "/" not in title:
-                    print(f"   ✅ Title ({desc}): {title[:80]}...")
+                if title and len(title) > 10:
+                    print(f"✅ Title ({desc}): {title[:80]}...")
                     return title
-        except Exception:
+        except:
             continue
-    print("   ⚠️  Could not extract title")
+
+    print("⚠️ Could not extract title")
     return ""
 
 
