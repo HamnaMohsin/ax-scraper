@@ -265,16 +265,16 @@ def extract_title_universal(page) -> str:
     print("📌 Extracting title...")
     title_selectors = [
         ('[data-pl="product-title"]', "data-pl product-title"),
-        ('[class*="product-title"]', "product-title class"),
-        ('[class*="ProductTitle"]', "ProductTitle class"),
-        ('h1', "h1 heading"),
+        # ('[class*="product-title"]', "product-title class"),
+        # ('[class*="ProductTitle"]', "ProductTitle class"),
+        # ('h1', "h1 heading"),
     ]
     for selector, desc in title_selectors:
         try:
             elem = page.locator(selector).first
             if elem.count() > 0:
                 title = elem.inner_text().strip()
-                if title and len(title) > 20 and '/' not in title:
+                if title and len(title) > 20 : # and '/' not in title:
                     print(f"✅ Title ({desc}): {title[:80]}...")
                     return title
         except Exception:
