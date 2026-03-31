@@ -538,7 +538,7 @@ def extract_aliexpress_product(url: str) -> dict:
         ) as browser:
 
             page = browser.new_page()
-            page.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
+            page.set_extra_http_headers({"Accept-Language": "en-US,en;q=1.0"})
 
             try:
                 # --- Navigation ---
@@ -575,7 +575,7 @@ def extract_aliexpress_product(url: str) -> dict:
                     continue
 
                 # --- Data extraction ---
-                title           = extract_title(page)
+                title = extract_title_universal(page)
                 store_info      = extract_store_info(page)
                 compliance_info = extract_compliance_info(page)
                 description_text, description_images = extract_description(page)
