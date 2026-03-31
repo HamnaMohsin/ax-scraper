@@ -265,16 +265,16 @@ def extract_title_universal(page) -> str:
     print("📌 Extracting title...")
     title_selectors = [
         ('[data-pl="product-title"]', "data-pl product-title"),
-        # ('[class*="product-title"]', "product-title class"),
-        # ('[class*="ProductTitle"]', "ProductTitle class"),
-        # ('h1', "h1 heading"),
+        ('[class*="product-title"]', "product-title class"),
+        ('[class*="ProductTitle"]', "ProductTitle class"),
+        ('h1', "h1 heading"),
     ]
     for selector, desc in title_selectors:
         try:
             elem = page.locator(selector).first
             if elem.count() > 0:
                 title = elem.inner_text().strip()
-                if title and len(title) > 20 : # and '/' not in title:
+                if title and len(title) > 20 and '/' not in title:
                     print(f"✅ Title ({desc}): {title[:80]}...")
                     return title
         except Exception:
@@ -300,20 +300,19 @@ def extract_aliexpress_product(url: str) -> dict:
             time.sleep(wait_time)
 
         with Camoufox(
-                headless=True,
-                proxy={"server": "socks5://127.0.0.1:9050"},
-                geoip=True,
-            ) as browser:
-                # Create a context and set the AliExpress 'Global' cookie
-                context = browser.new_context()
-                context = browser.new_context(
-                    viewport={'width': 1920, 'height': 1080},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                )
-                page = context.new_page()
-                
-                # Use the same URL but the cookie will prevent the /de/ redirect
-                page.goto(url + "?gatewayAdapt=glo2usa", timeout=120000)
+            headless=True,
+            proxy={"server": "socks5://127.0.0.1:9050"},
+            geoip=True,
+            locale="en-GB",
+        ) as browser:
+
+            page = browser.new_page()
+            page.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
+
+            try:
+                print("📡 Loading page...")
+                #page.goto(url, timeout=120000, wait_until="domcontentloaded")
+                page.goto(url + "?gatewayAdapt=glo2usa", timeout=120000, wait_until="domcontentloaded")
                 time.sleep(2)
 
                 current_url = page.url
