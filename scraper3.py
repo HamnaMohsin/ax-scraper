@@ -299,20 +299,23 @@ def extract_aliexpress_product(url: str) -> dict:
             print(f"   Waiting {wait_time}s...")
             time.sleep(wait_time)
 
-        with Camoufox(
-            headless=True,
-            proxy={"server": "socks5://127.0.0.1:9050"},
-            geoip=True,
-            locale="en-GB",
-        ) as browser:
-
-            page = browser.new_page()
-            page.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
-
-            try:
-                print("📡 Loading page...")
-                #page.goto(url, timeout=120000, wait_until="domcontentloaded")
-                page.goto(url + "?gatewayAdapt=glo2usa", timeout=120000, wait_until="domcontentloaded")
+       with Camoufox(
+                headless=True,
+                proxy={"server": "socks5://127.0.0.1:9050"},
+                geoip=True,
+            ) as browser:
+                # Create a context and set the AliExpress 'Global' cookie
+                context = browser.new_context(locale="en-US")
+                context.add_cookies([{
+                    'name': 'aep_usuc_f',
+                    'value': 'site=glo&region=US&b_locale=en_US&currency=USD',
+                    'domain': '.aliexpress.com',
+                    'path': '/'
+                }])
+                page = context.new_page()
+                
+                # Use the same URL but the cookie will prevent the /de/ redirect
+                page.goto(url + "?gatewayAdapt=glo2usa", timeout=120000)
                 time.sleep(2)
 
                 current_url = page.url
