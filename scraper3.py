@@ -32,11 +32,23 @@ CAPTCHA_SELECTORS      = [
 ]
 BLOCK_TITLE_KEYWORDS   = ["verify", "access", "denied", "blocked", "challenge"]
 
+# ---------------------------------------------------------------------------
+# Constants — add Dutch/multilingual compliance trigger text
+# ---------------------------------------------------------------------------
+
 COMPLIANCE_TRIGGER_SELECTORS = [
+    # English
     "span:has-text('Product compliance information')",
     "a:has-text('Product compliance')",
     "div:has-text('Product compliance information') >> nth=0",
     "[data-spm-anchor-id*='i30']",
+    # Dutch (nl locale)
+    "span:has-text('Productnalevingsinformatie')",
+    "a:has-text('Productnaleving')",
+    "div:has-text('Productnalevingsinformatie') >> nth=0",
+    # Generic fallback — any element whose text contains "compliance" or "naleving"
+    "span:has-text('compliance')",
+    "span:has-text('naleving')",
 ]
 
 
@@ -354,11 +366,10 @@ def extract_compliance_info(page) -> dict:
 
     return compliance
 
-
 def extract_description(page) -> tuple[str, list[str]]:
     """
-    Click the Description tab, scroll to the container, then extract text
-    via three progressively deeper methods and collect image URLs.
+    Click the Description tab, scroll to the container, then extract text.
+    Handles both inline content and lazy-loaded <iframe> descriptions.
     Returns (description_text, image_url_list).
     """
     description_text   = ""
@@ -387,7 +398,86 @@ def extract_description(page) -> tuple[str, list[str]]:
         except Exception:
             pass
 
-        # Method 0 — individual <p> tags (fastest, most precise)
+        desc_container = page.locator("#product-description").first
+        if desc_container.count() == 0:
+            print("   ❌ #product-description container not found")
+            return description_text, description_images
+
+        print("   ✓ Found #product-description container")
+
+        # ── NEW: check for a lazy iframe inside the container ──────────────
+        iframe_elem = desc_container.locator("iframe").first
+        if iframe_elem.count() > 0:
+            print("   🖼️  Found iframe inside description — waiting for it to load...")
+            # Give the iframe time to load its src
+            try:
+                iframe_elem.scroll_into_view_if_needed()
+                page.wait_for_timeout(5000)
+
+                # Resize iframe to full height so all content renders
+                page.evaluate("""
+                    () => {
+                        const iframes = document.querySelectorAll('#product-description iframe');
+                        iframes.forEach(f => {
+                            f.style.height = '10000px';
+                            f.removeAttribute('height');
+                        });
+                    }
+                """)
+                page.wait_for_timeout(2000)
+
+                frame = iframe_elem.content_frame()
+                if frame:
+                    # Wait for body to have content
+                    try:
+                        frame.wait_for_selector("body", timeout=8000)
+                    except Exception:
+                        pass
+
+                    # Extract text from iframe body
+                    iframe_text = frame.evaluate("""
+                        () => {
+                            const clone = document.body.cloneNode(true);
+                            clone.querySelectorAll('img, script, style').forEach(n => n.remove());
+                            return clone.innerText || clone.textContent || '';
+                        }
+                    """)
+                    if iframe_text:
+                        description_text = normalise_whitespace(iframe_text)
+                        print(f"   ✅ iframe text: {len(description_text)} chars")
+
+                    # Extract images from iframe
+                    seen: set[str] = set()
+                    for img in frame.locator("img").all():
+                        try:
+                            src = None
+                            for attr in ["src", "data-src", "data-lazy-src", "lazy-src", "data-orig"]:
+                                src = img.get_attribute(attr)
+                                if src and src.strip():
+                                    break
+                            if not src:
+                                continue
+                            clean_src = fix_image_url(src.split("?")[0].split("#")[0])
+                            if (
+                                len(clean_src) > 40
+                                and any(d in clean_src for d in VALID_IMAGE_DOMAINS)
+                                and not any(b in clean_src.lower() for b in BAD_IMAGE_PATTERNS)
+                                and clean_src not in seen
+                            ):
+                                seen.add(clean_src)
+                                print(f"      ✅ {clean_src[-60:]}")
+                        except Exception:
+                            continue
+                    description_images = list(seen)[:20]
+                    print(f"   ✅ {len(description_images)} iframe description images")
+                    return description_text, description_images
+                else:
+                    print("   ⚠️  Could not access iframe content_frame — may be cross-origin")
+            except Exception as exc:
+                print(f"   ⚠️  iframe extraction failed: {exc}")
+        # ── END iframe block ───────────────────────────────────────────────
+
+        # Method 0 — individual <p> tags
         method0_text = ""
         try:
             parts = []
@@ -406,97 +496,230 @@ def extract_description(page) -> tuple[str, list[str]]:
         except Exception as exc:
             print(f"   ⚠️  Method 0 failed: {exc}")
 
-        desc_container = page.locator("#product-description").first
-        method1_text   = ""
-        method2_text   = ""
+        method1_text = ""
+        method2_text = ""
 
-        if desc_container.count() > 0:
-            print("   ✓ Found #product-description container")
-
-            # Method 1 — inner_text() on the whole container
-            try:
+        # Method 1 — inner_text() on the whole container
+        try:
+            method1_text = normalise_whitespace(
+                desc_container.inner_text(timeout=5000).strip()
+            )
+            print(f"   ✓ Method 1 (inner_text): {len(method1_text)} chars")
+            if len(method1_text) < 100:
+                print("   ⏳ Short content — waiting 5s and retrying...")
+                page.wait_for_timeout(5000)
                 method1_text = normalise_whitespace(
                     desc_container.inner_text(timeout=5000).strip()
                 )
-                print(f"   ✓ Method 1 (inner_text): {len(method1_text)} chars")
-                if len(method1_text) < 100:
-                    print("   ⏳ Short content — waiting 5s and retrying...")
-                    page.wait_for_timeout(5000)
-                    method1_text = normalise_whitespace(
-                        desc_container.inner_text(timeout=5000).strip()
-                    )
-                    print(f"   ✓ Method 1 retry: {len(method1_text)} chars")
+                print(f"   ✓ Method 1 retry: {len(method1_text)} chars")
+        except Exception as exc:
+            print(f"   ⚠️  Method 1 failed: {exc}")
+
+        # Method 2 — JS evaluate
+        if len(method1_text) < 100:
+            try:
+                js_text = page.evaluate("""
+                    () => {
+                        const el = document.querySelector('#product-description');
+                        if (!el) return '';
+                        const clone = el.cloneNode(true);
+                        clone.querySelectorAll('img, script, style').forEach(n => n.remove());
+                        return clone.innerText || clone.textContent || '';
+                    }
+                """)
+                if js_text:
+                    method2_text = normalise_whitespace(js_text)
+                    print(f"   ✓ Method 2 (JS evaluate): {len(method2_text)} chars")
+                else:
+                    print("   ⚠️  Method 2: empty result")
             except Exception as exc:
-                print(f"   ⚠️  Method 1 failed: {exc}")
+                print(f"   ⚠️  Method 2 failed: {exc}")
 
-            # Method 2 — JS evaluate (handles deeply-nested / shadow-DOM divs)
-            if len(method1_text) < 100:
-                try:
-                    js_text = page.evaluate("""
-                        () => {
-                            const el = document.querySelector('#product-description');
-                            if (!el) return '';
-                            const clone = el.cloneNode(true);
-                            clone.querySelectorAll('img, script, style').forEach(n => n.remove());
-                            return clone.innerText || clone.textContent || '';
-                        }
-                    """)
-                    if js_text:
-                        method2_text = normalise_whitespace(js_text)
-                        print(f"   ✓ Method 2 (JS evaluate): {len(method2_text)} chars")
-                    else:
-                        print("   ⚠️  Method 2: empty result")
-                except Exception as exc:
-                    print(f"   ⚠️  Method 2 failed: {exc}")
+        texts = [t for t in [method0_text, method1_text, method2_text] if t]
+        if texts:
+            texts.sort(key=len, reverse=True)
+            combined = texts[0]
+            for extra in texts[1:]:
+                if extra and extra not in combined:
+                    combined = combined + " " + extra
+            description_text = normalise_whitespace(combined)
+        print(f"   ✅ Final description: {len(description_text)} chars")
 
-            # Combine — deduplicate by preferring the longest non-redundant text
-            texts = [t for t in [method0_text, method1_text, method2_text] if t]
-            if texts:
-                # Use the longest result as the canonical version; append any
-                # unique content from the others that isn't already a substring.
-                texts.sort(key=len, reverse=True)
-                combined = texts[0]
-                for extra in texts[1:]:
-                    if extra and extra not in combined:
-                        combined = combined + " " + extra
-                description_text = normalise_whitespace(combined)
-            print(f"   ✅ Final description: {len(description_text)} chars")
-
-            # --- Image extraction ---
-            all_imgs = desc_container.locator("img").all()
-            print(f"   🖼️  Found {len(all_imgs)} <img> elements")
-            seen: set[str] = set()
-            for img in all_imgs:
-                try:
-                    src = None
-                    for attr in ["src", "data-src", "data-lazy-src", "lazy-src", "data-orig"]:
-                        src = img.get_attribute(attr)
-                        if src and src.strip():
-                            break
-                    if not src:
-                        continue
-                    clean_src = fix_image_url(src.split("?")[0].split("#")[0])
-                    if (
-                        len(clean_src) > 40
-                        and any(d in clean_src for d in VALID_IMAGE_DOMAINS)
-                        and not any(b in clean_src.lower() for b in BAD_IMAGE_PATTERNS)
-                        and clean_src not in seen
-                    ):
-                        seen.add(clean_src)
-                        print(f"      ✅ {clean_src[-60:]}")
-                except Exception:
+        # Image extraction from main container
+        all_imgs = desc_container.locator("img").all()
+        print(f"   🖼️  Found {len(all_imgs)} <img> elements")
+        seen = set()
+        for img in all_imgs:
+            try:
+                src = None
+                for attr in ["src", "data-src", "data-lazy-src", "lazy-src", "data-orig"]:
+                    src = img.get_attribute(attr)
+                    if src and src.strip():
+                        break
+                if not src:
                     continue
+                clean_src = fix_image_url(src.split("?")[0].split("#")[0])
+                if (
+                    len(clean_src) > 40
+                    and any(d in clean_src for d in VALID_IMAGE_DOMAINS)
+                    and not any(b in clean_src.lower() for b in BAD_IMAGE_PATTERNS)
+                    and clean_src not in seen
+                ):
+                    seen.add(clean_src)
+                    print(f"      ✅ {clean_src[-60:]}")
+            except Exception:
+                continue
 
-            description_images = list(seen)[:20]
-            print(f"   ✅ {len(description_images)} description images collected")
-        else:
-            print("   ❌ #product-description container not found")
+        description_images = list(seen)[:20]
+        print(f"   ✅ {len(description_images)} description images collected")
 
     except Exception as exc:
         print(f"⚠️  Description extraction error: {exc}")
         traceback.print_exc()
 
     return description_text, description_images
+# def extract_description(page) -> tuple[str, list[str]]:
+#     """
+#     Click the Description tab, scroll to the container, then extract text
+#     via three progressively deeper methods and collect image URLs.
+#     Returns (description_text, image_url_list).
+#     """
+#     description_text   = ""
+#     description_images: list[str] = []
+
+#     print("📝 Extracting description...")
+
+#     try:
+#         # Click the Description anchor tab
+#         try:
+#             page.keyboard.press("Escape")
+#             page.wait_for_timeout(300)
+#             for btn in page.locator("a.comet-v2-anchor-link").all():
+#                 if "description" in btn.inner_text().strip().lower():
+#                     btn.click(force=True, timeout=2000)
+#                     print("   ✓ Clicked Description tab")
+#                     page.wait_for_timeout(DESC_LOAD_WAIT * 1000)
+#                     break
+#         except Exception as exc:
+#             print(f"   ⚠️  Description tab click error: {exc}")
+
+#         # Scroll to container to trigger lazy load
+#         try:
+#             page.locator("#product-description").scroll_into_view_if_needed()
+#             page.wait_for_timeout(DESC_LOAD_WAIT * 1000)
+#         except Exception:
+#             pass
+
+#         # Method 0 — individual <p> tags (fastest, most precise)
+#         method0_text = ""
+#         try:
+#             parts = []
+#             for p in page.locator("#product-description p").all():
+#                 try:
+#                     txt = p.inner_text(timeout=2000).strip()
+#                     if txt and len(txt) > 2:
+#                         parts.append(txt)
+#                 except Exception:
+#                     pass
+#             if parts:
+#                 method0_text = normalise_whitespace(" ".join(parts))
+#                 print(f"   ✓ Method 0 (<p> tags): {len(method0_text)} chars")
+#             else:
+#                 print("   ⚠️  Method 0: no <p> content found")
+#         except Exception as exc:
+#             print(f"   ⚠️  Method 0 failed: {exc}")
+
+#         desc_container = page.locator("#product-description").first
+#         method1_text   = ""
+#         method2_text   = ""
+
+#         if desc_container.count() > 0:
+#             print("   ✓ Found #product-description container")
+
+#             # Method 1 — inner_text() on the whole container
+#             try:
+#                 method1_text = normalise_whitespace(
+#                     desc_container.inner_text(timeout=5000).strip()
+#                 )
+#                 print(f"   ✓ Method 1 (inner_text): {len(method1_text)} chars")
+#                 if len(method1_text) < 100:
+#                     print("   ⏳ Short content — waiting 5s and retrying...")
+#                     page.wait_for_timeout(5000)
+#                     method1_text = normalise_whitespace(
+#                         desc_container.inner_text(timeout=5000).strip()
+#                     )
+#                     print(f"   ✓ Method 1 retry: {len(method1_text)} chars")
+#             except Exception as exc:
+#                 print(f"   ⚠️  Method 1 failed: {exc}")
+
+#             # Method 2 — JS evaluate (handles deeply-nested / shadow-DOM divs)
+#             if len(method1_text) < 100:
+#                 try:
+#                     js_text = page.evaluate("""
+#                         () => {
+#                             const el = document.querySelector('#product-description');
+#                             if (!el) return '';
+#                             const clone = el.cloneNode(true);
+#                             clone.querySelectorAll('img, script, style').forEach(n => n.remove());
+#                             return clone.innerText || clone.textContent || '';
+#                         }
+#                     """)
+#                     if js_text:
+#                         method2_text = normalise_whitespace(js_text)
+#                         print(f"   ✓ Method 2 (JS evaluate): {len(method2_text)} chars")
+#                     else:
+#                         print("   ⚠️  Method 2: empty result")
+#                 except Exception as exc:
+#                     print(f"   ⚠️  Method 2 failed: {exc}")
+
+#             # Combine — deduplicate by preferring the longest non-redundant text
+#             texts = [t for t in [method0_text, method1_text, method2_text] if t]
+#             if texts:
+#                 # Use the longest result as the canonical version; append any
+#                 # unique content from the others that isn't already a substring.
+#                 texts.sort(key=len, reverse=True)
+#                 combined = texts[0]
+#                 for extra in texts[1:]:
+#                     if extra and extra not in combined:
+#                         combined = combined + " " + extra
+#                 description_text = normalise_whitespace(combined)
+#             print(f"   ✅ Final description: {len(description_text)} chars")
+
+#             # --- Image extraction ---
+#             all_imgs = desc_container.locator("img").all()
+#             print(f"   🖼️  Found {len(all_imgs)} <img> elements")
+#             seen: set[str] = set()
+#             for img in all_imgs:
+#                 try:
+#                     src = None
+#                     for attr in ["src", "data-src", "data-lazy-src", "lazy-src", "data-orig"]:
+#                         src = img.get_attribute(attr)
+#                         if src and src.strip():
+#                             break
+#                     if not src:
+#                         continue
+#                     clean_src = fix_image_url(src.split("?")[0].split("#")[0])
+#                     if (
+#                         len(clean_src) > 40
+#                         and any(d in clean_src for d in VALID_IMAGE_DOMAINS)
+#                         and not any(b in clean_src.lower() for b in BAD_IMAGE_PATTERNS)
+#                         and clean_src not in seen
+#                     ):
+#                         seen.add(clean_src)
+#                         print(f"      ✅ {clean_src[-60:]}")
+#                 except Exception:
+#                     continue
+
+#             description_images = list(seen)[:20]
+#             print(f"   ✅ {len(description_images)} description images collected")
+#         else:
+#             print("   ❌ #product-description container not found")
+
+#     except Exception as exc:
+#         print(f"⚠️  Description extraction error: {exc}")
+#         traceback.print_exc()
+
+#     return description_text, description_images
 
 
 # ---------------------------------------------------------------------------
