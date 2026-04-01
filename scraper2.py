@@ -1,10 +1,7 @@
 import re
 import time
-import random
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
-from stem import Signal
-from stem.control import Controller
 
 
 def clean_text(text: str) -> str:
@@ -14,570 +11,297 @@ def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def random_delay(min_seconds: float = 1, max_seconds: float = 3):
-    time.sleep(random.uniform(min_seconds, max_seconds))
-
-
-def random_viewport():
-    viewports = [
-        {'width': 1366, 'height': 768},
-        {'width': 1920, 'height': 1080},
-        {'width': 1440, 'height': 900},
-        {'width': 1280, 'height': 720},
-    ]
-    return random.choice(viewports)
-
-
-def rotate_tor_circuit():
-    try:
-        with Controller.from_port(port=9051) as controller:
-            controller.authenticate()
-            controller.signal(Signal.NEWNYM)
-            print("   Waiting 15s for new Tor circuit...")
-            for i in range(15):
-                time.sleep(1)
-                if i % 5 == 4:
-                    print(f"   ... {15 - i - 1}s remaining")
-        print("✅ Tor circuit rotated - new IP acquired")
-        return True
-    except Exception as e:
-        print(f"⚠️ Could not rotate Tor circuit: {e}")
-        return False
-
-
-def is_captcha_page(page) -> bool:
-    page_url = page.url.lower()
-    page_title = page.title().lower()
-
-    captcha_url_keywords = ["baxia", "punish", "captcha", "verify", "_____tmd_____"]
-    if any(kw in page_url for kw in captcha_url_keywords):
-        print("❌ CAPTCHA detected in URL")
-        return True
-
-    captcha_selectors = [
-        "iframe[src*='recaptcha']",
-        ".baxia-punish",
-        "#captcha-verify",
-        "[id*='captcha']",
-        "iframe[src*='geetest']",
-        "[class*='captcha']",
-    ]
-
-    for selector in captcha_selectors:
-        try:
-            if page.locator(selector).count() > 0:
-                print(f"❌ CAPTCHA detected: {selector}")
-                return True
-        except:
-            continue
-
-    is_product_page = "aliexpress" in page_title and len(page_title) > 40
-    block_title_keywords = ["verify", "access", "denied", "blocked", "challenge"]
-    if not is_product_page and any(kw in page_title for kw in block_title_keywords):
-        print("❌ Block page detected from title")
-        return True
-
-    return False
-
-
-def debug_screenshot(page, label: str):
-    """Save a debug screenshot with a label."""
-    try:
-        path = f"/tmp/debug_{label}.png"
-        page.screenshot(path=path, full_page=False)
-        print(f"   📸 Screenshot saved: {path}")
-    except Exception as e:
-        print(f"   ⚠️ Screenshot failed: {e}")
-
-
-def slow_scroll_to_bottom(page, steps: int = 8):
-    """Slowly scroll down the page to trigger lazy-loaded content."""
-    print("   🖱️ Slow-scrolling page to trigger lazy loads...")
-    for i in range(steps):
-        page.mouse.wheel(0, random.randint(300, 500))
-        time.sleep(random.uniform(0.4, 0.8))
-    page.evaluate("window.scrollTo(0, 0)")
-    time.sleep(1)
-
-
-def wait_for_description_section(page, timeout_ms: int = 15000) -> bool:
+def extract_store_info_popover(page) -> dict:
     """
-    Try to wait for the description section to appear using multiple selectors.
-    Returns True if found.
+    Extract store info DIRECTLY from DOM (no hover needed)
     """
-    description_selectors = [
-        "#product-description",
-        "[id*='description']",
-        "[class*='product-description']",
-        "[class*='productDescription']",
-        "[class*='detail-desc']",
-        "[class*='detailDesc']",
-        "div[class*='description--wrap']",
-        "div[class*='descriptionModule']",
-    ]
-
-    for sel in description_selectors:
-        try:
-            page.wait_for_selector(sel, timeout=timeout_ms)
-            print(f"   ✅ Description container found: {sel}")
-            return True
-        except:
-            continue
-
-    print("   ⚠️ No description container found with known selectors")
-    return False
-
-
-def click_description_tab(page) -> bool:
-    """
-    Try multiple strategies to click the Description tab/anchor.
-    Returns True if successfully clicked.
-    """
-    print("   🖱️ Attempting to click Description tab...")
-
-    # Strategy 1: comet-v2-anchor-link buttons
-    try:
-        buttons = page.locator('a.comet-v2-anchor-link').all()
-        for btn in buttons:
-            text = btn.inner_text().strip().lower()
-            if 'description' in text or 'beschrijving' in text or 'descripción' in text:
-                btn.scroll_into_view_if_needed()
-                time.sleep(0.5)
-                btn.click(force=True, timeout=3000)
-                print(f"   ✅ Strategy 1: Clicked anchor tab '{text}'")
-                return True
-    except Exception as e:
-        print(f"   ⚠️ Strategy 1 failed: {e}")
-
-    # Strategy 2: Any tab/button containing 'description' text
-    try:
-        desc_tab = page.locator(
-            "a:has-text('Description'), button:has-text('Description'), "
-            "a:has-text('Beschrijving'), a:has-text('Descripción')"
-        ).first
-        if desc_tab.count() > 0:
-            desc_tab.scroll_into_view_if_needed()
-            time.sleep(0.5)
-            desc_tab.click(force=True, timeout=3000)
-            print("   ✅ Strategy 2: Clicked description tab by text")
-            return True
-    except Exception as e:
-        print(f"   ⚠️ Strategy 2 failed: {e}")
-
-    # Strategy 3: Scroll to #product-description directly (no click needed)
-    try:
-        target = page.locator("#product-description, [id*='description']").first
-        if target.count() > 0:
-            target.scroll_into_view_if_needed()
-            print("   ✅ Strategy 3: Scrolled directly to description section")
-            time.sleep(2)
-            return True
-    except Exception as e:
-        print(f"   ⚠️ Strategy 3 failed: {e}")
-
-    # Strategy 4: Use JS scroll to bottom (description usually at bottom)
-    try:
-        print("   🔃 Strategy 4: JS scroll to bottom of page...")
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        time.sleep(3)
-        page.evaluate("window.scrollTo(0, 0)")
-        time.sleep(1)
-        return False  # Didn't click a tab but attempted scroll
-    except Exception as e:
-        print(f"   ⚠️ Strategy 4 failed: {e}")
-
-    return False
-
-
-def extract_description_text(page) -> tuple[str, list]:
-    """
-    Extract description text and images with multiple fallback strategies.
-    Returns (description_text, image_urls).
-    """
-    print("\n📝 Extracting description...")
-    description_text = ""
-    description_images = []
-
-    # --- Click the description tab first ---
-    page.keyboard.press("Escape")
-    page.wait_for_timeout(300)
-    clicked = click_description_tab(page)
-
-    # Wait longer after click for content to hydrate
-    wait_after_click = 6000 if clicked else 3000
-    print(f"   ⏳ Waiting {wait_after_click}ms for description to load...")
-    page.wait_for_timeout(wait_after_click)
-
-    # --- Wait for container to appear ---
-    found = wait_for_description_section(page, timeout_ms=12000)
-    if not found:
-        debug_screenshot(page, "no_description_container")
-
-    # Extra scroll to trigger lazy images inside description
-    try:
-        desc_area = page.locator(
-            "#product-description, [class*='product-description'], [class*='descriptionModule']"
-        ).first
-        if desc_area.count() > 0:
-            desc_area.scroll_into_view_if_needed()
-            page.wait_for_timeout(2000)
-            # Scroll through it slowly
-            for _ in range(4):
-                page.mouse.wheel(0, 400)
-                page.wait_for_timeout(500)
-            page.wait_for_timeout(3000)  # Wait for lazy images after scroll
-            print("   ✅ Scrolled through description area")
-    except Exception as e:
-        print(f"   ⚠️ Description scroll error: {e}")
-
-    # --- Try all known container selectors ---
-    container_selectors = [
-        "#product-description",
-        "[class*='product-description--wrap']",
-        "[class*='productDescription']",
-        "[class*='description--content']",
-        "[class*='detail-desc']",
-        "[class*='descriptionModule']",
-        "[class*='description--wrap']",
-        "div[id*='description']",
-    ]
-
-    for sel in container_selectors:
-        try:
-            container = page.locator(sel).first
-            if container.count() == 0:
-                continue
-
-            print(f"   🔍 Trying container: {sel}")
-
-            # Method A: Extract <p> tags
-            paragraphs = container.locator("p").all()
-            para_parts = []
-            for p in paragraphs:
-                try:
-                    txt = p.inner_text(timeout=2000).strip()
-                    if txt and len(txt) > 2:
-                        para_parts.append(txt)
-                except:
-                    pass
-
-            if para_parts:
-                text_from_p = " ".join(para_parts)
-                text_from_p = re.sub(r"\s+", " ", text_from_p).strip()
-                print(f"   ✅ Method A (<p> tags): {len(text_from_p)} chars")
-                description_text = text_from_p
-
-            # Method B: inner_text() of full container
-            method_b = container.inner_text(timeout=6000).strip()
-            method_b = re.sub(r"\s+", " ", method_b).strip()
-            print(f"   ✅ Method B (inner_text): {len(method_b)} chars")
-
-            # If Method B is richer, use it
-            if len(method_b) > len(description_text):
-                description_text = method_b
-
-            # If still short, wait more and retry once
-            if len(description_text) < 100:
-                print("   ⏳ Content too short, waiting 6s and retrying...")
-                page.wait_for_timeout(6000)
-                retry_text = container.inner_text(timeout=6000).strip()
-                retry_text = re.sub(r"\s+", " ", retry_text).strip()
-                print(f"   ✅ After retry: {len(retry_text)} chars")
-                if len(retry_text) > len(description_text):
-                    description_text = retry_text
-
-            # --- Extract images from this container ---
-            print("   🖼️ Extracting description images...")
-            imgs = container.locator("img").all()
-            print(f"      Found {len(imgs)} <img> tags in container")
-
-            for img in imgs:
-                src = (
-                    img.get_attribute("src") or
-                    img.get_attribute("data-src") or
-                    img.get_attribute("data-lazy-src") or
-                    img.get_attribute("data-original")
-                )
-                if src and "alicdn.com" in src:
-                    clean_src = src.split("?")[0]
-                    if clean_src not in description_images:
-                        description_images.append(clean_src)
-
-            if description_text:
-                break  # Got content, stop trying other selectors
-
-        except Exception as e:
-            print(f"   ⚠️ Container {sel} error: {e}")
-            continue
-
-    # --- Last resort: grab ALL page text near 'description' keyword ---
-    if not description_text:
-        print("   🆘 Last resort: Searching all page text for description-like content...")
-        debug_screenshot(page, "last_resort_description")
-        try:
-            # Dump all text from page body and look for substantive content
-            full_text = page.inner_text("body")
-            # Heuristic: find large blocks of text (>200 chars between newlines)
-            lines = [l.strip() for l in full_text.split('\n') if len(l.strip()) > 80]
-            if lines:
-                description_text = " ".join(lines[:20])  # Take first 20 long lines
-                description_text = re.sub(r"\s+", " ", description_text).strip()
-                print(f"   ✅ Last resort extracted: {len(description_text)} chars")
-        except Exception as e:
-            print(f"   ⚠️ Last resort failed: {e}")
-
-    # --- Filter images ---
-    description_images = [
-        img for img in description_images
-        if len(img) > 50 and not any(
-            bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100']
-        )
-    ][:20]
-
-    print(f"\n   📊 Description result: {len(description_text)} chars, {len(description_images)} images")
-    return description_text, description_images
-
-
-def extract_store_info_universal(page) -> dict:
     store_info = {}
-    print("📦 Extracting store info...")
+    print("📦 Extracting store info from popover...")
+    
+    # STRATEGY 1: Direct extraction from common store containers
+    print("🔍 Strategy 1: Direct store info extraction...")
+    store_selectors = [
+        '[class*="store-detail"]',
+        '[class*="storeInfo"]'
+    ]
+    
     try:
-        print("   🔍 Step 1: Extracting store name...")
-        store_name_selector = "span[class*='store-detail--storeName']"
-        store_name_elem = page.locator(store_name_selector).first
-        if store_name_elem.count() > 0:
-            store_name = store_name_elem.inner_text().strip()
-            if store_name:
-                store_info["Store Name"] = store_name
-                print(f"   ✓ Store name: {store_name}")
-        else:
-            print("   ⚠️ Store name element not found")
-
-        print("   🔍 Step 2: Hovering to reveal store detail popup...")
-        store_link_selector = "div[class*='store-detail--storeNameWrap']"
-        store_link_elem = page.locator(store_link_selector).first
-        if store_link_elem.count() > 0:
-            store_link_elem.hover()
-            page.wait_for_timeout(1500)
-            print("   ✓ Hovered over store element")
-        else:
-            print("   ⚠️ Store link element not found, skipping hover")
-
-        print("   🔍 Step 3: Extracting popup store details...")
-        row_selectors = [
-            "div[class*='store-detail'] table tr",
-            "div[class*='storeDetail'] table tr",
-            "[class*='store-detail--detail'] tr",
-        ]
-        for row_selector in row_selectors:
-            rows = page.locator(row_selector).all()
-            if rows:
-                print(f"   ✓ Found {len(rows)} rows with: {row_selector}")
-                for row in rows:
-                    try:
-                        cols = row.locator('td').all()
-                        if len(cols) >= 2:
-                            key = cols[0].inner_text().strip().replace(":", "")
-                            value = cols[1].inner_text().strip()
-                            if key and value:
-                                store_info[key] = value
-                                print(f"      {key}: {value}")
-                    except:
-                        continue
-                if len(store_info) > 1:
-                    break
-
-        if len(store_info) <= 1:
-            print("   🔍 Step 4: Fallback — reading popup text directly...")
-            popup_selectors = [
-                "div[class*='store-detail--storePopup']",
-                "div[class*='store-detail--popup']",
-                "div[class*='storePopup']",
-                "div[class*='store-detail']:not(a)",
-            ]
-            for popup_selector in popup_selectors:
-                popup = page.locator(popup_selector).first
-                if popup.count() > 0:
-                    text = popup.inner_text().strip()
-                    if text:
-                        print(f"   ✓ Popup text ({popup_selector}):\n      {text[:200]}")
-                        for line in text.split('\n'):
-                            line = line.strip()
-                            if ':' in line:
-                                parts = line.split(':', 1)
-                                key = parts[0].strip()
-                                value = parts[1].strip()
-                                if key and value and len(key) < 50:
+        html = page.content()
+        soup = BeautifulSoup(html, "html.parser")
+        
+        for selector in store_selectors:
+            elements = soup.select(selector)
+            for elem in elements:
+                text = clean_text(elem.get_text())
+                if any(word in text.lower() for word in ['store', 'seller', 'china', 'since', 'location']):
+                    # Extract key-value pairs
+                    lines = [line.strip() for line in text.split('\n') if ':' in line and line.strip()]
+                    for line in lines:
+                        if ':' in line:
+                            parts = line.split(':', 1)
+                            if len(parts) == 2:
+                                key = clean_text(parts[0]).replace(":", "").strip()
+                                value = clean_text(parts[1]).strip()
+                                if key and value:
                                     store_info[key] = value
-                    if len(store_info) > 1:
-                        break
-
-        print(f"   ✅ Store info extracted: {store_info}")
+    
+        if store_info:
+            print(f"✅ Store info direct: {store_info}")
+            return store_info
+            
     except Exception as e:
-        print(f"⚠️ Store extraction error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"⚠️ Strategy 1 failed: {e}")
+    
+    # STRATEGY 2: Seller points list
+    print("🔍 Strategy 2: Seller points...")
+    try:
+        html = page.content()
+        soup = BeautifulSoup(html, "html.parser")
+        seller_points = soup.select('.seo-sellpoints--sellerPoint--RcmFO_y, [class*="seller"], [class*="storeName"]')
+        
+        for point in seller_points:
+            text = clean_text(point.get_text())
+            if any(word in text.lower() for word in ['store', 'seller']) and len(text) > 10:
+                store_info['Store Name'] = text
+                break
+    except Exception as e:
+        print(f"⚠️ Strategy 2 failed: {e}")
+    
+    # STRATEGY 3: Store link text
+    print("🔍 Strategy 3: Store link...")
+    try:
+        store_links = page.locator('a[href*="store"], [class*="store"][title]').all()
+        for link in store_links:
+            title = link.get_attribute('title') or link.inner_text()
+            if title and 'store' in title.lower():
+                store_info['Store Name'] = clean_text(title)
+                break
+    except:
+        pass
+    
+    if store_info:
+        print(f"✅ Store info found: {store_info}")
+    else:
+        print("⚠️ Could not extract store info")
+        
     return store_info
 
 
-def extract_title_universal(page) -> str:
-    print("📌 Extracting title...")
-    title_selectors = [
-        ('[data-pl="product-title"]', "data-pl product-title"),
-        ('h1', "h1 heading"),
-        ('[class*="product-title"]', "product-title class"),
-        ('[class*="ProductTitle"]', "ProductTitle class"),
-        ('span[class*="title"]', "span title class"),
-    ]
-    for selector, desc in title_selectors:
-        try:
-            elem = page.locator(selector).first
-            if elem.count() > 0:
-                title = elem.inner_text().strip()
-                if title and len(title) > 10:
-                    print(f"✅ Title ({desc}): {title[:80]}...")
-                    return title
-        except:
-            continue
-    print("⚠️ Could not extract title")
-    return ""
-
-
 def extract_aliexpress_product(url: str) -> dict:
-    print(f"\n🔍 Scraping: {url}")
+    print(f"🔍 Scraping: {url}")
 
     empty_result = {
         "title": "",
         "description_text": "",
         "images": [],
+        "store_name": "",
         "store_info": {}
     }
 
-    max_retries = 3
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            viewport={'width': 1366, 'height': 768},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            locale='en-US'
+        )
+        page = context.new_page()
 
-    for attempt in range(max_retries):
-        print(f"\n📍 Attempt {attempt + 1}/{max_retries}")
-
-        if attempt > 0:
-            print("🔄 Rotating Tor circuit...")
-            rotate_tor_circuit()
-            wait_time = 20 + (attempt * 5)
-            print(f"   Waiting {wait_time}s before next attempt...")
-            time.sleep(wait_time)
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                proxy={"server": "socks5://127.0.0.1:9050"},
-                args=[
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-dev-shm-usage',
-                    '--no-sandbox',
-                ]
-            )
-
-            page = browser.new_page(
-                viewport=random_viewport(),
-                user_agent=random.choice([
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                ]),
-                timezone_id=random.choice([
-                    'America/New_York', 'America/Chicago',
-                    'America/Denver', 'America/Los_Angeles',
-                ])
-            )
-
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            page.add_init_script("Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]})")
-
+        try:
+            print("⏳ Loading page...")
+            page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            
+            # More reliable load wait
             try:
-                print("📡 Loading page...")
-                page.goto(url, timeout=120000, wait_until="domcontentloaded")
-                time.sleep(2)
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except:
+                print("⚠️ Network idle timeout, using domcontentloaded...")
+                page.wait_for_load_state("domcontentloaded", timeout=5000)
+            
+            time.sleep(3)
 
-                current_url = page.url
-                if current_url != url:
-                    print(f"⚠️ Redirected to: {current_url}")
-
-                if is_captcha_page(page):
-                    print("⚠️ CAPTCHA detected - rotating IP and retrying...")
-                    browser.close()
-                    continue
-
-                # ✅ Wait for networkidle so JS-rendered content settles
-                print("⏳ Waiting for network idle...")
-                try:
-                    page.wait_for_load_state("networkidle", timeout=20000)
-                    print("   ✅ Network idle reached")
-                except:
-                    print("   ⚠️ Network idle timeout - continuing anyway")
-
-                # ✅ Extra wait for JS hydration
-                print("⏳ Waiting 5s for JS hydration...")
-                time.sleep(5)
-
-                # ✅ Slow scroll to trigger all lazy-loaded content
-                slow_scroll_to_bottom(page, steps=10)
-
-                # ✅ Wait again after scroll
-                print("⏳ Waiting 3s after scroll...")
-                time.sleep(3)
-
-                if is_captcha_page(page):
-                    print("⚠️ CAPTCHA after scroll - rotating IP and retrying...")
-                    browser.close()
-                    continue
-
-                debug_screenshot(page, f"attempt_{attempt + 1}_after_scroll")
-
-                # EXTRACT TITLE
-                title = extract_title_universal(page)
-
-                # EXTRACT STORE INFO
-                store_info = extract_store_info_universal(page)
-
-                # EXTRACT DESCRIPTION (improved)
-                description_text, description_images = extract_description_text(page)
-
-                browser.close()
-
-                result = {
-                    "title": title if isinstance(title, str) else "",
-                    "description_text": description_text if isinstance(description_text, str) else "",
-                    "images": description_images if isinstance(description_images, list) else [],
-                    "store_info": store_info if isinstance(store_info, dict) else {}
-                }
-
-                print(f"\n🔍 DEBUG RETURN VALUES:")
-                print(f"   title: {len(result['title'])} chars")
-                print(f"   description_text: {len(result['description_text'])} chars")
-                print(f"   images: {len(result['images'])} images")
-                print(f"   store_info: {result['store_info']}")
-
-                # ✅ Only count as success if we got meaningful content
-                if result["title"] and (result["description_text"] or result["store_info"]):
-                    print(f"✅ Extraction successful on attempt {attempt + 1}\n")
-                    return result
-                else:
-                    print(f"⚠️ Extraction incomplete on attempt {attempt + 1}, retrying...\n")
-                    continue
-
-            except PlaywrightTimeoutError as e:
-                print(f"⚠️ Timeout on attempt {attempt + 1}: {e}")
-                browser.close()
-                continue
-
+            # -----------------------
+            # TITLE
+            # -----------------------
+            print("📝 Extracting title...")
+            try:
+                title_selectors = [
+                    '[data-pl="product-title"]',
+                    'h1[data-spm-anchor-id]',
+                    '.product-title-text',
+                    '[class*="product-title"]'
+                ]
+                
+                title = ""
+                for selector in title_selectors:
+                    try:
+                        elem = page.locator(selector).first
+                        if elem.count() > 0:
+                            title = elem.inner_text(timeout=5000).strip()
+                            if title and len(title) > 10:
+                                break
+                    except:
+                        continue
+                        
+                print(f"✅ Title: {title[:80]}...")
             except Exception as e:
-                print(f"❌ Error on attempt {attempt + 1}: {e}")
-                import traceback
-                traceback.print_exc()
-                try:
-                    browser.close()
-                except:
-                    pass
-                continue
+                print(f"❌ Title extraction failed: {e}")
+                title = ""
 
-    print(f"❌ Failed after {max_retries} attempts")
-    return empty_result
+            # -----------------------
+            # STORE INFO (RELIABLE)
+            # -----------------------
+            store_info = extract_store_info_popover(page)
+
+            # -----------------------
+            # HUMAN-LIKE SCROLLING
+            # -----------------------
+            print("⏳ Human-like scrolling...")
+            for i in range(12):
+                page.evaluate(f"window.scrollBy(0, {400 + i*50})")
+                time.sleep(0.6 + i*0.1)
+            time.sleep(2)
+
+            # -----------------------
+            # DESCRIPTION (CAPTURE ALL)
+            # -----------------------
+            print("📝 Extracting description...")
+            description_text = ""
+            description_html = ""
+            all_descriptions = []
+
+            desc_selectors = [
+                '#product-description',                    # Main desc
+                '[class*="detailmodule"]',                 # Your modules ✅
+                '.product-detail__description',            # Alt layout
+                '[id*="description"], [class*="desc"]'     # Catch-all
+            ]
+            
+            for selector in desc_selectors:
+                try:
+                    page.wait_for_selector(selector, timeout=8000)
+                    locators = page.locator(selector)
+                    count = locators.count()
+                    print(f"🔍 Found {count} desc blocks for {selector}")
+                    
+                    for i in range(min(count, 15)):  # Check MORE blocks
+                        try:
+                            block = locators.nth(i)
+                            html = block.inner_html(timeout=3000)
+                            soup_block = BeautifulSoup(html, "html.parser")
+                            
+                            # Remove junk but KEEP ALL content
+                            for tag in soup_block(["script", "style", "iframe", "svg"]):
+                                tag.decompose()
+                            
+                            text = soup_block.get_text(" ", strip=True)
+                            
+                            # Keep ANY substantial block
+                            if len(text) > 80:  # Lowered threshold
+                                all_descriptions.append({
+                                    'text': text,
+                                    'html': html,
+                                    'length': len(text)
+                                })
+                                print(f"   📄 Block {i}: {len(text)} chars")
+                        except:
+                            continue
+                            
+                except Exception as e:
+                    print(f"   ⚠️ Selector {selector} failed")
+                    continue
+
+            # Combine ALL descriptions
+            if all_descriptions:
+                all_descriptions.sort(key=lambda x: x['length'], reverse=True)
+                description_text = " ".join([d['text'] for d in all_descriptions[:5]])
+                description_html = all_descriptions[0]['html']
+                print(f"✅ Combined description: {len(description_text)} chars from {len(all_descriptions)} blocks")
+
+            # -----------------------
+            # IMAGES (COMPREHENSIVE)
+            # -----------------------
+            print("🖼️ Extracting images...")
+            all_images = set()
+
+            # 1. Gallery & Large images
+            gallery_selectors = [
+                'img[src*="alicdn"]',                      # All alicdn
+                '.detail-desc-decorate-image',             # Your images ✅
+                '.detailmodule_image img',                 # Module images ✅
+            ]
+
+            for selector in gallery_selectors:
+                try:
+                    imgs = page.locator(selector).all(max_items=60)
+                    for img in imgs:
+                        src = (img.get_attribute("src") or 
+                              img.get_attribute("data-src") or 
+                              img.get_attribute("data-lazy-src"))
+                        
+                        if src and ("alicdn.com" in src or "ae01.alicdn.com" in src) and len(src) > 40:
+                            clean_src = src.split('?')[0].split('|')[0]
+                            all_images.add(clean_src)
+                except:
+                    continue
+
+            # 2. Description images (ALL)
+            if description_html:
+                soup_desc = BeautifulSoup(description_html, "html.parser")
+                for img in soup_desc.find_all("img"):
+                    src = (img.get("src") or img.get("data-src") or img.get("data-lazy-src"))
+                    if src and ("alicdn.com" in src or "ae01.alicdn.com" in src):
+                        clean_src = src.split('?')[0].split('|')[0]
+                        all_images.add(clean_src)
+
+            # 3. Page-wide backup search
+            try:
+                page_html = page.content()
+                soup_page = BeautifulSoup(page_html, "html.parser")
+                for img in soup_page.find_all("img", src=re.compile(r"alicdn")):
+                    src = img.get("src") or img.get("data-src")
+                    if src and len(src) > 40:
+                        clean_src = src.split('?')[0].split('|')[0]
+                        all_images.add(clean_src)
+            except:
+                pass
+
+            # Filter & limit
+            images = list(all_images)
+            # Remove tiny previews/icons
+            images = [img for img in images 
+                     if not any(x in img.lower() for x in ["50x50", "icon", "logo", "avatar", "100x100"])]
+            
+            images = images[:30]  # Top 30 highest quality
+            print(f"✅ Images: {len(images)} (found {len(all_images)} total)")
+
+            browser.close()
+            
+            return {
+                "title": clean_text(title),
+                "description_text": clean_text(description_text),
+                "images": images,
+                "store_info": store_info
+            }
+
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                browser.close()
+            except:
+                pass
+            return empty_result
+
+
+# # Test function
+# if __name__ == "__main__":
+#     url = "https://www.aliexpress.com/item/1005010735189221.html"
+#     result = extract_aliexpress_product(url)
+#     print("\n" + "="*50)
+#     print("FINAL RESULT:")
+#     print(f"Title: {result['title'][:100]}...")
+#     print(f"Description: {len(result['description_text'])} chars")
+#     print(f"Images: {len(result['images'])}")
+#     print(f"Store: {result['store_info']}")
