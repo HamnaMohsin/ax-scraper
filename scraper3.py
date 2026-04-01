@@ -32,10 +32,6 @@ CAPTCHA_SELECTORS      = [
 ]
 BLOCK_TITLE_KEYWORDS   = ["verify", "access", "denied", "blocked", "challenge"]
 
-# ---------------------------------------------------------------------------
-# Constants — add Dutch/multilingual compliance trigger text
-# ---------------------------------------------------------------------------
-
 COMPLIANCE_TRIGGER_SELECTORS = [
     # English
     "span:has-text('Product compliance information')",
@@ -46,11 +42,22 @@ COMPLIANCE_TRIGGER_SELECTORS = [
     "span:has-text('Productnalevingsinformatie')",
     "a:has-text('Productnaleving')",
     "div:has-text('Productnalevingsinformatie') >> nth=0",
-    # Generic fallback — any element whose text contains "compliance" or "naleving"
+    # German (de locale)
+    "span:has-text('Produktkonformitätsinformationen')",
+    "a:has-text('Produktkonformität')",
+    # French (fr locale)
+    "span:has-text('Informations de conformité')",
+    "a:has-text('Conformité du produit')",
+    # Spanish (es locale)
+    "span:has-text('Información de cumplimiento')",
+    "a:has-text('Cumplimiento del producto')",
+    # Generic fallback — partial text matches
     "span:has-text('compliance')",
     "span:has-text('naleving')",
+    "span:has-text('conformité')",
+    "span:has-text('Konformität')",
+    "a:has-text('compliance')",
 ]
-
 
 STORE_ROW_SELECTORS = [
     "div[class*='store-detail'] table tr",
@@ -169,8 +176,7 @@ def is_captcha_page(page) -> bool:
 # ---------------------------------------------------------------------------
 
 def extract_title_universal(page) -> str:
-    """Extract title - try multiple selectors"""
-
+    """Extract title - try multiple selectors."""
     print("📌 Extracting title...")
 
     title_selectors = [
@@ -189,7 +195,7 @@ def extract_title_universal(page) -> str:
                 if title and len(title) > 10:
                     print(f"✅ Title ({desc}): {title[:80]}...")
                     return title
-        except:
+        except Exception:
             continue
 
     print("⚠️ Could not extract title")
@@ -278,6 +284,7 @@ def extract_compliance_info(page) -> dict:
     """
     Scroll to the bottom to reveal the compliance link, click it to open
     the modal, and parse manufacturer/EU responsible-person data from it.
+    Supports English, Dutch, German, French, and Spanish locale pages.
     """
     compliance: dict = {}
     print("📋 Extracting compliance info...")
@@ -311,7 +318,7 @@ def extract_compliance_info(page) -> dict:
 
         modal_html = page.locator(".comet-v2-modal-body").first.inner_html(timeout=5000)
 
-        # Work on a fresh soup so decompose() doesn't corrupt a shared object
+        # Work on fresh soups so decompose() doesn't corrupt a shared object
         soup_p   = BeautifulSoup(modal_html, "html.parser")
         soup_eu  = BeautifulSoup(modal_html, "html.parser")
 
@@ -337,11 +344,17 @@ def extract_compliance_info(page) -> dict:
             p.decompose()   # safe — operates on its own copy
         eu_data: dict = {}
         in_eu = False
+        EU_SECTION_KEYWORDS = [
+            "EU responsible",       # English
+            "EU-verantwoordelijke", # Dutch
+            "EU-Verantwortlicher",  # German
+            "Responsable UE",       # French / Spanish
+        ]
         for line in soup_eu.get_text("\n").splitlines():
             line = line.strip()
             if not line:
                 continue
-            if "EU responsible" in line:
+            if any(kw in line for kw in EU_SECTION_KEYWORDS):
                 in_eu = True
                 continue
             if in_eu and ":" in line:
@@ -366,10 +379,75 @@ def extract_compliance_info(page) -> dict:
 
     return compliance
 
+
+def _collect_images_from_locator(locator) -> list[str]:
+    """
+    Shared helper: iterate <img> elements in a Playwright locator,
+    extract and validate src URLs, return a deduped list (max 20).
+    """
+    seen: set[str] = set()
+    for img in locator.locator("img").all():
+        try:
+            src = None
+            for attr in ["src", "data-src", "data-lazy-src", "lazy-src", "data-orig"]:
+                src = img.get_attribute(attr)
+                if src and src.strip():
+                    break
+            if not src:
+                continue
+            clean_src = fix_image_url(src.split("?")[0].split("#")[0])
+            if (
+                len(clean_src) > 40
+                and any(d in clean_src for d in VALID_IMAGE_DOMAINS)
+                and not any(b in clean_src.lower() for b in BAD_IMAGE_PATTERNS)
+                and clean_src not in seen
+            ):
+                seen.add(clean_src)
+                print(f"      ✅ {clean_src[-60:]}")
+        except Exception:
+            continue
+    return list(seen)[:20]
+
+
+def _collect_images_from_frame(frame) -> list[str]:
+    """
+    Same as _collect_images_from_locator but operates on a Playwright Frame
+    (iframe content) rather than a locator.
+    """
+    seen: set[str] = set()
+    for img in frame.locator("img").all():
+        try:
+            src = None
+            for attr in ["src", "data-src", "data-lazy-src", "lazy-src", "data-orig"]:
+                src = img.get_attribute(attr)
+                if src and src.strip():
+                    break
+            if not src:
+                continue
+            clean_src = fix_image_url(src.split("?")[0].split("#")[0])
+            if (
+                len(clean_src) > 40
+                and any(d in clean_src for d in VALID_IMAGE_DOMAINS)
+                and not any(b in clean_src.lower() for b in BAD_IMAGE_PATTERNS)
+                and clean_src not in seen
+            ):
+                seen.add(clean_src)
+                print(f"      ✅ {clean_src[-60:]}")
+        except Exception:
+            continue
+    return list(seen)[:20]
+
+
 def extract_description(page) -> tuple[str, list[str]]:
     """
-    Click the Description tab, scroll to the container, then extract text.
-    Handles both inline content and lazy-loaded <iframe> descriptions.
+    Click the Description tab, scroll to the container, then extract text
+    and collect image URLs.
+
+    AliExpress often serves description content inside a lazy-loaded <iframe>.
+    This function handles both cases:
+      - Inline HTML inside #product-description  (Method 0/1/2 fallback chain)
+      - A sandboxed <iframe> inside #product-description  (primary path)
+
     Returns (description_text, image_url_list).
     """
     description_text   = ""
@@ -378,7 +456,7 @@ def extract_description(page) -> tuple[str, list[str]]:
     print("📝 Extracting description...")
 
     try:
-        # Click the Description anchor tab
+        # ── Click the Description anchor tab ──────────────────────────────
         try:
             page.keyboard.press("Escape")
             page.wait_for_timeout(300)
@@ -391,7 +469,7 @@ def extract_description(page) -> tuple[str, list[str]]:
         except Exception as exc:
             print(f"   ⚠️  Description tab click error: {exc}")
 
-        # Scroll to container to trigger lazy load
+        # ── Scroll container into view to trigger lazy load ────────────────
         try:
             page.locator("#product-description").scroll_into_view_if_needed()
             page.wait_for_timeout(DESC_LOAD_WAIT * 1000)
@@ -405,36 +483,35 @@ def extract_description(page) -> tuple[str, list[str]]:
 
         print("   ✓ Found #product-description container")
 
-        # ── NEW: check for a lazy iframe inside the container ──────────────
+        # ── PRIMARY PATH: lazy iframe ──────────────────────────────────────
         iframe_elem = desc_container.locator("iframe").first
         if iframe_elem.count() > 0:
             print("   🖼️  Found iframe inside description — waiting for it to load...")
-            # Give the iframe time to load its src
             try:
                 iframe_elem.scroll_into_view_if_needed()
                 page.wait_for_timeout(5000)
 
-                # Resize iframe to full height so all content renders
+                # Remove height cap so all content renders
                 page.evaluate("""
                     () => {
-                        const iframes = document.querySelectorAll('#product-description iframe');
-                        iframes.forEach(f => {
-                            f.style.height = '10000px';
-                            f.removeAttribute('height');
-                        });
+                        document
+                            .querySelectorAll('#product-description iframe')
+                            .forEach(f => {
+                                f.style.height = '10000px';
+                                f.removeAttribute('height');
+                            });
                     }
                 """)
                 page.wait_for_timeout(2000)
 
                 frame = iframe_elem.content_frame()
                 if frame:
-                    # Wait for body to have content
                     try:
                         frame.wait_for_selector("body", timeout=8000)
                     except Exception:
                         pass
 
-                    # Extract text from iframe body
+                    # Extract text — strip images/scripts/styles first
                     iframe_text = frame.evaluate("""
                         () => {
                             const clone = document.body.cloneNode(true);
@@ -446,38 +523,22 @@ def extract_description(page) -> tuple[str, list[str]]:
                         description_text = normalise_whitespace(iframe_text)
                         print(f"   ✅ iframe text: {len(description_text)} chars")
 
-                    # Extract images from iframe
-                    seen: set[str] = set()
-                    for img in frame.locator("img").all():
-                        try:
-                            src = None
-                            for attr in ["src", "data-src", "data-lazy-src", "lazy-src", "data-orig"]:
-                                src = img.get_attribute(attr)
-                                if src and src.strip():
-                                    break
-                            if not src:
-                                continue
-                            clean_src = fix_image_url(src.split("?")[0].split("#")[0])
-                            if (
-                                len(clean_src) > 40
-                                and any(d in clean_src for d in VALID_IMAGE_DOMAINS)
-                                and not any(b in clean_src.lower() for b in BAD_IMAGE_PATTERNS)
-                                and clean_src not in seen
-                            ):
-                                seen.add(clean_src)
-                                print(f"      ✅ {clean_src[-60:]}")
-                        except Exception:
-                            continue
-                    description_images = list(seen)[:20]
+                    # Extract images from inside the iframe
+                    description_images = _collect_images_from_frame(frame)
                     print(f"   ✅ {len(description_images)} iframe description images")
-                    return description_text, description_images
-                else:
-                    print("   ⚠️  Could not access iframe content_frame — may be cross-origin")
-            except Exception as exc:
-                print(f"   ⚠️  iframe extraction failed: {exc}")
-        # ── END iframe block ───────────────────────────────────────────────
 
-        # Method 0 — individual <p> tags
+                    # Return early — iframe is the authoritative source
+                    return description_text, description_images
+
+                else:
+                    print("   ⚠️  content_frame() returned None — likely cross-origin; falling back")
+
+            except Exception as exc:
+                print(f"   ⚠️  iframe extraction failed: {exc} — falling back to inline methods")
+
+        # ── FALLBACK: inline content methods ──────────────────────────────
+
+        # Method 0 — individual <p> tags (fastest, most precise)
         method0_text = ""
         try:
             parts = []
@@ -515,7 +576,7 @@ def extract_description(page) -> tuple[str, list[str]]:
         except Exception as exc:
             print(f"   ⚠️  Method 1 failed: {exc}")
 
-        # Method 2 — JS evaluate
+        # Method 2 — JS evaluate (handles deeply-nested / shadow-DOM divs)
         if len(method1_text) < 100:
             try:
                 js_text = page.evaluate("""
@@ -535,6 +596,7 @@ def extract_description(page) -> tuple[str, list[str]]:
             except Exception as exc:
                 print(f"   ⚠️  Method 2 failed: {exc}")
 
+        # Combine — prefer longest, append any unique content from others
         texts = [t for t in [method0_text, method1_text, method2_text] if t]
         if texts:
             texts.sort(key=len, reverse=True)
@@ -548,29 +610,7 @@ def extract_description(page) -> tuple[str, list[str]]:
         # Image extraction from main container
         all_imgs = desc_container.locator("img").all()
         print(f"   🖼️  Found {len(all_imgs)} <img> elements")
-        seen = set()
-        for img in all_imgs:
-            try:
-                src = None
-                for attr in ["src", "data-src", "data-lazy-src", "lazy-src", "data-orig"]:
-                    src = img.get_attribute(attr)
-                    if src and src.strip():
-                        break
-                if not src:
-                    continue
-                clean_src = fix_image_url(src.split("?")[0].split("#")[0])
-                if (
-                    len(clean_src) > 40
-                    and any(d in clean_src for d in VALID_IMAGE_DOMAINS)
-                    and not any(b in clean_src.lower() for b in BAD_IMAGE_PATTERNS)
-                    and clean_src not in seen
-                ):
-                    seen.add(clean_src)
-                    print(f"      ✅ {clean_src[-60:]}")
-            except Exception:
-                continue
-
-        description_images = list(seen)[:20]
+        description_images = _collect_images_from_locator(desc_container)
         print(f"   ✅ {len(description_images)} description images collected")
 
     except Exception as exc:
@@ -578,148 +618,6 @@ def extract_description(page) -> tuple[str, list[str]]:
         traceback.print_exc()
 
     return description_text, description_images
-# def extract_description(page) -> tuple[str, list[str]]:
-#     """
-#     Click the Description tab, scroll to the container, then extract text
-#     via three progressively deeper methods and collect image URLs.
-#     Returns (description_text, image_url_list).
-#     """
-#     description_text   = ""
-#     description_images: list[str] = []
-
-#     print("📝 Extracting description...")
-
-#     try:
-#         # Click the Description anchor tab
-#         try:
-#             page.keyboard.press("Escape")
-#             page.wait_for_timeout(300)
-#             for btn in page.locator("a.comet-v2-anchor-link").all():
-#                 if "description" in btn.inner_text().strip().lower():
-#                     btn.click(force=True, timeout=2000)
-#                     print("   ✓ Clicked Description tab")
-#                     page.wait_for_timeout(DESC_LOAD_WAIT * 1000)
-#                     break
-#         except Exception as exc:
-#             print(f"   ⚠️  Description tab click error: {exc}")
-
-#         # Scroll to container to trigger lazy load
-#         try:
-#             page.locator("#product-description").scroll_into_view_if_needed()
-#             page.wait_for_timeout(DESC_LOAD_WAIT * 1000)
-#         except Exception:
-#             pass
-
-#         # Method 0 — individual <p> tags (fastest, most precise)
-#         method0_text = ""
-#         try:
-#             parts = []
-#             for p in page.locator("#product-description p").all():
-#                 try:
-#                     txt = p.inner_text(timeout=2000).strip()
-#                     if txt and len(txt) > 2:
-#                         parts.append(txt)
-#                 except Exception:
-#                     pass
-#             if parts:
-#                 method0_text = normalise_whitespace(" ".join(parts))
-#                 print(f"   ✓ Method 0 (<p> tags): {len(method0_text)} chars")
-#             else:
-#                 print("   ⚠️  Method 0: no <p> content found")
-#         except Exception as exc:
-#             print(f"   ⚠️  Method 0 failed: {exc}")
-
-#         desc_container = page.locator("#product-description").first
-#         method1_text   = ""
-#         method2_text   = ""
-
-#         if desc_container.count() > 0:
-#             print("   ✓ Found #product-description container")
-
-#             # Method 1 — inner_text() on the whole container
-#             try:
-#                 method1_text = normalise_whitespace(
-#                     desc_container.inner_text(timeout=5000).strip()
-#                 )
-#                 print(f"   ✓ Method 1 (inner_text): {len(method1_text)} chars")
-#                 if len(method1_text) < 100:
-#                     print("   ⏳ Short content — waiting 5s and retrying...")
-#                     page.wait_for_timeout(5000)
-#                     method1_text = normalise_whitespace(
-#                         desc_container.inner_text(timeout=5000).strip()
-#                     )
-#                     print(f"   ✓ Method 1 retry: {len(method1_text)} chars")
-#             except Exception as exc:
-#                 print(f"   ⚠️  Method 1 failed: {exc}")
-
-#             # Method 2 — JS evaluate (handles deeply-nested / shadow-DOM divs)
-#             if len(method1_text) < 100:
-#                 try:
-#                     js_text = page.evaluate("""
-#                         () => {
-#                             const el = document.querySelector('#product-description');
-#                             if (!el) return '';
-#                             const clone = el.cloneNode(true);
-#                             clone.querySelectorAll('img, script, style').forEach(n => n.remove());
-#                             return clone.innerText || clone.textContent || '';
-#                         }
-#                     """)
-#                     if js_text:
-#                         method2_text = normalise_whitespace(js_text)
-#                         print(f"   ✓ Method 2 (JS evaluate): {len(method2_text)} chars")
-#                     else:
-#                         print("   ⚠️  Method 2: empty result")
-#                 except Exception as exc:
-#                     print(f"   ⚠️  Method 2 failed: {exc}")
-
-#             # Combine — deduplicate by preferring the longest non-redundant text
-#             texts = [t for t in [method0_text, method1_text, method2_text] if t]
-#             if texts:
-#                 # Use the longest result as the canonical version; append any
-#                 # unique content from the others that isn't already a substring.
-#                 texts.sort(key=len, reverse=True)
-#                 combined = texts[0]
-#                 for extra in texts[1:]:
-#                     if extra and extra not in combined:
-#                         combined = combined + " " + extra
-#                 description_text = normalise_whitespace(combined)
-#             print(f"   ✅ Final description: {len(description_text)} chars")
-
-#             # --- Image extraction ---
-#             all_imgs = desc_container.locator("img").all()
-#             print(f"   🖼️  Found {len(all_imgs)} <img> elements")
-#             seen: set[str] = set()
-#             for img in all_imgs:
-#                 try:
-#                     src = None
-#                     for attr in ["src", "data-src", "data-lazy-src", "lazy-src", "data-orig"]:
-#                         src = img.get_attribute(attr)
-#                         if src and src.strip():
-#                             break
-#                     if not src:
-#                         continue
-#                     clean_src = fix_image_url(src.split("?")[0].split("#")[0])
-#                     if (
-#                         len(clean_src) > 40
-#                         and any(d in clean_src for d in VALID_IMAGE_DOMAINS)
-#                         and not any(b in clean_src.lower() for b in BAD_IMAGE_PATTERNS)
-#                         and clean_src not in seen
-#                     ):
-#                         seen.add(clean_src)
-#                         print(f"      ✅ {clean_src[-60:]}")
-#                 except Exception:
-#                     continue
-
-#             description_images = list(seen)[:20]
-#             print(f"   ✅ {len(description_images)} description images collected")
-#         else:
-#             print("   ❌ #product-description container not found")
-
-#     except Exception as exc:
-#         print(f"⚠️  Description extraction error: {exc}")
-#         traceback.print_exc()
-
-#     return description_text, description_images
 
 
 # ---------------------------------------------------------------------------
@@ -798,18 +696,18 @@ def extract_aliexpress_product(url: str) -> dict:
                     continue
 
                 # --- Data extraction ---
-                title = extract_title_universal(page)
+                title           = extract_title_universal(page)
                 store_info      = extract_store_info(page)
                 compliance_info = extract_compliance_info(page)
                 description_text, description_images = extract_description(page)
 
                 # --- Build result ---
                 result = {
-                    "title":            title            if isinstance(title, str)              else "",
-                    "description_text": description_text if isinstance(description_text, str)   else "",
+                    "title":            title             if isinstance(title, str)               else "",
+                    "description_text": description_text  if isinstance(description_text, str)    else "",
                     "images":           description_images if isinstance(description_images, list) else [],
-                    "store_info":       store_info       if isinstance(store_info, dict)         else {},
-                    "compliance_info":  compliance_info  if isinstance(compliance_info, dict)    else {},
+                    "store_info":       store_info        if isinstance(store_info, dict)          else {},
+                    "compliance_info":  compliance_info   if isinstance(compliance_info, dict)     else {},
                 }
 
                 print("\n🔍 Summary:")
