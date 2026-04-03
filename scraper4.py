@@ -246,15 +246,15 @@ def set_shipping_to_poland(page) -> bool:
 def extract_store_info_universal(page) -> dict:
     """Extract store info by hovering over the store element to trigger the popup."""
     store_info = {}
-
+ 
     print("📦 Extracting store info...")
-
+ 
     try:
         # Step 1: Extract store name directly from known selector (always visible)
         print("   🔍 Step 1: Extracting store name...")
         store_name_selector = "span[class*='store-detail--storeName']"
         store_name_elem = page.locator(store_name_selector).first
-
+ 
         if store_name_elem.count() > 0:
             store_name = store_name_elem.inner_text().strip()
             if store_name:
@@ -262,28 +262,28 @@ def extract_store_info_universal(page) -> dict:
                 print(f"   ✓ Store name: {store_name}")
         else:
             print("   ⚠️ Store name element not found")
-
+ 
         # Step 2: Hover over the store link to trigger the popup
         print("   🔍 Step 2: Hovering to reveal store detail popup...")
         store_link_selector = "div[class*='store-detail--storeNameWrap']"
         store_link_elem = page.locator(store_link_selector).first
-
+ 
         if store_link_elem.count() > 0:
             store_link_elem.hover()
             page.wait_for_timeout(1500)
             print("   ✓ Hovered over store element")
         else:
             print("   ⚠️ Store link element not found, skipping hover")
-
+ 
         # Step 3: Extract all key-value rows from the popup (renders after hover)
         print("   🔍 Step 3: Extracting popup store details...")
-
+ 
         row_selectors = [
             "div[class*='store-detail'] table tr",
             "div[class*='storeDetail'] table tr",
             "[class*='store-detail--detail'] tr",
         ]
-
+ 
         for row_selector in row_selectors:
             rows = page.locator(row_selector).all()
             if rows:
@@ -301,7 +301,7 @@ def extract_store_info_universal(page) -> dict:
                         continue
                 if len(store_info) > 1:
                     break
-
+ 
         # Step 4: Fallback — read visible popup text and parse key: value lines
         if len(store_info) <= 1:
             print("   🔍 Step 4: Fallback — reading popup text directly...")
@@ -311,7 +311,7 @@ def extract_store_info_universal(page) -> dict:
                 "div[class*='storePopup']",
                 "div[class*='store-detail']:not(a)",
             ]
-
+ 
             for popup_selector in popup_selectors:
                 popup = page.locator(popup_selector).first
                 if popup.count() > 0:
@@ -329,19 +329,18 @@ def extract_store_info_universal(page) -> dict:
                                     print(f"      {key}: {value}")
                     if len(store_info) > 1:
                         break
-
+ 
         if not store_info:
             print("   ⚠️ Could not extract store information")
         else:
             print(f"   ✅ Store info extracted: {store_info}")
-
+ 
     except Exception as e:
         print(f"⚠️ Store extraction error: {e}")
         import traceback
         traceback.print_exc()
-
+ 
     return store_info
-
 
 def extract_title_universal(page) -> str:
     """Extract title - try multiple selectors"""
