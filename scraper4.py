@@ -244,17 +244,23 @@ def set_shipping_to_poland(page) -> bool:
 
 
 def extract_store_info_universal(page) -> dict:
-    """Extract store info by hovering over the store element to trigger the popup."""
+    """
+    Extract store info using JS mouse events (not Playwright .hover()).
+    Playwright hover always fails on AliExpress because comet-v2-modal-wrap
+    is a persistent portal div that intercepts pointer events at all times.
+    JS mouseover/mouseenter/mousemove dispatched directly on the element
+    bypasses this entirely and reliably triggers the popup.
+    """
     store_info = {}
- 
+
     print("📦 Extracting store info...")
- 
+
     try:
         # Step 1: Extract store name directly from known selector (always visible)
         print("   🔍 Step 1: Extracting store name...")
         store_name_selector = "span[class*='store-detail--storeName']"
         store_name_elem = page.locator(store_name_selector).first
- 
+
         if store_name_elem.count() > 0:
             store_name = store_name_elem.inner_text().strip()
             if store_name:
@@ -262,28 +268,45 @@ def extract_store_info_universal(page) -> dict:
                 print(f"   ✓ Store name: {store_name}")
         else:
             print("   ⚠️ Store name element not found")
- 
-        # Step 2: Hover over the store link to trigger the popup
-        print("   🔍 Step 2: Hovering to reveal store detail popup...")
-        store_link_selector = "div[class*='store-detail--storeNameWrap']"
-        store_link_elem = page.locator(store_link_selector).first
- 
-        if store_link_elem.count() > 0:
-            store_link_elem.hover()
+
+        # Step 2: Scroll store name into view so JS events fire on a visible element
+        print("   🔍 Step 2: Scrolling store element into view...")
+        try:
+            page.locator("span[class*='store-detail--storeName']").first.scroll_into_view_if_needed()
+            page.wait_for_timeout(300)
+        except:
+            pass
+
+        # Step 3: Trigger store popup via JS mouse events
+        # NOTE: Playwright .hover() always fails on AliExpress because comet-v2-modal-wrap
+        # is a persistent DOM portal element that intercepts pointer events at all times —
+        # it cannot be dismissed. JS mouseover/mouseenter bypasses this entirely.
+        print("   🔍 Step 3: Triggering store popup via JS mouse events...")
+        try:
+            page.evaluate("""
+                () => {
+                    const el = document.querySelector('[class*="store-detail--storeNameWrap"]');
+                    if (el) {
+                        el.dispatchEvent(new MouseEvent('mouseover', {bubbles: true, cancelable: true}));
+                        el.dispatchEvent(new MouseEvent('mouseenter', {bubbles: true, cancelable: true}));
+                        el.dispatchEvent(new MouseEvent('mousemove', {bubbles: true, cancelable: true}));
+                    }
+                }
+            """)
             page.wait_for_timeout(1500)
-            print("   ✓ Hovered over store element")
-        else:
-            print("   ⚠️ Store link element not found, skipping hover")
- 
-        # Step 3: Extract all key-value rows from the popup (renders after hover)
-        print("   🔍 Step 3: Extracting popup store details...")
- 
+            print("   ✓ JS mouse events dispatched on store element")
+        except Exception as js_err:
+            print(f"   ⚠️ JS mouseover failed: {js_err}")
+
+        # Step 4: Extract all key-value rows from the popup (renders after hover)
+        print("   🔍 Step 4: Extracting popup store details...")
+
         row_selectors = [
             "div[class*='store-detail'] table tr",
             "div[class*='storeDetail'] table tr",
             "[class*='store-detail--detail'] tr",
         ]
- 
+
         for row_selector in row_selectors:
             rows = page.locator(row_selector).all()
             if rows:
@@ -301,17 +324,17 @@ def extract_store_info_universal(page) -> dict:
                         continue
                 if len(store_info) > 1:
                     break
- 
-        # Step 4: Fallback — read visible popup text and parse key: value lines
+
+        # Step 5: Fallback — read visible popup text and parse key: value lines
         if len(store_info) <= 1:
-            print("   🔍 Step 4: Fallback — reading popup text directly...")
+            print("   🔍 Step 5: Fallback — reading popup text directly...")
             popup_selectors = [
                 "div[class*='store-detail--storePopup']",
                 "div[class*='store-detail--popup']",
                 "div[class*='storePopup']",
                 "div[class*='store-detail']:not(a)",
             ]
- 
+
             for popup_selector in popup_selectors:
                 popup = page.locator(popup_selector).first
                 if popup.count() > 0:
@@ -329,18 +352,19 @@ def extract_store_info_universal(page) -> dict:
                                     print(f"      {key}: {value}")
                     if len(store_info) > 1:
                         break
- 
+
         if not store_info:
             print("   ⚠️ Could not extract store information")
         else:
             print(f"   ✅ Store info extracted: {store_info}")
- 
+
     except Exception as e:
         print(f"⚠️ Store extraction error: {e}")
         import traceback
         traceback.print_exc()
- 
+
     return store_info
+
 
 def extract_title_universal(page) -> str:
     """Extract title - try multiple selectors"""
@@ -374,24 +398,31 @@ def extract_compliance_info(page) -> dict:
     """
     Click the 'Product compliance information' h2 heading to open the modal,
     then parse manufacturer info, EU responsible person, and product identifier.
-    Only visible on GB exit nodes with en-GB locale.
+    Uses JS click to bypass comet-v2-modal-wrap pointer-event interception.
     """
     compliance = {}
     print("📋 Extracting compliance info...")
 
     try:
-        # Step 1: Find and click the compliance h2 heading
-        # Use text-based selector — avoids brittle hashed CSS class suffixes
+        # Step 1: Find the compliance h2 by text content
         heading = page.locator("h2").filter(has_text="Product compliance information").first
 
         if heading.count() == 0:
-            print("   ⚠️ Compliance heading not found (may not be a GB IP or product has none)")
+            print("   ⚠️ Compliance heading not found (product may have none, or Ship To not set to EU)")
             return compliance
 
-        print("   ✓ Found compliance heading — clicking...")
+        print("   ✓ Found compliance heading — clicking via JS (bypasses modal-wrap interception)...")
         heading.scroll_into_view_if_needed()
         page.wait_for_timeout(500)
-        heading.click()
+
+        # JS click bypasses Playwright's pointer-event interception check entirely
+        page.evaluate("""
+            () => {
+                const h2s = [...document.querySelectorAll('h2')];
+                const el = h2s.find(h => h.textContent.includes('Product compliance information'));
+                if (el) el.click();
+            }
+        """)
         page.wait_for_timeout(2000)
 
         # Step 2: Wait for modal body
@@ -430,7 +461,6 @@ def extract_compliance_info(page) -> dict:
             if matched_header:
                 current_section = matched_header
                 section_lines[current_section] = []
-                # Content on same line after the header
                 remainder = line[len(matched_header):].strip().lstrip(":").strip()
                 if remainder:
                     section_lines[current_section].append(remainder)
@@ -448,7 +478,6 @@ def extract_compliance_info(page) -> dict:
                     if k and v and len(k) < 60:
                         result[k] = v
                 else:
-                    # Plain text line (e.g. product identifier number)
                     if l and not result.get("value"):
                         result["value"] = l
             return result
@@ -459,22 +488,17 @@ def extract_compliance_info(page) -> dict:
                 compliance[section] = parsed
                 print(f"   ✅ {section}: {parsed}")
 
-        # Step 5: Close modal so it doesn't interfere with later extraction
-        close_selectors = [
-            "button.comet-v2-modal-close",
-            "[class*='modal-close']",
-            "[aria-label='Close']",
-        ]
-        for sel in close_selectors:
-            try:
-                btn = page.locator(sel).first
-                if btn.count() > 0:
-                    btn.click()
-                    page.wait_for_timeout(500)
-                    print("   ✓ Closed compliance modal")
-                    break
-            except:
-                continue
+        # Step 5: Close modal via JS (same reason — bypass interception)
+        page.evaluate("""
+            () => {
+                const btn = document.querySelector('button.comet-v2-modal-close')
+                    || document.querySelector('[class*="modal-close"]')
+                    || document.querySelector('[aria-label="Close"]');
+                if (btn) btn.click();
+            }
+        """)
+        page.wait_for_timeout(500)
+        print("   ✓ Closed compliance modal")
 
     except Exception as e:
         print(f"⚠️ Compliance extraction error: {e}")
@@ -484,11 +508,37 @@ def extract_compliance_info(page) -> dict:
     return compliance
 
 
+def _normalize_image_url(src: str) -> str:
+    """
+    Normalize an AliExpress image URL:
+    - Fix protocol-relative URLs (//ae01... → https://ae01...)
+    - Strip query strings (?x=y)
+    - Strip AliExpress resize suffixes (_NNNxNNN.jpg, _.webp etc.)
+    Returns empty string if src is not a valid alicdn image.
+    """
+    if not src:
+        return ""
+    # Fix protocol-relative
+    if src.startswith("//"):
+        src = "https:" + src
+    # Must be alicdn
+    if "alicdn.com" not in src:
+        return ""
+    # Strip query string
+    src = src.split("?")[0]
+    # Strip resize suffix: _640x640.jpg / _.webp / _50x50.jpg etc.
+    src = re.sub(r'_\d+x\d+\.(jpg|jpeg|png|webp)$', '.jpg', src, flags=re.IGNORECASE)
+    src = re.sub(r'_\.(jpg|jpeg|png|webp)$', '.jpg', src, flags=re.IGNORECASE)
+    return src
+
+
 def extract_description(page) -> tuple:
     """
-    Extract description text and images from #product-description.
-    Uses JS DOM walker for reliable in-order extraction of all tag types
-    (h1-h6, p, div.paragraph-element, li) without relying on hashed CSS classes.
+    Extract description text and images.
+    Handles two AliExpress description formats:
+      - New format: #product-description with h3/p/li/div content
+      - Old format: div.detail-desc-decorate-richtext with detailmodule_text / detailmodule_image
+    Falls back to iframe content if main container is empty.
     Returns (description_text: str, description_images: list[str])
     """
     description_text = ""
@@ -497,19 +547,23 @@ def extract_description(page) -> tuple:
     print("📝 Extracting description...")
 
     try:
-        # Step 1: Click Description tab
+        # Step 1: Click Description tab via JS (bypasses comet-v2-modal-wrap)
         print("   Clicking Description tab...")
         try:
-            page.keyboard.press("Escape")
-            page.wait_for_timeout(300)
-
-            buttons = page.locator('a.comet-v2-anchor-link').all()
             clicked = False
+            # Try anchor link first
+            buttons = page.locator('a.comet-v2-anchor-link').all()
             for btn in buttons:
                 try:
                     if 'description' in btn.inner_text(timeout=1000).strip().lower():
-                        print("   ✓ Found Description button — clicking...")
-                        btn.click(force=True, timeout=2000)
+                        print("   ✓ Found Description button — JS clicking...")
+                        page.evaluate("""
+                            () => {
+                                const links = [...document.querySelectorAll('a.comet-v2-anchor-link')];
+                                const el = links.find(a => a.textContent.toLowerCase().includes('description'));
+                                if (el) el.click();
+                            }
+                        """)
                         clicked = True
                         break
                 except:
@@ -517,115 +571,207 @@ def extract_description(page) -> tuple:
 
             if not clicked:
                 print("   ⚠️ Description tab not found via anchor links")
+            else:
+                page.wait_for_timeout(2000)
         except Exception as e:
             print(f"   ⚠️ Description tab click error: {e}")
 
-        # Step 2: Wait for #product-description to appear
-        print("   ⏳ Waiting for #product-description...")
-        try:
-            page.wait_for_selector('#product-description', timeout=10000)
-        except:
-            print("   ⚠️ #product-description did not appear — trying scroll fallback...")
+        # Step 2: Detect which description format this page uses
+        # Wait for either the new or old container
+        print("   ⏳ Detecting description format...")
+        new_format_sel = '#product-description'
+        old_format_sel = 'div.detail-desc-decorate-richtext'
+
+        container = None
+        fmt = None
+
+        for sel, label in [(new_format_sel, "new"), (old_format_sel, "old")]:
             try:
-                page.evaluate("document.querySelector('#product-description')?.scrollIntoView()")
+                page.wait_for_selector(sel, timeout=6000)
+                elem = page.locator(sel).first
+                if elem.count() > 0:
+                    container = elem
+                    fmt = label
+                    print(f"   ✓ Using {label} description format: {sel}")
+                    break
+            except:
+                continue
+
+        if container is None:
+            # Last resort: scroll down and retry
+            print("   ⚠️ No description container found — scrolling and retrying...")
+            try:
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
                 page.wait_for_timeout(3000)
+                for sel, label in [(new_format_sel, "new"), (old_format_sel, "old")]:
+                    elem = page.locator(sel).first
+                    if elem.count() > 0:
+                        container = elem
+                        fmt = label
+                        print(f"   ✓ Found after scroll: {label} format")
+                        break
             except:
                 pass
 
-        desc_container = page.locator('#product-description').first
-
-        if desc_container.count() == 0:
-            print("   ❌ #product-description not found after waiting")
+        if container is None:
+            print("   ❌ No description container found")
             return description_text, description_images
 
-        print("   ✓ Found #product-description container")
-
-        # Step 3: Scroll into view to trigger lazy rendering
+        # Step 3: Scroll container into view to trigger lazy rendering
         try:
-            desc_container.scroll_into_view_if_needed()
+            container.scroll_into_view_if_needed()
             page.wait_for_timeout(2500)
         except:
             pass
 
-        # Step 4: JS DOM walker — extracts all text in DOM order
-        # Handles h1-h6, p, li, div.paragraph-element; skips script/style
-        # Deduplicates consecutive identical lines
-        print("   🎯 Running JS DOM walker...")
-        raw_js_text = page.evaluate("""
-            () => {
-                const container = document.querySelector('#product-description');
-                if (!container) return '';
+        # Step 4: Extract text based on format
+        print("   🎯 Extracting description text...")
 
-                const parts = [];
-                const blockTags = new Set(['h1','h2','h3','h4','h5','h6','p','li','div','tr','td','th','br','blockquote','pre']);
+        if fmt == "old":
+            # Old format: text is in div.detailmodule_text p tags
+            text_parts = []
+            text_elems = container.locator('div.detailmodule_text p, div.detailmodule_text').all()
+            for el in text_elems:
+                try:
+                    t = el.inner_text(timeout=2000).strip()
+                    if t and len(t) > 1:
+                        text_parts.append(t)
+                except:
+                    continue
+            # Deduplicate
+            seen = set()
+            deduped = []
+            for t in text_parts:
+                if t not in seen:
+                    seen.add(t)
+                    deduped.append(t)
+            description_text = ' | '.join(deduped)
+            print(f"   ✅ Old format text: {len(description_text)} chars")
 
-                const walk = (node) => {
-                    if (node.nodeType === Node.TEXT_NODE) {
-                        const t = node.textContent.trim();
-                        if (t && t.length > 1) parts.push(t);
-                        return;
-                    }
-                    if (node.nodeType !== Node.ELEMENT_NODE) return;
-
-                    const tag = node.tagName.toLowerCase();
-                    if (tag === 'script' || tag === 'style') return;
-
-                    if (blockTags.has(tag)) {
-                        // Use innerText which handles nested inline elements cleanly
-                        const text = (node.innerText || '').trim();
-                        if (text && text.length > 1) {
-                            parts.push(text);
+        else:
+            # New format: JS DOM walker
+            raw_js_text = page.evaluate("""
+                () => {
+                    const container = document.querySelector('#product-description');
+                    if (!container) return '';
+                    const parts = [];
+                    const blockTags = new Set(['h1','h2','h3','h4','h5','h6','p','li','div','tr','td','th','blockquote','pre']);
+                    const walk = (node) => {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            const t = node.textContent.trim();
+                            if (t && t.length > 1) parts.push(t);
+                            return;
                         }
-                        return; // innerText already handled all children
-                    }
+                        if (node.nodeType !== Node.ELEMENT_NODE) return;
+                        const tag = node.tagName.toLowerCase();
+                        if (tag === 'script' || tag === 'style') return;
+                        if (blockTags.has(tag)) {
+                            const text = (node.innerText || '').trim();
+                            if (text && text.length > 1) parts.push(text);
+                            return;
+                        }
+                        for (const child of node.childNodes) walk(child);
+                    };
+                    walk(container);
+                    return parts.filter((v, i) => v !== parts[i - 1]).join(' | ');
+                }
+            """)
 
-                    // Inline elements — recurse into children
-                    for (const child of node.childNodes) walk(child);
-                };
+            if raw_js_text and len(raw_js_text) > 50:
+                description_text = re.sub(r'\s+', ' ', raw_js_text).strip()
+                print(f"   ✅ JS DOM walker: {len(description_text)} chars")
+            else:
+                fallback = container.inner_text(timeout=8000).strip()
+                description_text = re.sub(r'\s+', ' ', fallback).strip()
+                print(f"   ✅ inner_text fallback: {len(description_text)} chars")
 
-                walk(container);
+        # Step 5: iframe fallback (some locales embed description in iframe)
+        if len(description_text) < 50:
+            print("   ⚠️ Text still empty — checking for description iframe...")
+            try:
+                for iframe_sel in [
+                    "#product-description iframe",
+                    "iframe[id*='description']",
+                    "iframe[src*='description']",
+                ]:
+                    iframe_elem = page.locator(iframe_sel).first
+                    if iframe_elem.count() > 0:
+                        frame = iframe_elem.content_frame()
+                        if frame:
+                            iframe_text = frame.evaluate("""
+                                () => {
+                                    const parts = [];
+                                    const blockTags = new Set(['h1','h2','h3','h4','h5','h6','p','li','div','tr','td']);
+                                    const walk = (node) => {
+                                        if (node.nodeType === Node.TEXT_NODE) {
+                                            const t = node.textContent.trim();
+                                            if (t && t.length > 1) parts.push(t);
+                                            return;
+                                        }
+                                        if (node.nodeType !== Node.ELEMENT_NODE) return;
+                                        const tag = node.tagName.toLowerCase();
+                                        if (tag === 'script' || tag === 'style') return;
+                                        if (blockTags.has(tag)) {
+                                            const text = (node.innerText || '').trim();
+                                            if (text && text.length > 1) parts.push(text);
+                                            return;
+                                        }
+                                        for (const child of node.childNodes) walk(child);
+                                    };
+                                    walk(document.body);
+                                    return parts.filter((v, i) => v !== parts[i - 1]).join(' | ');
+                                }
+                            """)
+                            if iframe_text and len(iframe_text) > 50:
+                                description_text = re.sub(r'\s+', ' ', iframe_text).strip()
+                                print(f"   ✅ iframe text: {len(description_text)} chars")
+                                # Images from iframe
+                                iframe_imgs = frame.evaluate("""
+                                    () => [...document.querySelectorAll('img')]
+                                        .map(img => img.src || img.dataset.src || '')
+                                        .filter(Boolean)
+                                """)
+                                for src in (iframe_imgs or []):
+                                    norm = _normalize_image_url(src)
+                                    if norm and len(norm) > 50 and norm not in description_images:
+                                        description_images.append(norm)
+                                break
+            except Exception as iframe_err:
+                print(f"   ⚠️ iframe fallback error: {iframe_err}")
 
-                // Deduplicate consecutive identical entries
-                const deduped = parts.filter((v, i) => v !== parts[i - 1]);
-                return deduped.join(' | ');
-            }
+        # Step 6: Image extraction from main container
+        # Covers both old format (img.detail-desc-decorate-image) and new format
+        print("   🖼️ Extracting description images...")
+
+        # Use JS to grab all img srcs inside the container — handles both formats
+        raw_img_srcs = page.evaluate(f"""
+            () => {{
+                // Try both containers
+                const container = document.querySelector('#product-description')
+                    || document.querySelector('div.detail-desc-decorate-richtext');
+                if (!container) return [];
+                return [...container.querySelectorAll('img')]
+                    .map(img => img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || '')
+                    .filter(Boolean);
+            }}
         """)
 
-        if raw_js_text and len(raw_js_text) > 50:
-            description_text = re.sub(r'\s+', ' ', raw_js_text).strip()
-            print(f"   ✅ JS DOM walker: {len(description_text)} chars")
-        else:
-            # Fallback: plain inner_text on the whole container
-            print("   ⚠️ JS walker empty — falling back to inner_text...")
-            fallback = desc_container.inner_text(timeout=8000).strip()
-            description_text = re.sub(r'\s+', ' ', fallback).strip()
-            print(f"   ✅ Fallback inner_text: {len(description_text)} chars")
+        print(f"      Found {len(raw_img_srcs)} raw img srcs")
 
-        # Step 5: Image extraction
-        print("   🖼️ Extracting description images...")
-        all_imgs = desc_container.locator('img').all()
-        print(f"      Found {len(all_imgs)} <img> tags")
+        for src in raw_img_srcs:
+            norm = _normalize_image_url(src)
+            if norm and len(norm) > 50 and norm not in description_images:
+                description_images.append(norm)
 
-        for img in all_imgs:
-            src = (
-                img.get_attribute("src") or
-                img.get_attribute("data-src") or
-                img.get_attribute("data-lazy-src")
-            )
-            if src and "alicdn.com" in src:
-                clean_src = src.split('?')[0]
-                if clean_src not in description_images:
-                    description_images.append(clean_src)
-
+        # Filter out obvious non-content images
         description_images = [
             img for img in description_images
-            if len(img) > 50 and not any(
-                bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100']
-            )
+            if not any(bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100'])
         ][:20]
+
         print(f"   ✓ Description images: {len(description_images)}")
         for i, img_url in enumerate(description_images[:3], 1):
-            print(f"      {i}. {img_url[:60]}...")
+            print(f"      {i}. {img_url[:80]}...")
 
     except Exception as e:
         print(f"⚠️ Description extraction error: {e}")
@@ -720,6 +866,17 @@ def extract_aliexpress_product(url: str) -> dict:
                 current_url = page.url
                 if current_url != url:
                     print(f"⚠️ Redirected to: {current_url}")
+
+                # FIX: country-specific subdomains (de.aliexpress.com, fr.aliexpress.com etc.)
+                # have different page structure — description is in an iframe, ship-to panel
+                # uses different selectors. Rewrite to www.aliexpress.com and reload.
+                if "aliexpress.com" in page.url and not page.url.startswith("https://www.aliexpress.com"):
+                    canonical = re.sub(r'https://[a-z]{2}\.aliexpress\.com', 'https://www.aliexpress.com', page.url)
+                    # Strip gatewayAdapt param which forces locale redirect
+                    canonical = re.sub(r'[?&]gatewayAdapt=[^&]*', '', canonical).rstrip('?&')
+                    print(f"🔄 Rewriting country subdomain → www: {canonical}")
+                    page.goto(canonical, timeout=120000, wait_until="domcontentloaded")
+                    print(f"   Now on: {page.url}")
 
                 if is_captcha_page(page):
                     print("⚠️ CAPTCHA detected — rotating IP and retrying...")
