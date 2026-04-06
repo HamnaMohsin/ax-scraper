@@ -88,7 +88,56 @@ def rotate_tor_circuit():
         print(f"⚠️ Could not rotate Tor circuit: {e}")
         return False
 
+def random_viewport():
+    return random.choice([
+        {"width": 1920, "height": 1080},
+        {"width": 1440, "height": 900},
+        {"width": 1366, "height": 768},
+        {"width": 1536, "height": 864}
+    ])
 
+def diagnose_page(page, keyword: str, page_num: int):
+    """Diagnose why no products are found"""
+    print(f"   📋 URL: {page.url}")
+    print(f"   📋 Title: {page.title()[:80]}...")
+    
+    if is_captcha_page(page):
+        print("   ❌ CAPTCHA/BLOCK DETECTED")
+        return False
+    
+    html = page.content()
+    with open(f"debug_{keyword}_p{page_num}.html", "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"   💾 HTML saved: debug_{keyword}_p{page_num}.html")
+    
+    item_links = len(page.locator("a[href*='/item/']").all())
+    products = len(page.locator("[class*='product'], [class*='item']").all())
+    print(f"   📋 Item links: {item_links} | Product cards: {products}")
+    
+    return item_links > 5  # Need at least 5 item links
+
+def is_captcha_page(page) -> bool:
+    title = page.title().lower()
+    url = page.url.lower()
+    
+    captcha_words = ["captcha", "verify", "baxia", "punish", "blocked", "access denied", "no results"]
+    if any(word in title or word in url for word in captcha_words):
+        return True
+        
+    return page.locator("iframe[src*='recaptcha'], .baxia-punish, [class*='captcha']").count() > 0
+
+def rotate_tor_circuit():
+    """Rotate Tor circuit"""
+    try:
+        with Controller.from_port(port=9051) as controller:
+            controller.authenticate()
+            controller.signal(Signal.NEWNYM)
+        time.sleep(8)
+        print("   ✅ Tor rotated")
+        return True
+    except Exception as e:
+        print(f"   ⚠️ Tor failed: {e}")
+        return False
 def is_captcha_page(page) -> bool:
     """Detect if page is a CAPTCHA/block page - multiple selectors"""
     page_url = page.url.lower()
@@ -296,7 +345,6 @@ def slow_scroll(page, steps: int = 6) -> None:
 
 
 # ── Core scraper ──────────────────────────────────────────────────────────────
-
 def scrape_category(browser, keyword: str, max_pages: int) -> dict:
     print(f"\n{'━'*60}")
     print(f"  🔍  {keyword.upper()}")
@@ -306,202 +354,97 @@ def scrape_category(browser, keyword: str, max_pages: int) -> dict:
     seen_ids: set[str] = set()
 
     context = browser.new_context(
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        viewport={"width": 1440, "height": 900},
+        user_agent=random.choice([
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ]),
+        viewport=random_viewport(),
         locale="en-US",
+        timezone_id="America/New_York",
         extra_http_headers={
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
         },
     )
 
-    context.route(
-        "**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2,ttf,eot}",
-        lambda r: r.abort()
-    )
-    context.route("**/{analytics,tracking,gtm,ga,pixel,beacon}**", lambda r: r.abort())
+    context.route("**/*.{png,jpg,jpeg,gif,webp,svg,ico}", lambda r: r.abort())
+    context.route("**/*{google-analytics,gtm,facebook,pixel}", lambda r: r.abort())
 
     page = context.new_page()
+    
+    page.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+        Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+        window.chrome = {runtime: {}};
+    """)
 
     try:
         for page_num in range(1, max_pages + 1):
             url = build_url(keyword, page_num)
             print(f"\n  [Page {page_num}/{max_pages}]  {url}")
 
-            # ── Tor retry loop ─────────────────────────────────────────────────
-            max_retries = 3
-            page_products = []
-            stats = {}
-            page_success = False
-
-            for attempt in range(max_retries):
-                print(f"\n📍 Attempt {attempt + 1}/{max_retries}")
-                if attempt > 0:
-                    print("🔄 Rotating Tor circuit...")
-                    rotate_tor_circuit()
-                    wait_time = 20 + (attempt * 5)
-                    print(f"   Waiting {wait_time}s before next attempt...")
-                    time.sleep(wait_time)
-
-                    # Re-create context with fresh Tor IP + randomised fingerprint
-                    context.close()
-                    context = browser.new_context(
-                        user_agent=random.choice([
-                            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        ]),
-                        viewport=random_viewport(),
-                        locale="en-US",
-                        timezone_id=random.choice([
-                            'America/New_York',
-                            'America/Chicago',
-                            'America/Denver',
-                            'America/Los_Angeles',
-                        ]),
-                        extra_http_headers={
-                            "Accept-Language": "en-US,en;q=0.9",
-                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        },
-                    )
-                    context.route(
-                        "**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2,ttf,eot}",
-                        lambda r: r.abort()
-                    )
-                    context.route("**/{analytics,tracking,gtm,ga,pixel,beacon}**", lambda r: r.abort())
-                    page = context.new_page()
-
-                # Anti-detection init scripts
-                page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-                page.add_init_script("Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]})")
-
+            # Navigate with diagnostics
+            success = False
+            for attempt in range(2):  # 2 attempts per page
                 try:
-                    # NAVIGATION
-                    print("📡 Loading page...")
-                    page.goto(url, timeout=120_000, wait_until="domcontentloaded")
-                    time.sleep(2)
+                    print(f"   📡 Loading (attempt {attempt+1})...")
+                    page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                    time.sleep(4)  # Let JS render
 
-                    current_url = page.url
-                    if current_url != url:
-                        print(f"⚠️ Redirected to: {current_url}")
-
-                    if is_captcha_page(page):
-                        print("⚠️ CAPTCHA detected - rotating IP and retrying...")
-                        continue
-
-                    print("⏳ Waiting for page to render...")
-                    time.sleep(8)
-
-                    print("⏳ Scrolling to load images...")
-                    try:
-                        for _ in range(3):
-                            page.mouse.wheel(0, random.randint(150, 300))
-                            time.sleep(random.uniform(0.2, 0.6))
-                        page.evaluate("window.scrollTo(0, 0)")
-                        time.sleep(1)
-                    except Exception as e:
-                        print(f"⚠️ Scroll error: {e}")
-
-                    if is_captcha_page(page):
-                        print("⚠️ CAPTCHA after scroll - rotating IP and retrying...")
-                        continue
-
-                except PlaywrightTimeout:
-                    print("  ⚠  Navigation timed out — retrying.")
-                    continue
-                except Exception as exc:
-                    print(f"  ⚠  Navigation error: {exc} — retrying.")
-                    continue
-
-                # ── Wait for product cards ─────────────────────────────────────
-                CARD_SELECTORS = [
-                    "a[href*='/item/']",
-                    "[class*='product-card']",
-                    "[class*='item-card']",
-                    "[class*='ProductCard']",
-                    "[class*='manhattan--container']",
-                ]
-                detected = False
-                for sel in CARD_SELECTORS:
-                    try:
-                        page.wait_for_selector(sel, timeout=12_000)
-                        detected = True
+                    if diagnose_page(page, keyword, page_num):
+                        success = True
                         break
-                    except PlaywrightTimeout:
-                        continue
+                    else:
+                        print("   ❌ Page failed - rotating Tor...")
+                        rotate_tor_circuit()
+                        time.sleep(12)
 
-                if not detected:
-                    print("  ⚠  No product cards detected — possible CAPTCHA or last page.")
+                except Exception as exc:
+                    print(f"   ❌ Navigation error: {exc}")
+                    if attempt == 1:
+                        break
+                    rotate_tor_circuit()
+                    time.sleep(10)
 
-                slow_scroll(page)
-                human_delay(1.5, 3.0)
+            if not success:
+                print("   ❌ All attempts failed - skipping page")
+                continue
 
-                html = page.content()
-                page_products, stats = extract_products_from_html(html)
-                page_success = True
-                break  # successful attempt — exit retry loop
+            slow_scroll(page)
+            time.sleep(2)
 
-            if not page_success:
-                print(f"  ✗  All {max_retries} attempts failed for page {page_num} — skipping.")
-            # ── End Tor retry loop ─────────────────────────────────────────────
+            html = page.content()
+            page_products, stats = extract_products_from_html(html)
 
             new_products = [p for p in page_products if p["id"] not in seen_ids]
             for p in new_products:
                 seen_ids.add(p["id"])
             all_products.extend(new_products)
 
-            print(
-                f"  ✓  {len(page_products)} products parsed  |  "
-                f"{len(new_products)} new  |  "
-                f"total: {len(all_products)}"
-            )
-            if stats:
-                print(
-                    f"     Skipped → SSR/deal: {stats['ssr_skipped']}  |  "
-                    f"nested mini-cards: {stats['nested_skipped']}"
-                )
-                print(f"     Title tiers → {stats['tier']}")
+            print(f"  ✓ {len(page_products)} parsed | {len(new_products)} new | Total: {len(all_products)}")
+            
+            if new_products:
+                for p in new_products[:2]:
+                    title = (p["title"][:60] + "…") if len(p["title"]) > 60 else p["title"]
+                    print(f"    ↳ {p['id']} [{p['_tier']}] {title}")
 
-            # Sample first 3 new products
-            for p in new_products[:3]:
-                title_preview = p["title"][:70] + ("…" if len(p["title"]) > 70 else "")
-                print(f"    ↳  {p['id']}  [{p['_tier']}]  {title_preview}")
-
-            if not page_products:
-                print("  ✓  No products on this page — stopping pagination.")
+            if len(new_products) == 0 and page_num > 1:
+                print("  ⚠️ No new products - stopping")
                 break
 
-            next_disabled: bool = page.evaluate("""
-                () => {
-                    const btn = document.querySelector(
-                        '.comet-pagination-next, [aria-label="Next page"], [aria-label="Next"]'
-                    );
-                    if (!btn) return true;
-                    return btn.disabled
-                        || btn.classList.contains('disabled')
-                        || btn.getAttribute('aria-disabled') === 'true';
-                }
-            """)
-            if next_disabled:
-                print("  ✓  Last page reached.")
-                break
-
-            human_delay(2.5, 5.5)
+            time.sleep(random.uniform(4, 7))
 
     finally:
         context.close()
 
-    # Strip internal _tier field before saving
     clean_products = [{"id": p["id"], "title": p["title"]} for p in all_products]
-    return {
-        "keyword":  keyword,
-        "products": clean_products,
-        "count":    len(clean_products),
-    }
+    return {"keyword": keyword, "products": clean_products, "count": len(clean_products)}
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -529,14 +472,14 @@ def main():
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
-            headless=headless,
-            proxy={"server": "socks5://127.0.0.1:9050"},
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-            ],
-        )
+    headless=headless,
+    proxy={"server": "socks5://127.0.0.1:9050"},  # ← ADD TOR PROXY
+    args=[
+        "--no-sandbox", 
+        "--disable-blink-features=AutomationControlled",
+        "--disable-dev-shm-usage"  # ← ADD FOR GCP
+    ],
+)
         try:
             for keyword in CATEGORIES:
                 result = scrape_category(browser, keyword, max_pages)
