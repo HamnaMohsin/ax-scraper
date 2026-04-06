@@ -35,7 +35,7 @@ from data.export_to_template import (
 import uuid
 import subprocess
 from enum import Enum
-
+import sys
 from scr1 import (
     CATEGORIES as DEFAULT_CATEGORIES,
     MAX_PAGES_PER_CATEGORY,
@@ -505,7 +505,8 @@ def run_category_scraper(background_tasks: BackgroundTasks):
     def _run(job_id: str):
         try:
             result = subprocess.run(
-                ["python3", "scr1.py"],
+                [sys.executable, "scr1.py"],
+                
                 capture_output=True,
                 text=True,
             )
