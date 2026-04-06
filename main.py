@@ -7,7 +7,7 @@ import os
 import asyncio
 from datetime import datetime
 from typing import Optional
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query,BackgroundTasks
 from sqlalchemy.orm import Session
 
 from database import get_db, init_db
@@ -31,6 +31,11 @@ from data.export_to_template import (
     write_category_file,
     make_safe_filename,
 )
+
+import uuid
+import subprocess
+from enum import Enum
+
 # ── App init ──────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="AX-Scraper", version="1.0")
@@ -471,3 +476,52 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
 def get_manufacturers(limit: int = 10, db: Session = Depends(get_db)):
     rows = db.query(ManufacturerInfo).limit(limit).all()
     return rows
+
+# ── Category Scraper ──────────────────────────────────────────────────────────
+
+_scraper_jobs: dict[str, dict] = {}
+
+
+@app.post("/run-category-scraper", status_code=202)
+def run_category_scraper(background_tasks: BackgroundTasks):
+    """
+    Runs aliexpress_scraper_tor.py as a background process.
+    Returns job_id immediately — poll /run-category-scraper/{job_id} for status.
+    """
+    job_id = str(uuid.uuid4())
+    _scraper_jobs[job_id] = {
+        "job_id":     job_id,
+        "status":     "running",
+        "started_at": datetime.utcnow().isoformat(),
+        "finished_at": None,
+        "error":      None,
+    }
+
+    def _run(job_id: str):
+        try:
+            result = subprocess.run(
+                ["python", "aliexpress_scraper_tor.py"],
+                capture_output=True,
+                text=True,
+            )
+            _scraper_jobs[job_id]["status"]      = "completed" if result.returncode == 0 else "failed"
+            _scraper_jobs[job_id]["finished_at"] = datetime.utcnow().isoformat()
+            if result.returncode != 0:
+                _scraper_jobs[job_id]["error"] = result.stderr[-500:]
+        except Exception as e:
+            _scraper_jobs[job_id]["status"]      = "failed"
+            _scraper_jobs[job_id]["finished_at"] = datetime.utcnow().isoformat()
+            _scraper_jobs[job_id]["error"]       = str(e)
+
+    background_tasks.add_task(_run, job_id)
+
+    return {"job_id": job_id, "status": "running", "message": "Scraper started. Poll /run-category-scraper/{job_id} for status."}
+
+
+@app.get("/run-category-scraper/{job_id}")
+def get_scraper_job(job_id: str):
+    """Poll status of a running category scraper job."""
+    job = _scraper_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    return job
