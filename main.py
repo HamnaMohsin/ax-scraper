@@ -505,7 +505,7 @@ def run_category_scraper(background_tasks: BackgroundTasks):
     def _run(job_id: str):
         try:
             result = subprocess.run(
-                ["python", "aliexpress_scraper_tor.py"],
+                ["python3", "scr1.py"],
                 capture_output=True,
                 text=True,
             )
