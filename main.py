@@ -36,6 +36,11 @@ import uuid
 import subprocess
 from enum import Enum
 
+from scr1 import (
+    CATEGORIES as DEFAULT_CATEGORIES,
+    MAX_PAGES_PER_CATEGORY,
+    scrape_category,
+)
 # ── App init ──────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="AX-Scraper", version="1.0")
