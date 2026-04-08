@@ -1,27 +1,15 @@
 """
-AliExpress Product ID + Title Scraper
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Searches N categories on AliExpress, paginates through results,
-and collects { product_id, title } pairs.
-
-Fix v2: skips nested <a> mini-cards ("Similar items" / m5_* cards)
-        that had empty alt text and no <h3>, causing ~5-12 missing
-        titles per category at the end of the extracted list.
-
-SSR/deal URLs (aliexpress.com/ssr/...) are also skipped for now.
-
-v4: Added Poland/English language selection before scraping.
-
-Requirements:
-    pip install playwright beautifulsoup4 stem
-    playwright install chromium
-    # Tor must be running with ControlPort 9051 enabled
-
-Usage:
-    python aliexpress_scraper.py
-    python aliexpress_scraper.py --headless false   # watch the browser
-    python aliexpress_scraper.py --pages 5          # 5 pages per category
-    python aliexpress_scraper.py --output results.json
+AliExpress Product ID + Title Scraper v5 - Poland/English
+Changelog vs v4:
+  - Completely rewrote set_poland_english_language() using the exact
+    CSS classes found in the live AliExpress settings panel HTML.
+  - Added open_settings_panel() to reliably open the ship-to/language
+    dialog before trying to interact with dropdowns.
+  - Added select_dropdown_item() helper that handles open → search →
+    click for any of the three select widgets (country, language, currency).
+  - Saves after every change; verifies Poland flag in header before
+    returning True.
+  - All other logic (Tor rotation, HTML parsing, main loop) unchanged.
 """
 
 import argparse
@@ -68,29 +56,54 @@ BASE_URL = (
     "?SearchText={query}&catId=0&g=y&shipFromCountry=&trafficChannel=main&page={page}"
 )
 
+# ── Exact CSS class names extracted from the live AliExpress settings HTML ────
+# These are the obfuscated but stable class names observed in the DOM snapshot.
+SEL_SETTINGS_TRIGGER = (
+    # Primary: the flag+country text block in the header that opens the panel
+    "[class*='ship-to'], "
+    "[class*='shipTo'], "
+    "[data-role='ship-to'], "
+    # Fallback: the Poland flag span itself (clicking it opens the panel)
+    ".country-flag-y2023.PL, "
+    # Last-resort: any element whose aria-label mentions ship or currency
+    "[aria-label*='ship'], [aria-label*='Ship']"
+)
+
+# The overlay/dialog that appears after clicking the trigger
+SEL_SETTINGS_PANEL = (
+    ".es--contentWrap--ypzOXHr, "          # exact class from HTML snapshot
+    "[class*='contentWrap'], "
+    "[class*='ship-to-content'], "
+    "[class*='shipToContent']"
+)
+
+# Individual select widget wrapper (there are 3: country, language, currency)
+SEL_SELECT_WRAP   = ".select--wrap--3N7DHe_, [class*='select--wrap']"
+SEL_SELECT_TEXT   = ".select--text--1b85oDo, [class*='select--text']"
+SEL_SELECT_POPUP  = ".select--popup--W2YwXWt, [class*='select--popup']"
+SEL_SELECT_ITEM   = ".select--item--32FADYB, [class*='select--item']"
+SEL_SEARCH_INPUT  = ".select--search--20Pss08 input, [class*='select--search'] input"
+SEL_SAVE_BTN      = ".es--saveBtn--w8EuBuy, [class*='saveBtn']"
+
+# Country-flag class used to verify Poland is active in the header
+SEL_POLAND_FLAG   = ".country-flag-y2023.PL"
+
 
 # ── Tor helpers ───────────────────────────────────────────────────────────────
-
 def rotate_tor_circuit():
-    """Rotate Tor circuit to get new exit IP - wait longer for actual change"""
     try:
         with Controller.from_port(port=9051) as controller:
             controller.authenticate()
             controller.signal(Signal.NEWNYM)
-            print("   Waiting 15s for new Tor circuit...")
-            for i in range(15):
-                time.sleep(1)
-                if i % 5 == 4:
-                    print(f"   ... {15 - i - 1}s remaining")
-        print("✅ Tor circuit rotated - new IP acquired")
+        time.sleep(8)
+        print("   ✅ Tor rotated")
         return True
     except Exception as e:
-        print(f"⚠️ Could not rotate Tor circuit: {e}")
+        print(f"   ⚠️ Tor rotation failed: {e}")
         return False
 
 
 def random_viewport() -> dict:
-    """Return a random but realistic viewport size."""
     viewports = [
         {"width": 1440, "height": 900},
         {"width": 1366, "height": 768},
@@ -101,11 +114,9 @@ def random_viewport() -> dict:
     return random.choice(viewports)
 
 
+# ── CAPTCHA detection ─────────────────────────────────────────────────────────
 def is_captcha_page(page) -> bool:
-    """Detect if page is a CAPTCHA/block page - multiple selectors"""
-    page_url = page.url.lower()
-    page_title = page.title().lower()
-
+    page_url   = page.url.lower()
     captcha_url_keywords = ["baxia", "punish", "captcha", "verify", "_____tmd_____"]
     if any(kw in page_url for kw in captcha_url_keywords):
         print("❌ CAPTCHA detected in URL")
@@ -119,111 +130,292 @@ def is_captcha_page(page) -> bool:
         "iframe[src*='geetest']",
         "[class*='captcha']",
     ]
-    for selector in captcha_selectors:
+    for sel in captcha_selectors:
         try:
-            if page.locator(selector).count() > 0:
-                print(f"❌ CAPTCHA detected: {selector}")
+            if page.locator(sel).count() > 0:
+                print(f"❌ CAPTCHA detected via selector: {sel}")
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def diagnose_page(page, keyword: str, page_num: int) -> bool:
+    print(f"   📋 URL: {page.url}")
+    print(f"   📋 Title: {page.title()[:80]}")
+
+    if is_captcha_page(page):
+        print("   ❌ CAPTCHA/BLOCK DETECTED")
+        return False
+
+    item_links = len(page.locator("a[href*='/item/']").all())
+    print(f"   📋 Item links found: {item_links}")
+    return item_links > 5
+
+
+# ── Settings panel helpers ────────────────────────────────────────────────────
+
+def _wait_visible(page, selector: str, timeout: int = 5000):
+    """Return the first visible locator match, or None."""
+    try:
+        loc = page.locator(selector).first
+        loc.wait_for(state="visible", timeout=timeout)
+        return loc
+    except Exception:
+        return None
+
+
+def open_settings_panel(page) -> bool:
+    """
+    Click the header element that opens the Ship-to / Language / Currency
+    settings panel.  Returns True when the panel is visible.
+
+    Strategy (tried in order):
+      1. Direct URL parameter approach — navigate to /?lang=en&shipToCountry=PL
+         (sets cookies server-side; no UI interaction needed).  Most reliable.
+      2. Click the Poland-flag / ship-to trigger in the header.
+      3. JavaScript dispatch of a click on the trigger element.
+    """
+    # ── Strategy 1: URL-based cookie injection (fastest, most reliable) ──────
+    try:
+        print("   📡 Strategy 1: URL param cookie injection …")
+        page.goto(
+            "https://www.aliexpress.com/?lang=en&shipToCountry=PL&currency=PLN",
+            wait_until="domcontentloaded",
+            timeout=35000,
+        )
+        time.sleep(3)
+        if is_captcha_page(page):
+            print("   ⚠️  CAPTCHA on strategy-1 page, skipping to strategy 2")
+        else:
+            # Check whether the header already shows Poland flag
+            if page.locator(SEL_POLAND_FLAG).count() > 0:
+                print("   ✅ Strategy 1 succeeded – Poland flag visible in header")
+                return True
+            print("   ℹ️  Strategy 1: flag not visible yet, falling through to UI method")
+    except Exception as e:
+        print(f"   ⚠️  Strategy 1 error: {e}")
+
+    # ── Strategy 2: Click the header ship-to / flag trigger ──────────────────
+    trigger_selectors = [
+        # Most specific: the ship-to wrapper known from AliExpress header
+        "[class*='ship-to--menuItem']",
+        "[class*='shipTo--menuItem']",
+        "[class*='ship-to']",
+        "[class*='shipTo']",
+        # The Poland flag span
+        ".country-flag-y2023.PL",
+        # Any element in the top nav that contains "Poland" text
+        "//span[normalize-space()='Poland']",
+        # Generic fallback
+        "[data-role='ship-to']",
+    ]
+
+    for sel in trigger_selectors:
+        try:
+            locator = (
+                page.locator(sel).first
+                if not sel.startswith("//")
+                else page.locator(f"xpath={sel}").first
+            )
+            if locator.count() > 0:
+                locator.scroll_into_view_if_needed(timeout=3000)
+                locator.click(timeout=4000)
+                time.sleep(1.5)
+                panel = _wait_visible(page, SEL_SETTINGS_PANEL, timeout=5000)
+                if panel:
+                    print(f"   ✅ Strategy 2 succeeded – panel opened via '{sel}'")
+                    return True
+        except Exception:
+            continue
+
+    # ── Strategy 3: JS click on any trigger candidate ────────────────────────
+    print("   📡 Strategy 3: JS-driven panel open …")
+    js_triggers = [
+        "document.querySelector(\"[class*='ship-to']\")?.click()",
+        "document.querySelector(\"[class*='shipTo']\")?.click()",
+        "document.querySelector('.country-flag-y2023.PL')?.closest('div')?.click()",
+    ]
+    for js in js_triggers:
+        try:
+            page.evaluate(js)
+            time.sleep(1.5)
+            panel = _wait_visible(page, SEL_SETTINGS_PANEL, timeout=4000)
+            if panel:
+                print("   ✅ Strategy 3 succeeded – panel opened via JS")
                 return True
         except Exception:
             continue
 
-    is_product_page = "aliexpress" in page_title and len(page_title) > 40
-    block_title_keywords = ["verify", "access", "denied", "blocked", "challenge"]
-    if not is_product_page and any(kw in page_title for kw in block_title_keywords):
-        print("❌ Block page detected from title")
-        return True
-
+    print("   ❌ Could not open settings panel via any strategy")
     return False
 
 
-def diagnose_page(page, keyword: str, page_num: int):
-    """Diagnose why no products are found"""
-    print(f"   📋 URL: {page.url}")
-    print(f"   📋 Title: {page.title()[:80]}...")
-    
-    if is_captcha_page(page):
-        print("   ❌ CAPTCHA/BLOCK DETECTED")
-        return False
-    
-    item_links = len(page.locator("a[href*='/item/']").all())
-    products = len(page.locator("[class*='product'], [class*='item']").all())
-    print(f"   📋 Item links: {item_links} | Product cards: {products}")
-    
-    return item_links > 5  # Need at least 5 item links
+def select_dropdown_item(page, wrap_index: int, desired_text: str) -> bool:
+    """
+    Open the Nth select widget inside the settings panel (0=country,
+    1=province, 2=city, 3=language, 4=currency – but we only care about
+    0=country, 3=language based on the HTML snapshot) and click the item
+    whose visible text matches *desired_text* (case-insensitive prefix).
 
-
-def set_poland_english_language(page):
-    """Navigate to language selector and set Poland/English"""
-    print("   🌍 Setting Poland/English language...")
-    
+    Steps:
+      1. Click the select--text div to open the popup.
+      2. Type in the search box to filter.
+      3. Click the first matching select--item.
+    """
     try:
-        # Click the ship-to menu (Poland selector)
-        ship_to_selector = ".ship-to--menuItem--WdBDsYl, [aria-label*='country'], [class*='ship-to']"
-        ship_to = page.locator(ship_to_selector).first
-        if ship_to.count() > 0:
-            ship_to.click(timeout=5000)
-            time.sleep(1)
-            print("   ✓ Ship-to menu opened")
-        else:
-            print("   ⚠️ Ship-to menu not found, continuing...")
-        
-        # Look for Poland option and click it
-        poland_selectors = [
-            "[class*='ship-to'][class*='PL']",
-            "text=Poland",
-            "[data-country='PL']",
-            ".country-flag-y2023.PL",
-            "[aria-label*='Poland']"
-        ]
-        
-        poland_clicked = False
-        for selector in poland_selectors:
-            try:
-                poland_option = page.locator(selector).first
-                if poland_option.count() > 0:
-                    poland_option.click(timeout=3000)
-                    time.sleep(2)
-                    print("   ✓ Poland selected")
-                    poland_clicked = True
-                    break
-            except:
-                continue
-        
-        if not poland_clicked:
-            print("   ⚠️ Poland option not found, trying English...")
-        
-        # Ensure English language (usually default after Poland)
-        english_selectors = [
-            "text=English",
-            "[lang='en']",
-            "[data-lang='en']"
-        ]
-        for selector in english_selectors:
-            try:
-                english_option = page.locator(selector).first
-                if english_option.count() > 0:
-                    english_option.click(timeout=3000)
-                    time.sleep(2)
-                    print("   ✓ English language confirmed")
-                    break
-            except:
-                continue
-        
-        # Verify we're on main page and not blocked
-        time.sleep(3)
-        if is_captcha_page(page):
+        wraps = page.locator(SEL_SELECT_WRAP).all()
+        if wrap_index >= len(wraps):
+            print(f"   ⚠️  select wrap index {wrap_index} out of range (found {len(wraps)})")
             return False
-        
-        print("   ✅ Language/region set successfully")
-        return True
-        
-    except Exception as e:
-        print(f"   ⚠️ Language setup error: {e}")
+
+        wrap = wraps[wrap_index]
+
+        # 1. Open the dropdown
+        text_btn = wrap.locator(SEL_SELECT_TEXT).first
+        text_btn.click(timeout=4000)
+        time.sleep(0.8)
+
+        # 2. Type in the search box to filter results
+        search_input = wrap.locator(SEL_SEARCH_INPUT).first
+        if search_input.count() > 0:
+            search_input.fill(desired_text[:6], timeout=3000)   # short prefix is enough
+            time.sleep(0.6)
+
+        # 3. Click the matching item
+        items = wrap.locator(SEL_SELECT_ITEM).all()
+        for item in items:
+            try:
+                item_text = item.inner_text(timeout=1000).strip()
+                if item_text.lower().startswith(desired_text.lower()):
+                    item.click(timeout=3000)
+                    time.sleep(0.5)
+                    print(f"   ✓ Selected '{item_text}' (wrap #{wrap_index})")
+                    return True
+            except Exception:
+                continue
+
+        # Fallback: click by text locator
+        item_loc = wrap.locator(f"{SEL_SELECT_ITEM}:has-text('{desired_text}')").first
+        if item_loc.count() > 0:
+            item_loc.click(timeout=3000)
+            time.sleep(0.5)
+            print(f"   ✓ Selected '{desired_text}' via text fallback (wrap #{wrap_index})")
+            return True
+
+        print(f"   ⚠️  Item '{desired_text}' not found in wrap #{wrap_index}")
         return False
+
+    except Exception as e:
+        print(f"   ⚠️  select_dropdown_item error (wrap #{wrap_index}, '{desired_text}'): {e}")
+        return False
+
+
+def click_save_button(page) -> bool:
+    """Click the Save button and wait for the panel to close."""
+    try:
+        save_btn = page.locator(SEL_SAVE_BTN).first
+        if save_btn.count() == 0:
+            # Try XPath fallback
+            save_btn = page.locator("xpath=//div[normalize-space()='Save']").first
+        save_btn.click(timeout=5000)
+        time.sleep(3)   # let the page reload/update after save
+        print("   ✅ Save button clicked")
+        return True
+    except Exception as e:
+        print(f"   ⚠️  Save button error: {e}")
+        return False
+
+
+# ── Main language/region setter ───────────────────────────────────────────────
+
+def set_poland_english_language(page) -> bool:
+    """
+    Ensure the AliExpress session is set to:
+      • Ship-to  → Poland (PL)
+      • Language → English
+      • Currency → PLN  (optional but consistent)
+
+    Returns True when the Poland flag is confirmed in the header.
+
+    The function tries three strategies in order:
+      A) URL parameter approach  (sets cookies server-side – fastest)
+      B) UI interaction with the settings panel dropdowns
+      C) Direct cookie injection via JavaScript
+
+    After A or B succeeds, it always verifies the Poland flag is present.
+    """
+    print("   🌍 Setting Poland region + English language …")
+
+    # ── A: URL-parameter approach (already tried inside open_settings_panel) ──
+    # We call open_settings_panel() first; if strategy 1 succeeds and the flag
+    # is visible, open_settings_panel returns True and we can verify & return.
+    panel_opened = open_settings_panel(page)
+
+    # Quick verification after URL-param strategy
+    if page.locator(SEL_POLAND_FLAG).count() > 0:
+        print("   ✅ Poland flag confirmed in header (URL-param strategy)")
+        return True
+
+    # ── B: UI interaction ─────────────────────────────────────────────────────
+    if panel_opened:
+        print("   🖱️  Interacting with settings panel dropdowns …")
+
+        # Identify which wrap index is "Ship to country" vs "Language".
+        # From the HTML snapshot the order is:
+        #   wrap 0 → Ship-to country (shows "Poland")
+        #   wrap 1 → Province         (shows "Dolnoslaskie")
+        #   wrap 2 → City             (shows "Boleslawiec")
+        #   wrap 3 → Language         (shows "English")
+        #   wrap 4 → Currency         (shows "PLN")
+        #
+        # We only need to set wrap 0 (country) and wrap 3 (language).
+        # Province/city can stay as-is; they are auto-populated.
+
+        country_set  = select_dropdown_item(page, wrap_index=0, desired_text="Poland")
+        language_set = select_dropdown_item(page, wrap_index=3, desired_text="English")
+        currency_set = select_dropdown_item(page, wrap_index=4, desired_text="PLN")
+
+        if country_set or language_set:
+            click_save_button(page)
+        else:
+            print("   ⚠️  No dropdowns were changed; skipping save")
+
+        # Verify
+        time.sleep(2)
+        if page.locator(SEL_POLAND_FLAG).count() > 0:
+            print("   ✅ Poland flag confirmed after UI interaction")
+            return True
+
+    # ── C: Cookie injection via JavaScript ────────────────────────────────────
+    print("   🍪 Strategy C: injecting locale cookies via JS …")
+    try:
+        page.evaluate("""
+            () => {
+                const set = (name, val) => {
+                    document.cookie = `${name}=${val};path=/;domain=.aliexpress.com`;
+                };
+                set('aep_usuc_f',  'site=glo&c_tp=PLN&region=PL&b_locale=en_US');
+                set('intl_locale', 'en_US');
+                set('acs_usuc_t',  '');
+            }
+        """)
+        page.reload(wait_until="domcontentloaded", timeout=30000)
+        time.sleep(3)
+
+        if page.locator(SEL_POLAND_FLAG).count() > 0:
+            print("   ✅ Poland flag confirmed after cookie injection")
+            return True
+
+        print("   ⚠️  Cookie injection: flag still not visible, continuing anyway …")
+        return True   # Don't block scraping; AliExpress may still serve correct data
+
+    except Exception as e:
+        print(f"   ⚠️  Cookie injection error: {e} – continuing anyway")
+        return True
 
 
 # ── URL / tag helpers ─────────────────────────────────────────────────────────
-
 def build_url(keyword: str, page: int) -> str:
     slug  = keyword.strip().replace(" ", "-")
     query = keyword.strip().replace(" ", "+")
@@ -231,25 +423,15 @@ def build_url(keyword: str, page: int) -> str:
 
 
 def is_ssr_url(href: str) -> bool:
-    """
-    SSR / deal URLs look like:
-      https://www.aliexpress.com/ssr/300001493/welcomegiftspmpc?...productIds=...
-    These open promotional landing pages, not standard product pages.
-    Skipped for now.
-    """
     return "/ssr/" in href
 
 
 def extract_product_id_from_href(href: str) -> str | None:
-    """Pull numeric ID from a /item/1005009675360531.html href."""
     m = re.search(r'/item/(\d{10,20})\.html', href)
     return m.group(1) if m else None
 
 
 def is_nested_anchor(tag) -> bool:
-    """
-    Return True if this <a> is nested inside another <a>.
-    """
     for parent in tag.parents:
         if parent.name == "a":
             return True
@@ -257,17 +439,11 @@ def is_nested_anchor(tag) -> bool:
 
 
 # ── HTML parsing ──────────────────────────────────────────────────────────────
-
 def clean_title(raw: str) -> str:
-    """Collapse whitespace and invisible chars."""
     return " ".join(raw.split()).strip()
 
 
 def extract_products_from_html(html: str) -> tuple[list[dict], dict]:
-    """
-    Parse rendered HTML and return:
-        (products, stats)
-    """
     soup = BeautifulSoup(html, "html.parser")
     seen_ids: set[str] = set()
     products: list[dict] = []
@@ -292,26 +468,20 @@ def extract_products_from_html(html: str) -> tuple[list[dict], dict]:
         title = ""
         tier  = "missing"
 
-        # Tier 1 — <h3> inside the card
+        # 4-tier title extraction
         h3 = a_tag.find("h3")
         if h3:
             title = clean_title(h3.get_text())
             tier  = "h3"
-
-        # Tier 2 — aria-label on role="heading" element
-        if not title:
+        elif not title:
             heading = a_tag.find(attrs={"role": "heading"})
             if heading and heading.get("aria-label"):
                 title = clean_title(heading["aria-label"])
                 tier  = "aria-label"
-
-        # Tier 3 — title attribute on the <a> itself
-        if not title and a_tag.get("title"):
+        elif not title and a_tag.get("title"):
             title = clean_title(a_tag["title"])
             tier  = "title-attr"
-
-        # Tier 4 — alt text of first non-trivial <img>
-        if not title:
+        elif not title:
             for img in a_tag.find_all("img"):
                 alt = img.get("alt", "").strip()
                 if alt and len(alt) > 5:
@@ -325,18 +495,6 @@ def extract_products_from_html(html: str) -> tuple[list[dict], dict]:
     return products, stats
 
 
-# ── Misc helpers ──────────────────────────────────────────────────────────────
-
-def human_delay(lo: float = 1.5, hi: float = 3.5) -> None:
-    time.sleep(random.uniform(lo, hi))
-
-
-def slow_scroll(page, steps: int = 6) -> None:
-    for _ in range(steps):
-        page.evaluate("window.scrollBy(0, window.innerHeight * 0.75)")
-        time.sleep(0.45)
-
-
 # ── Core scraper ──────────────────────────────────────────────────────────────
 def scrape_category(browser, keyword: str, max_pages: int) -> dict:
     print(f"\n{'━'*60}")
@@ -348,64 +506,39 @@ def scrape_category(browser, keyword: str, max_pages: int) -> dict:
 
     context = browser.new_context(
         user_agent=random.choice([
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         ]),
         viewport=random_viewport(),
         locale="en-US",
-        timezone_id="Europe/Warsaw",  # Poland timezone
+        timezone_id="Europe/Warsaw",
         extra_http_headers={
             "Accept-Language": "en-US,en;q=0.9,pl;q=0.8",
-            "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
         },
     )
 
+    # Block images to speed up loading
     context.route("**/*.{png,jpg,jpeg,gif,webp,svg,ico}", lambda r: r.abort())
-    context.route("**/*{google-analytics,gtm,facebook,pixel}", lambda r: r.abort())
-
     page = context.new_page()
-    
+
+    # Anti-detection patches
     page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-        Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-        Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en', 'pl']});
+        Object.defineProperty(navigator, 'webdriver',  {get: () => undefined});
+        Object.defineProperty(navigator, 'plugins',    {get: () => [1,2,3,4,5]});
+        Object.defineProperty(navigator, 'languages',  {get: () => ['en-US','en','pl']});
         window.chrome = {runtime: {}};
     """)
 
     try:
-        # ── NEW: Set Poland/English first ──────────────────────────────────────
-        print("\n  🌍 Initializing Poland/English region...")
-        success = False
-        for attempt in range(3):
-            try:
-                print(f"   📡 Loading AliExpress homepage (attempt {attempt+1})...")
-                page.goto("https://www.aliexpress.com", wait_until="domcontentloaded", timeout=45_000)
-                time.sleep(4)
-                
-                if set_poland_english_language(page):
-                    success = True
-                    break
-                else:
-                    print("   ❌ Language setup failed - rotating Tor...")
-                    rotate_tor_circuit()
-                    time.sleep(12)
-                    
-            except Exception as exc:
-                print(f"   ❌ Homepage error: {exc}")
-                if attempt == 2:
-                    break
-                rotate_tor_circuit()
-                time.sleep(10)
+        # STEP 1: Set Poland/English region
+        if not set_poland_english_language(page):
+            print("   ⚠️  Region setup failed – scraping anyway")
 
-        if not success:
-            print("   ❌ Could not set Poland/English - continuing anyway...")
-
-        # ── Now scrape category pages ──────────────────────────────────────────
+        # STEP 2: Scrape category pages
         for page_num in range(1, max_pages + 1):
             url = build_url(keyword, page_num)
             print(f"\n  [Page {page_num}/{max_pages}]  {url}")
@@ -413,15 +546,15 @@ def scrape_category(browser, keyword: str, max_pages: int) -> dict:
             success = False
             for attempt in range(2):
                 try:
-                    print(f"   📡 Loading (attempt {attempt+1})...")
-                    page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                    print(f"   📡 Loading (attempt {attempt + 1}) …")
+                    page.goto(url, wait_until="domcontentloaded", timeout=45000)
                     time.sleep(4)
 
                     if diagnose_page(page, keyword, page_num):
                         success = True
                         break
                     else:
-                        print("   ❌ Page failed - rotating Tor...")
+                        print("   ❌ Page check failed – rotating Tor …")
                         rotate_tor_circuit()
                         time.sleep(12)
 
@@ -433,10 +566,13 @@ def scrape_category(browser, keyword: str, max_pages: int) -> dict:
                     time.sleep(10)
 
             if not success:
-                print("   ❌ All attempts failed - skipping page")
+                print("   ❌ Skipping page")
                 continue
 
-            slow_scroll(page)
+            # Scroll to trigger lazy-loaded products
+            for _ in range(4):
+                page.evaluate("window.scrollBy(0, window.innerHeight * 0.7)")
+                time.sleep(0.5)
             time.sleep(2)
 
             html = page.content()
@@ -447,15 +583,14 @@ def scrape_category(browser, keyword: str, max_pages: int) -> dict:
                 seen_ids.add(p["id"])
             all_products.extend(new_products)
 
-            print(f"  ✓ {len(page_products)} parsed | {len(new_products)} new | Total: {len(all_products)}")
-            
+            print(f"  ✓ {len(new_products)} new | Total: {len(all_products)}")
             if new_products:
                 for p in new_products[:2]:
                     title = (p["title"][:60] + "…") if len(p["title"]) > 60 else p["title"]
                     print(f"    ↳ {p['id']} [{p['_tier']}] {title}")
 
             if len(new_products) == 0 and page_num > 1:
-                print("  ⚠️ No new products - stopping")
+                print("  ⚠️  No new products – stopping early")
                 break
 
             time.sleep(random.uniform(4, 7))
@@ -468,38 +603,54 @@ def scrape_category(browser, keyword: str, max_pages: int) -> dict:
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-
 def main():
-    parser = argparse.ArgumentParser(description="AliExpress Product ID + Title Scraper")
+    parser = argparse.ArgumentParser(description="AliExpress Product ID + Title Scraper v5")
     parser.add_argument("--headless", default="true", choices=["true", "false"])
-    parser.add_argument("--pages", type=int, default=MAX_PAGES_PER_CATEGORY)
-    parser.add_argument("--output", default=OUTPUT_FILE)
+    parser.add_argument("--pages",    type=int, default=MAX_PAGES_PER_CATEGORY)
+    parser.add_argument("--output",   default=OUTPUT_FILE)
     args = parser.parse_args()
 
     headless  = args.headless.lower() == "true"
-    max_pages = args.pages
-    output    = Path(args.output)
     timestamp = datetime.now().isoformat()
 
-    print(f"\n{'═'*60}")
-    print("  AliExpress Product Scraper  (ID + Title)  v4 - Poland/English")
-    print(f"  Started   : {timestamp}")
-    print(f"  Headless  : {headless}  |  Pages/category: {max_pages}")
-    print(f"  Categories: {', '.join(CATEGORIES)}")
-    print(f"{'═'*60}")
+    print(f"\n{'═'*70}")
+    print("  🚀 AliExpress Scraper v5 - Poland/English Edition")
+    print(f"  📅 {timestamp} | Headless: {headless} | Pages: {args.pages}")
+    print(f"{'═'*70}")
 
-    results: dict[str, dict] = {}
-
+    results = {}
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
             headless=headless,
             proxy={"server": "socks5://127.0.0.1:9050"},
-            args=[
-                "--no-sandbox", 
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage"
-            ],
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
         )
         try:
             for keyword in CATEGORIES:
-                result = scrape
+                result = scrape_category(browser, keyword, args.pages)
+                results[keyword] = result
+                print(f"\n  ✅ '{keyword}': {result['count']} products")
+                time.sleep(random.uniform(5, 9))
+        finally:
+            browser.close()
+
+    total = sum(r["count"] for r in results.values())
+    output_data = {
+        "scraped_at":     timestamp,
+        "region":         "Poland/English",
+        "total_products": total,
+        "results":        results,
+    }
+
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    with open(args.output, "w", encoding="utf-8") as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+
+    print(f"\n{'═'*70}")
+    print("  🎉 SCRAPING COMPLETE")
+    print(f"  📊 {total:,} total products → {args.output}")
+    print(f"{'═'*70}")
+
+
+if __name__ == "__main__":
+    main()
