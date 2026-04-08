@@ -1,27 +1,5 @@
 """
-AliExpress Product ID + Title Scraper
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Searches N categories on AliExpress, paginates through results,
-and collects { product_id, title } pairs.
-
-Fix v2: skips nested <a> mini-cards ("Similar items" / m5_* cards)
-        that had empty alt text and no <h3>, causing ~5-12 missing
-        titles per category at the end of the extracted list.
-
-SSR/deal URLs (aliexpress.com/ssr/...) are also skipped for now.
-
-v3: Added Tor circuit rotation + CAPTCHA detection with retries.
-
-Requirements:
-    pip install playwright beautifulsoup4 stem
-    playwright install chromium
-    # Tor must be running with ControlPort 9051 enabled
-
-Usage:
-    python aliexpress_scraper.py
-    python aliexpress_scraper.py --headless false   # watch the browser
-    python aliexpress_scraper.py --pages 5          # 5 pages per category
-    python aliexpress_scraper.py --output results.json
+AliExpress Product ID + Title Scraper v4 - Poland/English
 """
 
 import argparse
@@ -70,62 +48,6 @@ BASE_URL = (
 
 
 # ── Tor helpers ───────────────────────────────────────────────────────────────
-
-def rotate_tor_circuit():
-    """Rotate Tor circuit to get new exit IP - wait longer for actual change"""
-    try:
-        with Controller.from_port(port=9051) as controller:
-            controller.authenticate()
-            controller.signal(Signal.NEWNYM)
-            print("   Waiting 15s for new Tor circuit...")
-            for i in range(15):
-                time.sleep(1)
-                if i % 5 == 4:
-                    print(f"   ... {15 - i - 1}s remaining")
-        print("✅ Tor circuit rotated - new IP acquired")
-        return True
-    except Exception as e:
-        print(f"⚠️ Could not rotate Tor circuit: {e}")
-        return False
-
-def random_viewport():
-    return random.choice([
-        {"width": 1920, "height": 1080},
-        {"width": 1440, "height": 900},
-        {"width": 1366, "height": 768},
-        {"width": 1536, "height": 864}
-    ])
-
-def diagnose_page(page, keyword: str, page_num: int):
-    """Diagnose why no products are found"""
-    print(f"   📋 URL: {page.url}")
-    print(f"   📋 Title: {page.title()[:80]}...")
-    
-    if is_captcha_page(page):
-        print("   ❌ CAPTCHA/BLOCK DETECTED")
-        return False
-    
-    html = page.content()
-    with open(f"debug_{keyword}_p{page_num}.html", "w", encoding="utf-8") as f:
-        f.write(html)
-    print(f"   💾 HTML saved: debug_{keyword}_p{page_num}.html")
-    
-    item_links = len(page.locator("a[href*='/item/']").all())
-    products = len(page.locator("[class*='product'], [class*='item']").all())
-    print(f"   📋 Item links: {item_links} | Product cards: {products}")
-    
-    return item_links > 5  # Need at least 5 item links
-
-def is_captcha_page(page) -> bool:
-    title = page.title().lower()
-    url = page.url.lower()
-    
-    captcha_words = ["captcha", "verify", "baxia", "punish", "blocked", "access denied", "no results"]
-    if any(word in title or word in url for word in captcha_words):
-        return True
-        
-    return page.locator("iframe[src*='recaptcha'], .baxia-punish, [class*='captcha']").count() > 0
-
 def rotate_tor_circuit():
     """Rotate Tor circuit"""
     try:
@@ -138,8 +60,20 @@ def rotate_tor_circuit():
     except Exception as e:
         print(f"   ⚠️ Tor failed: {e}")
         return False
+
+
+def random_viewport() -> dict:
+    viewports = [
+        {"width": 1440, "height": 900},
+        {"width": 1366, "height": 768},
+        {"width": 1536, "height": 864},
+        {"width": 1920, "height": 1080},
+        {"width": 1280, "height": 800},
+    ]
+    return random.choice(viewports)
+
+
 def is_captcha_page(page) -> bool:
-    """Detect if page is a CAPTCHA/block page - multiple selectors"""
     page_url = page.url.lower()
     page_title = page.title().lower()
 
@@ -164,29 +98,82 @@ def is_captcha_page(page) -> bool:
         except Exception:
             continue
 
-    is_product_page = "aliexpress" in page_title and len(page_title) > 40
-    block_title_keywords = ["verify", "access", "denied", "blocked", "challenge"]
-    if not is_product_page and any(kw in page_title for kw in block_title_keywords):
-        print("❌ Block page detected from title")
-        return True
-
     return False
 
 
-def random_viewport() -> dict:
-    """Return a random but realistic viewport size."""
-    viewports = [
-        {"width": 1440, "height": 900},
-        {"width": 1366, "height": 768},
-        {"width": 1536, "height": 864},
-        {"width": 1920, "height": 1080},
-        {"width": 1280, "height": 800},
-    ]
-    return random.choice(viewports)
+def diagnose_page(page, keyword: str, page_num: int):
+    print(f"   📋 URL: {page.url}")
+    print(f"   📋 Title: {page.title()[:80]}...")
+    
+    if is_captcha_page(page):
+        print("   ❌ CAPTCHA/BLOCK DETECTED")
+        return False
+    
+    item_links = len(page.locator("a[href*='/item/']").all())
+    print(f"   📋 Item links: {item_links}")
+    
+    return item_links > 5
 
+
+def set_poland_english_language(page):
+    """Set Poland region + ENGLISH language explicitly"""
+    print("   🌍 Setting Poland region + English language...")
+    
+    try:
+        # Go to English/Poland URL first (most reliable)
+        print("   📡 Using direct URL for Poland/English...")
+        page.goto("https://www.aliexpress.com/?lang=en&shipToCountry=PL", 
+                 wait_until="domcontentloaded", timeout=30000)
+        time.sleep(4)
+        
+        # Verify we're not on CAPTCHA
+        if is_captcha_page(page):
+            print("   ❌ CAPTCHA after language set")
+            return False
+        
+        # Double-check: Click language selector if needed
+        lang_selectors = [
+            "[aria-label*='language']",
+            "[class*='lang']",
+            ".site-language-selector"
+        ]
+        
+        for selector in lang_selectors:
+            try:
+                lang_menu = page.locator(selector).first
+                if lang_menu.count() > 0:
+                    lang_menu.click(timeout=3000)
+                    time.sleep(1)
+                    
+                    # Select English
+                    english = page.locator("text=English, text=en").first
+                    if english.count() > 0:
+                        english.click(timeout=2000)
+                        time.sleep(2)
+                        print("   ✓ English language confirmed")
+                    break
+            except:
+                continue
+        
+        # Verify Poland flag visible (from your HTML snippet)
+        poland_flag = page.locator(".country-flag-y2023.PL, [class*='PL']").first
+        if poland_flag.count() > 0:
+            print("   ✓ Poland flag confirmed")
+        
+        # Check page shows English
+        title = page.title().lower()
+        if "english" in title or "en/" in page.content().lower():
+            print("   ✅ Poland region + English language SET")
+            return True
+        else:
+            print("   ⚠️ Language verification failed, continuing...")
+            return True
+            
+    except Exception as e:
+        print(f"   ⚠️ Language setup: {e} - continuing...")
+        return True
 
 # ── URL / tag helpers ─────────────────────────────────────────────────────────
-
 def build_url(keyword: str, page: int) -> str:
     slug  = keyword.strip().replace(" ", "-")
     query = keyword.strip().replace(" ", "+")
@@ -194,42 +181,15 @@ def build_url(keyword: str, page: int) -> str:
 
 
 def is_ssr_url(href: str) -> bool:
-    """
-    SSR / deal URLs look like:
-      https://www.aliexpress.com/ssr/300001493/welcomegiftspmpc?...productIds=...
-    These open promotional landing pages, not standard product pages.
-    Skipped for now.
-    """
     return "/ssr/" in href
 
 
 def extract_product_id_from_href(href: str) -> str | None:
-    """Pull numeric ID from a /item/1005009675360531.html href."""
     m = re.search(r'/item/(\d{10,20})\.html', href)
     return m.group(1) if m else None
 
 
 def is_nested_anchor(tag) -> bool:
-    """
-    Return True if this <a> is nested inside another <a>.
-
-    Why this matters:
-      AliExpress main product cards (class="search-card-item") each contain
-      a small "Similar items" / "You may also like" row of mini-cards
-      (class="m5_*") that are additional <a href="/item/..."> tags nested
-      INSIDE the outer card's <a> tag.
-
-      These mini-cards have:
-        • No <h3>
-        • No aria-label / role="heading"
-        • Empty alt="" on their <img> tags
-
-      ...so all 4 title-extraction tiers fail, producing "—" titles.
-      The product IDs *are* valid, but the items belong to other,
-      unrelated searches.  The cleanest fix is to skip them entirely:
-      they will appear as top-level cards in their own right elsewhere
-      in the page (or in a later page), where they DO carry full markup.
-    """
     for parent in tag.parents:
         if parent.name == "a":
             return True
@@ -237,41 +197,11 @@ def is_nested_anchor(tag) -> bool:
 
 
 # ── HTML parsing ──────────────────────────────────────────────────────────────
-
 def clean_title(raw: str) -> str:
-    """Collapse whitespace and invisible chars."""
     return " ".join(raw.split()).strip()
 
 
 def extract_products_from_html(html: str) -> tuple[list[dict], dict]:
-    """
-    Parse rendered HTML and return:
-        (products, stats)
-
-    products  — list of {"id": "...", "title": "...", "_tier": "..."}
-    stats     — diagnostic counts (ssr_skipped, nested_skipped, tier_breakdown)
-
-    Card structure observed in the wild
-    ────────────────────────────────────
-    Outer (main) card:
-        <a class="search-card-item" href="/item/<id>.html">
-            <div role="heading" aria-label="<title>">
-                <h3 class="lw_k4"><title></h3>
-            </div>
-            <!-- nested mini-cards (lw_ly / m5_* wrapper) -->
-            <div class="lw_ly">
-                <a href="/item/<other-id>.html">   ← nested, NO title markup
-                    <img alt="">
-                </a>
-            </div>
-        </a>
-
-    Title extraction — 4-tier fallback (most → least reliable):
-        1. <h3> anywhere inside the <a>
-        2. aria-label on a child element with role="heading"
-        3. title attribute on the <a> itself
-        4. alt text of the first non-empty <img> inside the card
-    """
     soup = BeautifulSoup(html, "html.parser")
     seen_ids: set[str] = set()
     products: list[dict] = []
@@ -280,17 +210,14 @@ def extract_products_from_html(html: str) -> tuple[list[dict], dict]:
     for a_tag in soup.find_all("a", href=True):
         href = a_tag["href"]
 
-        # ── Skip SSR / promotional URLs ───────────────────────────────────────
         if is_ssr_url(href):
             stats["ssr_skipped"] += 1
             continue
 
-        # ── Must be a standard /item/<id>.html link ───────────────────────────
         product_id = extract_product_id_from_href(href)
         if not product_id or product_id in seen_ids:
             continue
 
-        # ── KEY FIX: skip mini-cards nested inside another <a> ────────────────
         if is_nested_anchor(a_tag):
             stats["nested_skipped"] += 1
             continue
@@ -299,26 +226,20 @@ def extract_products_from_html(html: str) -> tuple[list[dict], dict]:
         title = ""
         tier  = "missing"
 
-        # Tier 1 — <h3> inside the card
+        # 4-tier title extraction
         h3 = a_tag.find("h3")
         if h3:
             title = clean_title(h3.get_text())
             tier  = "h3"
-
-        # Tier 2 — aria-label on role="heading" element
-        if not title:
+        elif not title:
             heading = a_tag.find(attrs={"role": "heading"})
             if heading and heading.get("aria-label"):
                 title = clean_title(heading["aria-label"])
                 tier  = "aria-label"
-
-        # Tier 3 — title attribute on the <a> itself
-        if not title and a_tag.get("title"):
+        elif not title and a_tag.get("title"):
             title = clean_title(a_tag["title"])
             tier  = "title-attr"
-
-        # Tier 4 — alt text of first non-trivial <img>
-        if not title:
+        elif not title:
             for img in a_tag.find_all("img"):
                 alt = img.get("alt", "").strip()
                 if alt and len(alt) > 5:
@@ -330,18 +251,6 @@ def extract_products_from_html(html: str) -> tuple[list[dict], dict]:
         products.append({"id": product_id, "title": title or "—", "_tier": tier})
 
     return products, stats
-
-
-# ── Misc helpers ──────────────────────────────────────────────────────────────
-
-def human_delay(lo: float = 1.5, hi: float = 3.5) -> None:
-    time.sleep(random.uniform(lo, hi))
-
-
-def slow_scroll(page, steps: int = 6) -> None:
-    for _ in range(steps):
-        page.evaluate("window.scrollBy(0, window.innerHeight * 0.75)")
-        time.sleep(0.45)
 
 
 # ── Core scraper ──────────────────────────────────────────────────────────────
@@ -361,62 +270,60 @@ def scrape_category(browser, keyword: str, max_pages: int) -> dict:
         ]),
         viewport=random_viewport(),
         locale="en-US",
-        timezone_id="America/New_York",
+        timezone_id="Europe/Warsaw",
         extra_http_headers={
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
+            "Accept-Language": "en-US,en;q=0.9,pl;q=0.8",
         },
     )
 
     context.route("**/*.{png,jpg,jpeg,gif,webp,svg,ico}", lambda r: r.abort())
-    context.route("**/*{google-analytics,gtm,facebook,pixel}", lambda r: r.abort())
-
     page = context.new_page()
     
     page.add_init_script("""
         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
         Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-        Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+        Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en', 'pl']});
         window.chrome = {runtime: {}};
     """)
 
     try:
+        # STEP 1: Set Poland/English region first
+        set_poland_english_language(page)
+
+        # STEP 2: Scrape category pages
         for page_num in range(1, max_pages + 1):
             url = build_url(keyword, page_num)
             print(f"\n  [Page {page_num}/{max_pages}]  {url}")
 
-            # Navigate with diagnostics
             success = False
-            for attempt in range(2):  # 2 attempts per page
+            for attempt in range(2):
                 try:
                     print(f"   📡 Loading (attempt {attempt+1})...")
-                    page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-                    time.sleep(4)  # Let JS render
+                    page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                    time.sleep(4)
 
                     if diagnose_page(page, keyword, page_num):
                         success = True
                         break
                     else:
-                        print("   ❌ Page failed - rotating Tor...")
+                        print("   ❌ Page failed - rotating...")
                         rotate_tor_circuit()
                         time.sleep(12)
 
                 except Exception as exc:
-                    print(f"   ❌ Navigation error: {exc}")
-                    if attempt == 1:
-                        break
+                    print(f"   ❌ Error: {exc}")
+                    if attempt == 1: break
                     rotate_tor_circuit()
                     time.sleep(10)
 
-            if not success:
-                print("   ❌ All attempts failed - skipping page")
+            if not success: 
+                print("   ❌ Skipping page")
                 continue
 
-            slow_scroll(page)
+            # Scroll and extract
+            for _ in range(4):
+                page.evaluate("window.scrollBy(0, window.innerHeight * 0.7)")
+                time.sleep(0.5)
             time.sleep(2)
 
             html = page.content()
@@ -427,8 +334,7 @@ def scrape_category(browser, keyword: str, max_pages: int) -> dict:
                 seen_ids.add(p["id"])
             all_products.extend(new_products)
 
-            print(f"  ✓ {len(page_products)} parsed | {len(new_products)} new | Total: {len(all_products)}")
-            
+            print(f"  ✓ {len(new_products)} new | Total: {len(all_products)}")
             if new_products:
                 for p in new_products[:2]:
                     title = (p["title"][:60] + "…") if len(p["title"]) > 60 else p["title"]
@@ -448,73 +354,54 @@ def scrape_category(browser, keyword: str, max_pages: int) -> dict:
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-
 def main():
-    parser = argparse.ArgumentParser(description="AliExpress Product ID + Title Scraper")
+    parser = argparse.ArgumentParser(description="AliExpress Product ID + Title Scraper v4")
     parser.add_argument("--headless", default="true", choices=["true", "false"])
     parser.add_argument("--pages", type=int, default=MAX_PAGES_PER_CATEGORY)
     parser.add_argument("--output", default=OUTPUT_FILE)
     args = parser.parse_args()
 
-    headless  = args.headless.lower() == "true"
-    max_pages = args.pages
-    output    = Path(args.output)
+    headless = args.headless.lower() == "true"
     timestamp = datetime.now().isoformat()
 
-    print(f"\n{'═'*60}")
-    print("  AliExpress Product Scraper  (ID + Title)  v3")
-    print(f"  Started   : {timestamp}")
-    print(f"  Headless  : {headless}  |  Pages/category: {max_pages}")
-    print(f"  Categories: {', '.join(CATEGORIES)}")
-    print(f"{'═'*60}")
+    print(f"\n{'═'*70}")
+    print("  🚀 AliExpress Scraper v4 - Poland/English Edition")
+    print(f"  📅 {timestamp} | Headless: {headless} | Pages: {args.pages}")
+    print(f"{'═'*70}")
 
-    results: dict[str, dict] = {}
-
+    results = {}
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
-    headless=headless,
-    proxy={"server": "socks5://127.0.0.1:9050"},  # ← ADD TOR PROXY
-    args=[
-        "--no-sandbox", 
-        "--disable-blink-features=AutomationControlled",
-        "--disable-dev-shm-usage"  # ← ADD FOR GCP
-    ],
-)
+            headless=headless,
+            proxy={"server": "socks5://127.0.0.1:9050"},
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
+        )
         try:
             for keyword in CATEGORIES:
-                result = scrape_category(browser, keyword, max_pages)
+                result = scrape_category(browser, keyword, args.pages)
                 results[keyword] = result
-                print(f"\n  ▶  '{keyword}': {result['count']} products collected.")
-                human_delay(4, 8)
+                print(f"\n  ✅ '{keyword}': {result['count']} products")
+                time.sleep(random.uniform(5, 9))
         finally:
             browser.close()
 
+    # Save results
     total = sum(r["count"] for r in results.values())
     output_data = {
-        "scraped_at":          timestamp,
-        "categories_searched": len(CATEGORIES),
-        "pages_per_category":  max_pages,
-        "total_products":      total,
-        "note":                "SSR/deal URLs and nested mini-cards are skipped in this version.",
-        "results":             results,
+        "scraped_at": timestamp,
+        "region": "Poland/English",
+        "total_products": total,
+        "results": results,
     }
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with open(output, "w", encoding="utf-8") as f:
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    with open(args.output, "w", encoding="utf-8") as f:
         json.dump(output_data, f, indent=2, ensure_ascii=False)
 
-    print(f"\n{'═'*60}")
-    print("  SCRAPING COMPLETE")
-    print(f"{'═'*60}")
-    print(f"  Total products : {total}")
-    print(f"  Output file    : {output.resolve()}")
-    print()
-    for kw, r in results.items():
-        print(f"  {kw:<22} → {r['count']:>4} products")
-        for p in r["products"][:2]:
-            title_preview = p["title"][:65] + ("…" if len(p["title"]) > 65 else "")
-            print(f"    • {p['id']}  |  {title_preview}")
-    print()
+    print(f"\n{'═'*70}")
+    print("  🎉 SCRAPING COMPLETE")
+    print(f"  📊 {total:,} total products → {args.output}")
+    print(f"{'═'*70}")
 
 
 if __name__ == "__main__":
