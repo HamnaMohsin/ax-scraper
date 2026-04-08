@@ -295,10 +295,7 @@ def preflight_clean_ip(browser) -> bool:
             lang = detect_page_language(page)
             log("🌍", f"Detected language: {lang}", indent=1)
 
-            if lang in ("en", "unknown"):   # unknown = no products yet, still OK
-                clean = True
-            else:
-                log("🚫", "Non-English exit node — skipping", indent=1)
+            clean = True
 
         except Exception as e:
             log("⚠️ ", f"Error: {e}", indent=1)
@@ -381,10 +378,7 @@ def load_page_with_rotation(browser, url: str):
             log("🌐", f"Page language: {lang}", indent=1)
 
             if lang == "non-en":
-                log("🚫", "Non-English titles — rotating to find EN exit node …", indent=1)
-                ctx.close()
-                rotate_tor_circuit(wait=14)
-                continue
+                log("⚠️", "Non-English page detected — continuing anyway", indent=1)
 
             # ── All checks passed ──────────────────────────────────────────
             log("✅", f"Page loaded OK — {item_count} items, language={lang}", indent=1)
