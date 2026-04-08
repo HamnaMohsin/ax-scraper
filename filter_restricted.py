@@ -25,15 +25,37 @@ def cosine_similarity(vec1, vec2):
     return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
 
 def load_restricted_embeddings(embeddings_file):
-    """column A=keyword, column B=embedding - YOUR EXACT FORMAT"""
+    """Handles ANY pickle format - column A=keyword, column B=embedding"""
     with open(embeddings_file, "rb") as f:
         data = pickle.load(f)
     
-    # EXACT column names you specified
-    keywords = data['keyword']           # column A
-    embeddings = [np.array(emb) for emb in data['embedding']]  # column B
+    print(f"📋 Raw data type: {type(data)}")
     
-    print(f"✅ Loaded {len(keywords)} keywords + {len(embeddings)} embeddings")
+    # CASE 1: List of 2 columns [keywords_list, embeddings_list]
+    if isinstance(data, list) and len(data) >= 2:
+        keywords = data[0]  # First column = keywords
+        embeddings_raw = data[1]  # Second column = embeddings
+        print("✅ Detected LIST format")
+    
+    # CASE 2: Dict with 'keyword'/'embedding' keys
+    elif isinstance(data, dict):
+        keywords = data['keyword']
+        embeddings_raw = data['embedding']
+        print("✅ Detected DICT format")
+    
+    # CASE 3: DataFrame-like with column A/B
+    elif isinstance(data, list) and all(isinstance(item, list) for item in data[:2]):
+        keywords = data[0]  # column A
+        embeddings_raw = data[1]  # column B
+        print("✅ Detected DataFrame format")
+    
+    else:
+        raise ValueError(f"Unknown format: {type(data)}")
+    
+    # Convert embeddings to numpy arrays
+    embeddings = [np.array(emb) for emb in embeddings_raw]
+    
+    print(f"✅ SUCCESS: {len(keywords)} keywords + {len(embeddings)} embeddings")
     return keywords, embeddings
 
 def find_best_restricted_match(title_embedding, restricted_embeddings):
