@@ -25,14 +25,15 @@ def cosine_similarity(vec1, vec2):
     return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
 
 def load_restricted_embeddings(embeddings_file):
-    """Load restricted keywords and embeddings (similar to your load_category_embeddings)"""
+    """column A=keyword, column B=embedding - YOUR EXACT FORMAT"""
     with open(embeddings_file, "rb") as f:
-        df = pickle.load(f)
+        data = pickle.load(f)
     
-    # Assuming structure: column A = keywords, column B = embeddings
-    keywords = df['keyword'].tolist()
-    embeddings = [np.array(emb) for emb in df['embedding'].tolist()]
+    # EXACT column names you specified
+    keywords = data['keyword']           # column A
+    embeddings = [np.array(emb) for emb in data['embedding']]  # column B
     
+    print(f"✅ Loaded {len(keywords)} keywords + {len(embeddings)} embeddings")
     return keywords, embeddings
 
 def find_best_restricted_match(title_embedding, restricted_embeddings):
