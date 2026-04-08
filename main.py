@@ -36,7 +36,7 @@ import uuid
 import subprocess
 from enum import Enum
 import sys
-from scr1 import (
+from scr2 import (
     CATEGORIES as DEFAULT_CATEGORIES,
     MAX_PAGES_PER_CATEGORY,
     scrape_category,
