@@ -41,17 +41,13 @@ def _normalize_image_url(src: str) -> str:
     """
     Fix protocol-relative URLs, strip query strings and AliExpress
     resize suffixes (_NNNxNNN.jpg / _.webp) to get the original image.
-
-    FIX: Accept both alicdn.com AND aliexpress.com CDN hostnames.
-    ae01.alicdn.com is the main CDN; ae-pic4.aliexpress.com is also valid.
-    The old check only tested for 'alicdn.com', silently dropping
-    any image served from *.aliexpress.com subdomains.
+    Accepts both alicdn.com and aliexpress.com CDN hostnames.
     """
     if not src:
         return ""
     if src.startswith("//"):
         src = "https:" + src
-    # FIX: was `if "alicdn.com" not in src` — missed aliexpress.com CDN hosts
+    # FIX: accept ae-pic*.aliexpress.com CDN domains in addition to alicdn.com
     if "alicdn.com" not in src and "aliexpress.com" not in src:
         return ""
     src = src.split("?")[0]
@@ -431,32 +427,81 @@ def extract_compliance_info(page) -> dict:
     return compliance
 
 
+def _wait_for_full_description(page, timeout_ms: int = 20000) -> bool:
+    """
+    Poll until div.detail-desc-decorate-richtext stops growing.
+
+    Real structure (confirmed from live HTML inspection):
+        #product-description          ← outer shell, appears immediately (empty)
+          └── .detailmodule_html      ← injected by page JS after load
+                └── .detail-desc-decorate-richtext   ← actual content
+
+    Waiting on #product-description returns instantly on the empty shell.
+    We must wait for .detail-desc-decorate-richtext specifically, then also
+    wait for its innerHTML to stabilise so we don't cut off mid-injection.
+    """
+    print("   ⏳ Waiting for .detail-desc-decorate-richtext to appear and stabilise...")
+
+    # Step 1: wait for the inner content div to exist at all
+    try:
+        page.wait_for_selector(
+            "div.detail-desc-decorate-richtext",
+            timeout=timeout_ms,
+            state="attached",
+        )
+        print("   ✓ .detail-desc-decorate-richtext attached to DOM")
+    except:
+        print("   ⚠️ .detail-desc-decorate-richtext never appeared")
+        return False
+
+    # Step 2: poll until innerHTML stops changing — confirms injection is complete.
+    # AliExpress injects description HTML in chunks; a single snapshot after
+    # "attached" often captures an incomplete render.
+    stable_checks = 0
+    required_stable = 3          # must be unchanged for 3 consecutive checks
+    poll_interval_ms = 600
+    max_polls = int(timeout_ms / poll_interval_ms)
+    last_len = -1
+
+    for i in range(max_polls):
+        current_len = page.evaluate("""
+            () => {
+                const el = document.querySelector('div.detail-desc-decorate-richtext');
+                return el ? el.innerHTML.length : 0;
+            }
+        """)
+        if current_len == last_len and current_len > 0:
+            stable_checks += 1
+            if stable_checks >= required_stable:
+                print(f"   ✓ Content stabilised at {current_len} chars (after {i+1} polls)")
+                return True
+        else:
+            stable_checks = 0
+            last_len = current_len
+
+        page.wait_for_timeout(poll_interval_ms)
+
+    # If we exit the loop without stabilising, still proceed with whatever we have
+    print(f"   ⚠️ Stabilisation timeout — proceeding with {last_len} chars")
+    return last_len > 0
+
+
 def extract_description(page) -> tuple:
     """
-    Extract description text + images from AliExpress product pages.
+    Extract description text + images from div.detail-desc-decorate-richtext.
 
-    Confirmed real DOM structure (from browser inspect):
-        #product-description          ← outer shell, rendered immediately as empty
-          └── .detailmodule_html      ← injected by page JS after load
-                └── .detail-desc-decorate-richtext  ← actual content
-
-    Key fixes applied vs original:
-      FIX 1 - Wait for .detail-desc-decorate-richtext, NOT #product-description.
-               The outer shell appears immediately (empty); waiting on it caused
-               the code to proceed before inner content was injected.
-      FIX 2 - Scroll page toward description section BEFORE clicking the tab,
-               so the anchor element is interactive when clicked.
-      FIX 3 - Scroll fallback now also calls wait_for_selector (was missing),
-               preventing a race where count() ran before lazy injection.
-      FIX 4 - Unified text extraction: both "new" and "old" product pages use
-               .detail-desc-decorate-richtext; removed dead detailmodule_text path.
-      FIX 5 - DOM walker uses a global seen-Set and only calls innerText on true
-               leaf blocks (p/li/hN), never on div containers — eliminates
-               parent+child double-counting that corrupted description_text.
-      FIX 6 - Image JS queries .detail-desc-decorate-richtext first, matching
-               the confirmed structure, not the empty outer shell.
-      FIX 7 - Step-scroll through container height to trigger IntersectionObserver
-               on each image before collecting src attributes.
+    Key structural facts (confirmed from live product HTML):
+      - #product-description is an OUTER SHELL that appears immediately but
+        starts empty. Waiting on it returns before content is injected.
+      - .detailmodule_html and .detail-desc-decorate-richtext are injected
+        dynamically by AliExpress page JS after initial DOM load.
+      - All three products tested use the SAME nesting:
+            #product-description > .detailmodule_html > .detail-desc-decorate-richtext
+      - Images in .detail-desc-decorate-richtext have their src set directly
+        in the injected HTML (not lazy via IntersectionObserver), so they are
+        available as soon as injection completes — no extra scroll needed.
+      - Text is in <p><span>…</span></p> leaves; the walker must not call
+        innerText on container divs (double-counts all descendant text).
     """
     description_text   = ""
     description_images = []
@@ -464,16 +509,14 @@ def extract_description(page) -> tuple:
     print("📝 Extracting description...")
 
     try:
-        # ── Step 1: Scroll toward description section, THEN click tab ────────────
-        # FIX 2: scrolling first ensures the anchor link is in the interactive
-        # viewport before we attempt the JS click.
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.4)")
+        # ── Step 1: Click Description tab to trigger injection ────────────────
+        # Scroll partway down first so the anchor element is interactive.
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.35)")
         page.wait_for_timeout(800)
 
         clicked = page.evaluate("""
             () => {
                 const links = [...document.querySelectorAll('a.comet-v2-anchor-link')];
-                // Match 'Description', 'Item description', 'Product description', etc.
                 const el = links.find(a => /description/i.test(a.textContent));
                 if (el) { el.click(); return true; }
                 return false;
@@ -481,67 +524,31 @@ def extract_description(page) -> tuple:
         """)
         if clicked:
             print("   ✓ Description tab clicked via JS")
-            page.wait_for_timeout(2000)
         else:
-            print("   ⚠️ Description tab not found — trying container directly")
+            # Fallback: scroll deep enough to trigger the lazy section load
+            print("   ⚠️ Description tab not found — scrolling to trigger injection...")
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.7)")
+        page.wait_for_timeout(1500)
 
-        # ── Step 2: Wait for the INNER content div, not the outer shell ──────────
-        # FIX 1: #product-description is an empty shell that exists in the DOM
-        # immediately. .detail-desc-decorate-richtext is injected by page JS and
-        # is the reliable signal that content is ready.
-        # Both "new" and "old" product formats use this same inner selector —
-        # confirmed from three real product inspect-element captures.
-        container = None
+        # ── Step 2: Wait for the INNER content div (not the outer shell) ──────
+        # _wait_for_full_description polls until innerHTML stabilises so we
+        # never capture a half-injected description.
+        ready = _wait_for_full_description(page, timeout_ms=25000)
+        if not ready:
+            # Last-resort: try iframe fallback before giving up
+            print("   ⚠️ Content div not ready — will attempt iframe fallback only")
 
-        for sel in [
-            'div.detail-desc-decorate-richtext',        # primary — present on all observed products
-            '#product-description .detailmodule_html',  # fallback wrapper
-        ]:
-            try:
-                page.wait_for_selector(sel, timeout=10000)
-                elem = page.locator(sel).first
-                if elem.count() > 0:
-                    container = elem
-                    print(f"   ✓ Description container found: {sel}")
-                    break
-            except:
-                continue
-
-        # ── Step 3: Scroll fallback with proper wait ──────────────────────────────
-        # FIX 3: original fallback did count() immediately after scroll with no
-        # wait_for_selector, losing the race against JS injection every time.
-        if container is None:
-            print("   ⚠️ Container not found — scrolling to trigger lazy injection...")
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.65)")
-            page.wait_for_timeout(2000)
-            for sel in ['div.detail-desc-decorate-richtext',
-                        '#product-description .detailmodule_html']:
-                try:
-                    page.wait_for_selector(sel, timeout=8000)  # FIX 3: was missing
-                except:
-                    pass
-                elem = page.locator(sel).first
-                if elem.count() > 0:
-                    container = elem
-                    print(f"   ✓ Found after scroll: {sel}")
-                    break
-
-        if container is None:
-            print("   ❌ No description container found")
-            return description_text, description_images
-
-        # Scroll container into view to trigger any remaining lazy rendering
-        try:
-            container.scroll_into_view_if_needed()
-            page.wait_for_timeout(1200)
-        except:
-            pass
-
-        # ── Step 4: Extract text ──────────────────────────────────────────────────
-        # FIX 4 + FIX 5: Unified extraction — both product formats resolve to
-        # .detail-desc-decorate-richtext so the old/new branch is gone.
-        # Walker uses a global seen-Set and only calls innerText on leaf blocks
-        # (p/li/hN), never on div/span containers, preventing double-counting.
+        # ── Step 3: Extract text via JS walker ────────────────────────────────
+        # Target .detail-desc-decorate-richtext directly — never #product-description
+        # (the outer shell may still be empty or only partially filled).
+        #
+        # Walker rules:
+        #   - LEAF tags (p, li, h1-h6, td, th, blockquote, pre): grab innerText
+        #     and DO NOT recurse — avoids double-counting <span> children.
+        #   - DIV and other containers: recurse into children only, never
+        #     call innerText on them (would include all descendant text).
+        #   - SKIP: script, style, noscript — never collect their text.
+        #   - Global seen-set dedup (not just adjacent pairs).
         raw = page.evaluate("""
             () => {
                 const c = document.querySelector('div.detail-desc-decorate-richtext');
@@ -549,32 +556,26 @@ def extract_description(page) -> tuple:
                 const parts = [];
                 const seen  = new Set();
                 const SKIP  = new Set(['script', 'style', 'noscript']);
-                // Only collect innerText from true leaf blocks.
-                // div/span are containers — recurse into them, never innerText them.
                 const LEAF  = new Set(['p', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
                                        'td', 'th', 'blockquote', 'pre', 'figcaption']);
                 const walk = (node) => {
                     if (node.nodeType === Node.TEXT_NODE) {
                         const t = node.textContent.trim();
-                        if (t.length > 1 && !seen.has(t)) {
-                            seen.add(t);
-                            parts.push(t);
-                        }
+                        if (t.length > 1 && !seen.has(t)) { seen.add(t); parts.push(t); }
                         return;
                     }
                     if (node.nodeType !== Node.ELEMENT_NODE) return;
                     const tag = node.tagName.toLowerCase();
                     if (SKIP.has(tag)) return;
                     if (LEAF.has(tag)) {
-                        // innerText on the leaf block — captures inline spans/ems correctly
+                        // Use innerText for leaf blocks — respects CSS visibility
+                        // and collapses whitespace correctly. Do NOT recurse after
+                        // this so child <span> text isn't pushed a second time.
                         const t = (node.innerText || '').trim();
-                        if (t.length > 1 && !seen.has(t)) {
-                            seen.add(t);
-                            parts.push(t);
-                        }
-                        return; // do NOT recurse — avoids double-counting child spans
+                        if (t.length > 1 && !seen.has(t)) { seen.add(t); parts.push(t); }
+                        return;
                     }
-                    // div, span, section, article etc: recurse into children only
+                    // Container tags (div, section, article, etc.): recurse only
                     for (const child of node.childNodes) walk(child);
                 };
                 walk(c);
@@ -584,17 +585,19 @@ def extract_description(page) -> tuple:
 
         if raw and len(raw) > 50:
             description_text = re.sub(r'\s+', ' ', raw).strip()
-            print(f"   ✅ Text extracted: {len(description_text)} chars")
+            print(f"   ✅ JS DOM walker: {len(description_text)} chars")
         else:
-            # Last-resort: plain innerText of the whole container
+            # Plain innerText fallback — less clean but always gets something
             try:
-                fb = container.inner_text(timeout=8000).strip()
-                description_text = re.sub(r'\s+', ' ', fb).strip()
-                print(f"   ✅ innerText fallback: {len(description_text)} chars")
-            except:
-                pass
+                fb_elem = page.locator("div.detail-desc-decorate-richtext").first
+                if fb_elem.count() > 0:
+                    fb = fb_elem.inner_text(timeout=8000).strip()
+                    description_text = re.sub(r'\s+', ' ', fb).strip()
+                    print(f"   ✅ inner_text fallback: {len(description_text)} chars")
+            except Exception as e:
+                print(f"   ⚠️ inner_text fallback failed: {e}")
 
-        # ── Step 5: iframe fallback (some locales embed content in a child iframe) ─
+        # ── Step 4: iframe fallback (some locales embed in a child <iframe>) ──
         if len(description_text) < 50:
             print("   ⚠️ Text still short — checking child iframes...")
             for iframe_sel in [
@@ -611,8 +614,9 @@ def extract_description(page) -> tuple:
                             () => {
                                 const parts = [];
                                 const seen  = new Set();
-                                const LEAF  = new Set(['p','li','h1','h2','h3','h4',
-                                                       'h5','h6','td','th']);
+                                const SKIP  = new Set(['script', 'style', 'noscript']);
+                                const LEAF  = new Set(['p', 'li', 'h1', 'h2', 'h3', 'h4',
+                                                       'h5', 'h6', 'td', 'th', 'blockquote']);
                                 const walk = (node) => {
                                     if (node.nodeType === Node.TEXT_NODE) {
                                         const t = node.textContent.trim();
@@ -623,7 +627,7 @@ def extract_description(page) -> tuple:
                                     }
                                     if (node.nodeType !== Node.ELEMENT_NODE) return;
                                     const tag = node.tagName.toLowerCase();
-                                    if (tag === 'script' || tag === 'style') return;
+                                    if (SKIP.has(tag)) return;
                                     if (LEAF.has(tag)) {
                                         const t = (node.innerText || '').trim();
                                         if (t.length > 1 && !seen.has(t)) {
@@ -640,6 +644,7 @@ def extract_description(page) -> tuple:
                         if iframe_text and len(iframe_text) > 50:
                             description_text = re.sub(r'\s+', ' ', iframe_text).strip()
                             print(f"   ✅ iframe text: {len(description_text)} chars")
+                            # Collect images from inside the iframe too
                             for src in (frame.evaluate("""
                                 () => [...document.querySelectorAll('img')]
                                     .map(i => i.getAttribute('src') || i.getAttribute('data-src') || '')
@@ -650,30 +655,16 @@ def extract_description(page) -> tuple:
                                     description_images.append(n)
                             break
 
-        # ── Step 6: Image extraction ──────────────────────────────────────────────
-        # FIX 6: query .detail-desc-decorate-richtext first (confirmed structure).
-        # FIX 7: step-scroll through container height so IntersectionObserver fires
-        #        on every image before we read src attributes.
+        # ── Step 5: Image extraction ──────────────────────────────────────────
+        # Images in .detail-desc-decorate-richtext have src set directly in the
+        # injected HTML (confirmed from real product HTML — no lazy observer swap).
+        # We still check data-src / data-lazy-src as a belt-and-suspenders fallback.
+        #
+        # Query .detail-desc-decorate-richtext first; fall back to the outer shell
+        # only if the inner div isn't found (should never happen after step 2).
         print("   🖼️ Extracting description images...")
-        try:
-            container.scroll_into_view_if_needed()
-            page.wait_for_timeout(400)
-            box = container.bounding_box()
-            if box and box['height'] > 0:
-                steps = max(3, int(box['height'] / 500))
-                for i in range(1, steps + 1):
-                    page.evaluate(
-                        f"window.scrollTo(0, {box['y'] + box['height'] * i / steps})"
-                    )
-                    page.wait_for_timeout(500)
-                page.wait_for_timeout(1000)  # final settle after all steps
-        except Exception as e:
-            print(f"   ⚠️ Scroll-through failed: {e}")
-            page.wait_for_timeout(2000)
-
         raw_srcs = page.evaluate("""
             () => {
-                // FIX 6: target confirmed inner container, not the empty outer shell
                 const c = document.querySelector('div.detail-desc-decorate-richtext')
                        || document.querySelector('#product-description');
                 if (!c) return [];
@@ -698,7 +689,7 @@ def extract_description(page) -> tuple:
 
         print(f"   ✓ Description images collected: {len(description_images)}")
         for i, u in enumerate(description_images[:3], 1):
-            print(f"      {i}. {u[:80]}")
+            print(f"      {i}. {u[:90]}")
 
     except Exception as e:
         print(f"⚠️ Description extraction error: {e}")
@@ -799,6 +790,7 @@ def extract_aliexpress_product(url: str) -> dict:
                     except:
                         print("   ⚠️ Render confirmation failed — proceeding")
 
+                # Gentle scroll to trigger lazy loading of above-fold elements
                 for _ in range(3):
                     page.mouse.wheel(0, random.randint(150, 300))
                     time.sleep(random.uniform(0.3, 0.6))
@@ -825,11 +817,11 @@ def extract_aliexpress_product(url: str) -> dict:
                 browser.close()
 
                 result = {
-                    "title":            title            if isinstance(title, str)             else "",
-                    "description_text": description_text if isinstance(description_text, str)  else "",
+                    "title":            title             if isinstance(title, str)              else "",
+                    "description_text": description_text  if isinstance(description_text, str)   else "",
                     "images":           description_images if isinstance(description_images, list) else [],
-                    "store_info":       store_info       if isinstance(store_info, dict)       else {},
-                    "compliance_info":  compliance_info  if isinstance(compliance_info, dict)  else {},
+                    "store_info":       store_info        if isinstance(store_info, dict)         else {},
+                    "compliance_info":  compliance_info   if isinstance(compliance_info, dict)    else {},
                 }
 
                 print(f"\n🔍 DEBUG:")
