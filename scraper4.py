@@ -41,13 +41,18 @@ def _normalize_image_url(src: str) -> str:
     """
     Fix protocol-relative URLs, strip query strings and AliExpress
     resize suffixes (_NNNxNNN.jpg / _.webp) to get the original image.
-    Returns empty string if not a valid alicdn URL.
+
+    FIX: Accept both alicdn.com AND aliexpress.com CDN hostnames.
+    ae01.alicdn.com is the main CDN; ae-pic4.aliexpress.com is also valid.
+    The old check only tested for 'alicdn.com', silently dropping
+    any image served from *.aliexpress.com subdomains.
     """
     if not src:
         return ""
     if src.startswith("//"):
         src = "https:" + src
-    if "alicdn.com" not in src:
+    # FIX: was `if "alicdn.com" not in src` — missed aliexpress.com CDN hosts
+    if "alicdn.com" not in src and "aliexpress.com" not in src:
         return ""
     src = src.split("?")[0]
     # Strip resize suffix variants:  _640x640.jpg  /  _640x640Q70.jpg  /  _.webp
@@ -115,15 +120,12 @@ def dismiss_overlays(page) -> None:
     Dismiss GDPR banners and any other full-page overlays that would block
     pointer events.  Uses JS clicks — bypasses comet-v2-modal-wrap entirely.
     """
-    # GDPR / cookie consent banners
     page.evaluate("""
         () => {
-            // AliExpress GDPR 2025 banner
             const gdpr = document.querySelector('#gdpr-new-container')
                       || document.querySelector('[data-spm="gdpr_v2"]')
                       || document.querySelector('#voyager-gdpr-2025');
             if (gdpr) {
-                // Try accept / close buttons first
                 const btn = gdpr.querySelector('button')
                          || gdpr.querySelector('[class*="accept"]')
                          || gdpr.querySelector('[class*="close"]')
@@ -146,7 +148,6 @@ def set_shipping_to_poland(page) -> bool:
     """
     print("🌍 Setting shipping destination to Poland...")
     try:
-        # Open the ship-to panel via JS — try several trigger selectors
         opened = page.evaluate("""
             () => {
                 const triggers = [
@@ -165,11 +166,9 @@ def set_shipping_to_poland(page) -> bool:
 
         page.wait_for_timeout(1200)
 
-        # Confirm panel opened
         panel_open = page.locator("div[class*='form-item--title']").filter(has_text="Ship to").count() > 0
 
         if not panel_open:
-            # Fallback: click the visible country-flag / text area
             page.evaluate("""
                 () => {
                     const el = document.querySelector('[class*="select--text"]');
@@ -185,7 +184,6 @@ def set_shipping_to_poland(page) -> bool:
 
         print(f"   ✓ Ship-to panel opened")
 
-        # Open the country dropdown
         page.evaluate("""
             () => {
                 const el = document.querySelector('[class*="form-item--content"]');
@@ -194,7 +192,6 @@ def set_shipping_to_poland(page) -> bool:
         """)
         page.wait_for_timeout(600)
 
-        # Type "Poland" into the search box
         for sel in ["div[class*='select--popup'] input", "div[class*='select--search'] input"]:
             inp = page.locator(sel).first
             if inp.count() > 0:
@@ -203,13 +200,10 @@ def set_shipping_to_poland(page) -> bool:
                 print("   ✓ Typed 'Poland'")
                 break
 
-        # Click Poland — PL flag span is the most reliable target
         clicked = page.evaluate("""
             () => {
-                // Try flag span first
                 const flag = document.querySelector('span.country-flag-y2023.PL');
                 if (flag) { flag.click(); return 'flag'; }
-                // Fall back to item div containing 'Poland'
                 const items = [...document.querySelectorAll('[class*="select--item"]')];
                 const pl = items.find(el => el.textContent.trim() === 'Poland');
                 if (pl) { pl.click(); return 'text'; }
@@ -224,7 +218,6 @@ def set_shipping_to_poland(page) -> bool:
         print(f"   ✓ Clicked Poland ({clicked})")
         page.wait_for_timeout(400)
 
-        # Click Save
         page.evaluate("""
             () => {
                 const btn = document.querySelector('[class*="es--saveBtn"]')
@@ -272,7 +265,6 @@ def extract_store_info_universal(page) -> dict:
     print("📦 Extracting store info...")
 
     try:
-        # Step 1: Store name (always visible, no hover needed)
         elem = page.locator("span[class*='store-detail--storeName']").first
         if elem.count() > 0:
             name = elem.inner_text().strip()
@@ -280,14 +272,12 @@ def extract_store_info_universal(page) -> dict:
                 store_info["Store Name"] = name
                 print(f"   ✓ Store name: {name}")
 
-        # Step 2: Scroll the store element into view
         try:
             elem.scroll_into_view_if_needed()
             page.wait_for_timeout(300)
         except:
             pass
 
-        # Step 3: Dispatch mouse events via JS — bypasses overlay interception
         print("   🔍 Triggering store popup via JS mouse events...")
         page.evaluate("""
             () => {
@@ -301,7 +291,6 @@ def extract_store_info_universal(page) -> dict:
         page.wait_for_timeout(1500)
         print("   ✓ JS mouse events dispatched")
 
-        # Step 4: Read popup rows (table-based)
         for row_sel in [
             "div[class*='store-detail'] table tr",
             "div[class*='storeDetail'] table tr",
@@ -323,7 +312,6 @@ def extract_store_info_universal(page) -> dict:
                 if len(store_info) > 1:
                     break
 
-        # Step 5: Fallback — parse raw popup text as key: value lines
         if len(store_info) <= 1:
             for popup_sel in [
                 "div[class*='store-detail--storePopup']",
@@ -361,7 +349,6 @@ def extract_compliance_info(page) -> dict:
     print("📋 Extracting compliance info...")
 
     try:
-        # Check heading exists
         heading = page.locator("h2").filter(has_text="Product compliance information").first
         if heading.count() == 0:
             print("   ⚠️ Compliance heading not found")
@@ -371,7 +358,6 @@ def extract_compliance_info(page) -> dict:
         heading.scroll_into_view_if_needed()
         page.wait_for_timeout(400)
 
-        # JS click — bypasses overlay interception
         page.evaluate("""
             () => {
                 const el = [...document.querySelectorAll('h2')]
@@ -381,7 +367,6 @@ def extract_compliance_info(page) -> dict:
         """)
         page.wait_for_timeout(2000)
 
-        # Wait for modal
         try:
             page.wait_for_selector("div.comet-v2-modal-body", timeout=8000)
         except:
@@ -391,7 +376,6 @@ def extract_compliance_info(page) -> dict:
         raw_text = page.locator("div.comet-v2-modal-body").first.inner_text().strip()
         print(f"   ✓ Modal text ({len(raw_text)} chars): {raw_text[:200]}")
 
-        # Parse sections
         section_headers = [
             "Manufacturer information",
             "EU responsible person information",
@@ -430,7 +414,6 @@ def extract_compliance_info(page) -> dict:
                 compliance[section] = parsed
                 print(f"   ✅ {section}: {parsed}")
 
-        # Close modal via JS
         page.evaluate("""
             () => {
                 const btn = document.querySelector('button.comet-v2-modal-close')
@@ -450,13 +433,30 @@ def extract_compliance_info(page) -> dict:
 
 def extract_description(page) -> tuple:
     """
-    Extract description text + images.
-    Handles:
-      - New format : #product-description  (h3/p/li/div content)
-      - Old format : div.detail-desc-decorate-richtext  (detailmodule_text / _image)
-      - Iframe     : content embedded in a child <iframe> (some locales)
-    All tab clicks via JS — bypasses comet-v2-modal-wrap.
-    Image URLs normalized (protocol-relative fix + resize-suffix strip).
+    Extract description text + images from AliExpress product pages.
+
+    Confirmed real DOM structure (from browser inspect):
+        #product-description          ← outer shell, rendered immediately as empty
+          └── .detailmodule_html      ← injected by page JS after load
+                └── .detail-desc-decorate-richtext  ← actual content
+
+    Key fixes applied vs original:
+      FIX 1 - Wait for .detail-desc-decorate-richtext, NOT #product-description.
+               The outer shell appears immediately (empty); waiting on it caused
+               the code to proceed before inner content was injected.
+      FIX 2 - Scroll page toward description section BEFORE clicking the tab,
+               so the anchor element is interactive when clicked.
+      FIX 3 - Scroll fallback now also calls wait_for_selector (was missing),
+               preventing a race where count() ran before lazy injection.
+      FIX 4 - Unified text extraction: both "new" and "old" product pages use
+               .detail-desc-decorate-richtext; removed dead detailmodule_text path.
+      FIX 5 - DOM walker uses a global seen-Set and only calls innerText on true
+               leaf blocks (p/li/hN), never on div containers — eliminates
+               parent+child double-counting that corrupted description_text.
+      FIX 6 - Image JS queries .detail-desc-decorate-richtext first, matching
+               the confirmed structure, not the empty outer shell.
+      FIX 7 - Step-scroll through container height to trigger IntersectionObserver
+               on each image before collecting src attributes.
     """
     description_text   = ""
     description_images = []
@@ -464,11 +464,17 @@ def extract_description(page) -> tuple:
     print("📝 Extracting description...")
 
     try:
-        # Step 1: Click Description tab via JS
+        # ── Step 1: Scroll toward description section, THEN click tab ────────────
+        # FIX 2: scrolling first ensures the anchor link is in the interactive
+        # viewport before we attempt the JS click.
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.4)")
+        page.wait_for_timeout(800)
+
         clicked = page.evaluate("""
             () => {
                 const links = [...document.querySelectorAll('a.comet-v2-anchor-link')];
-                const el = links.find(a => a.textContent.toLowerCase().includes('description'));
+                // Match 'Description', 'Item description', 'Product description', etc.
+                const el = links.find(a => /description/i.test(a.textContent));
                 if (el) { el.click(); return true; }
                 return false;
             }
@@ -477,111 +483,122 @@ def extract_description(page) -> tuple:
             print("   ✓ Description tab clicked via JS")
             page.wait_for_timeout(2000)
         else:
-            print("   ⚠️ Description tab not found — will try containers directly")
+            print("   ⚠️ Description tab not found — trying container directly")
 
-        # Step 2: Detect which description format this page uses
+        # ── Step 2: Wait for the INNER content div, not the outer shell ──────────
+        # FIX 1: #product-description is an empty shell that exists in the DOM
+        # immediately. .detail-desc-decorate-richtext is injected by page JS and
+        # is the reliable signal that content is ready.
+        # Both "new" and "old" product formats use this same inner selector —
+        # confirmed from three real product inspect-element captures.
         container = None
-        fmt       = None
 
-        for sel, label in [
-            ('#product-description',             'new'),
-            ('div.detail-desc-decorate-richtext', 'old'),
+        for sel in [
+            'div.detail-desc-decorate-richtext',        # primary — present on all observed products
+            '#product-description .detailmodule_html',  # fallback wrapper
         ]:
             try:
-                page.wait_for_selector(sel, timeout=7000)
+                page.wait_for_selector(sel, timeout=10000)
                 elem = page.locator(sel).first
                 if elem.count() > 0:
                     container = elem
-                    fmt       = label
-                    print(f"   ✓ Description format: {label} ({sel})")
+                    print(f"   ✓ Description container found: {sel}")
                     break
             except:
                 continue
 
-        # Scroll fallback if neither appeared
+        # ── Step 3: Scroll fallback with proper wait ──────────────────────────────
+        # FIX 3: original fallback did count() immediately after scroll with no
+        # wait_for_selector, losing the race against JS injection every time.
         if container is None:
-            print("   ⚠️ No container found — scrolling to trigger lazy load...")
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-            page.wait_for_timeout(3000)
-            for sel, label in [('#product-description','new'),
-                                ('div.detail-desc-decorate-richtext','old')]:
+            print("   ⚠️ Container not found — scrolling to trigger lazy injection...")
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.65)")
+            page.wait_for_timeout(2000)
+            for sel in ['div.detail-desc-decorate-richtext',
+                        '#product-description .detailmodule_html']:
+                try:
+                    page.wait_for_selector(sel, timeout=8000)  # FIX 3: was missing
+                except:
+                    pass
                 elem = page.locator(sel).first
                 if elem.count() > 0:
                     container = elem
-                    fmt       = label
-                    print(f"   ✓ Found after scroll: {label}")
+                    print(f"   ✓ Found after scroll: {sel}")
                     break
 
         if container is None:
             print("   ❌ No description container found")
             return description_text, description_images
 
-        # Scroll container into view to trigger lazy rendering
+        # Scroll container into view to trigger any remaining lazy rendering
         try:
             container.scroll_into_view_if_needed()
-            page.wait_for_timeout(2500)
+            page.wait_for_timeout(1200)
         except:
             pass
 
-        # Step 3: Extract text
-        if fmt == 'old':
-            # Old format: text lives in div.detailmodule_text
-            parts = []
-            seen  = set()
-            for el in container.locator('div.detailmodule_text p, div.detailmodule_text').all():
-                try:
-                    t = el.inner_text(timeout=2000).strip()
-                    if t and t not in seen:
-                        seen.add(t)
-                        parts.append(t)
-                except:
-                    continue
-            description_text = ' | '.join(parts)
-            print(f"   ✅ Old format text: {len(description_text)} chars")
+        # ── Step 4: Extract text ──────────────────────────────────────────────────
+        # FIX 4 + FIX 5: Unified extraction — both product formats resolve to
+        # .detail-desc-decorate-richtext so the old/new branch is gone.
+        # Walker uses a global seen-Set and only calls innerText on leaf blocks
+        # (p/li/hN), never on div/span containers, preventing double-counting.
+        raw = page.evaluate("""
+            () => {
+                const c = document.querySelector('div.detail-desc-decorate-richtext');
+                if (!c) return '';
+                const parts = [];
+                const seen  = new Set();
+                const SKIP  = new Set(['script', 'style', 'noscript']);
+                // Only collect innerText from true leaf blocks.
+                // div/span are containers — recurse into them, never innerText them.
+                const LEAF  = new Set(['p', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                                       'td', 'th', 'blockquote', 'pre', 'figcaption']);
+                const walk = (node) => {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        const t = node.textContent.trim();
+                        if (t.length > 1 && !seen.has(t)) {
+                            seen.add(t);
+                            parts.push(t);
+                        }
+                        return;
+                    }
+                    if (node.nodeType !== Node.ELEMENT_NODE) return;
+                    const tag = node.tagName.toLowerCase();
+                    if (SKIP.has(tag)) return;
+                    if (LEAF.has(tag)) {
+                        // innerText on the leaf block — captures inline spans/ems correctly
+                        const t = (node.innerText || '').trim();
+                        if (t.length > 1 && !seen.has(t)) {
+                            seen.add(t);
+                            parts.push(t);
+                        }
+                        return; // do NOT recurse — avoids double-counting child spans
+                    }
+                    // div, span, section, article etc: recurse into children only
+                    for (const child of node.childNodes) walk(child);
+                };
+                walk(c);
+                return parts.join(' | ');
+            }
+        """)
 
+        if raw and len(raw) > 50:
+            description_text = re.sub(r'\s+', ' ', raw).strip()
+            print(f"   ✅ Text extracted: {len(description_text)} chars")
         else:
-            # New format: JS DOM walker (handles h3/p/li/div in DOM order)
-            raw = page.evaluate("""
-                () => {
-                    const c = document.querySelector('#product-description');
-                    if (!c) return '';
-                    const parts = [];
-                    const BLOCK = new Set(['h1','h2','h3','h4','h5','h6',
-                                           'p','li','div','tr','td','th',
-                                           'blockquote','pre']);
-                    const walk = (node) => {
-                        if (node.nodeType === Node.TEXT_NODE) {
-                            const t = node.textContent.trim();
-                            if (t && t.length > 1) parts.push(t);
-                            return;
-                        }
-                        if (node.nodeType !== Node.ELEMENT_NODE) return;
-                        const tag = node.tagName.toLowerCase();
-                        if (tag === 'script' || tag === 'style') return;
-                        if (BLOCK.has(tag)) {
-                            const text = (node.innerText || '').trim();
-                            if (text && text.length > 1) parts.push(text);
-                            return;
-                        }
-                        for (const child of node.childNodes) walk(child);
-                    };
-                    walk(c);
-                    return parts.filter((v,i) => v !== parts[i-1]).join(' | ');
-                }
-            """)
-
-            if raw and len(raw) > 50:
-                description_text = re.sub(r'\s+', ' ', raw).strip()
-                print(f"   ✅ JS DOM walker: {len(description_text)} chars")
-            else:
+            # Last-resort: plain innerText of the whole container
+            try:
                 fb = container.inner_text(timeout=8000).strip()
                 description_text = re.sub(r'\s+', ' ', fb).strip()
-                print(f"   ✅ inner_text fallback: {len(description_text)} chars")
+                print(f"   ✅ innerText fallback: {len(description_text)} chars")
+            except:
+                pass
 
-        # Step 4: iframe fallback (some locales embed content in a child iframe)
+        # ── Step 5: iframe fallback (some locales embed content in a child iframe) ─
         if len(description_text) < 50:
-            print("   ⚠️ Text still empty — checking child iframes...")
+            print("   ⚠️ Text still short — checking child iframes...")
             for iframe_sel in [
+                'div.detail-desc-decorate-richtext iframe',
                 '#product-description iframe',
                 "iframe[id*='description']",
                 "iframe[src*='description']",
@@ -593,32 +610,36 @@ def extract_description(page) -> tuple:
                         iframe_text = frame.evaluate("""
                             () => {
                                 const parts = [];
-                                const BLOCK = new Set(['h1','h2','h3','h4','h5','h6',
-                                                       'p','li','div','tr','td']);
+                                const seen  = new Set();
+                                const LEAF  = new Set(['p','li','h1','h2','h3','h4',
+                                                       'h5','h6','td','th']);
                                 const walk = (node) => {
                                     if (node.nodeType === Node.TEXT_NODE) {
                                         const t = node.textContent.trim();
-                                        if (t && t.length > 1) parts.push(t);
+                                        if (t.length > 1 && !seen.has(t)) {
+                                            seen.add(t); parts.push(t);
+                                        }
                                         return;
                                     }
                                     if (node.nodeType !== Node.ELEMENT_NODE) return;
                                     const tag = node.tagName.toLowerCase();
                                     if (tag === 'script' || tag === 'style') return;
-                                    if (BLOCK.has(tag)) {
-                                        const text = (node.innerText || '').trim();
-                                        if (text && text.length > 1) parts.push(text);
+                                    if (LEAF.has(tag)) {
+                                        const t = (node.innerText || '').trim();
+                                        if (t.length > 1 && !seen.has(t)) {
+                                            seen.add(t); parts.push(t);
+                                        }
                                         return;
                                     }
                                     for (const child of node.childNodes) walk(child);
                                 };
                                 walk(document.body);
-                                return parts.filter((v,i) => v !== parts[i-1]).join(' | ');
+                                return parts.join(' | ');
                             }
                         """)
                         if iframe_text and len(iframe_text) > 50:
                             description_text = re.sub(r'\s+', ' ', iframe_text).strip()
                             print(f"   ✅ iframe text: {len(description_text)} chars")
-                            # Also collect images from inside the iframe
                             for src in (frame.evaluate("""
                                 () => [...document.querySelectorAll('img')]
                                     .map(i => i.getAttribute('src') || i.getAttribute('data-src') || '')
@@ -629,12 +650,32 @@ def extract_description(page) -> tuple:
                                     description_images.append(n)
                             break
 
-        # Step 5: Image extraction via JS — works for both formats
+        # ── Step 6: Image extraction ──────────────────────────────────────────────
+        # FIX 6: query .detail-desc-decorate-richtext first (confirmed structure).
+        # FIX 7: step-scroll through container height so IntersectionObserver fires
+        #        on every image before we read src attributes.
         print("   🖼️ Extracting description images...")
+        try:
+            container.scroll_into_view_if_needed()
+            page.wait_for_timeout(400)
+            box = container.bounding_box()
+            if box and box['height'] > 0:
+                steps = max(3, int(box['height'] / 500))
+                for i in range(1, steps + 1):
+                    page.evaluate(
+                        f"window.scrollTo(0, {box['y'] + box['height'] * i / steps})"
+                    )
+                    page.wait_for_timeout(500)
+                page.wait_for_timeout(1000)  # final settle after all steps
+        except Exception as e:
+            print(f"   ⚠️ Scroll-through failed: {e}")
+            page.wait_for_timeout(2000)
+
         raw_srcs = page.evaluate("""
             () => {
-                const c = document.querySelector('#product-description')
-                       || document.querySelector('div.detail-desc-decorate-richtext');
+                // FIX 6: target confirmed inner container, not the empty outer shell
+                const c = document.querySelector('div.detail-desc-decorate-richtext')
+                       || document.querySelector('#product-description');
                 if (!c) return [];
                 return [...c.querySelectorAll('img')].map(img =>
                     img.getAttribute('src') ||
@@ -643,7 +684,7 @@ def extract_description(page) -> tuple:
                 ).filter(Boolean);
             }
         """)
-        print(f"      Raw img srcs: {len(raw_srcs)}")
+        print(f"      Raw img srcs found: {len(raw_srcs)}")
 
         for src in raw_srcs:
             n = _normalize_image_url(src)
@@ -652,10 +693,10 @@ def extract_description(page) -> tuple:
 
         description_images = [
             u for u in description_images
-            if not any(bad in u.lower() for bad in ['icon','logo','20x20','50x50','100x100'])
+            if not any(bad in u.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100'])
         ][:20]
 
-        print(f"   ✓ Description images: {len(description_images)}")
+        print(f"   ✓ Description images collected: {len(description_images)}")
         for i, u in enumerate(description_images[:3], 1):
             print(f"      {i}. {u[:80]}")
 
@@ -723,7 +764,7 @@ def extract_aliexpress_product(url: str) -> dict:
                     'Europe/London', 'Europe/Berlin',
                     'Europe/Paris',  'Europe/Amsterdam', 'Europe/Warsaw',
                 ]),
-                locale='en-GB',   # keeps compliance text in English
+                locale='en-GB',
             )
 
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -741,7 +782,6 @@ def extract_aliexpress_product(url: str) -> dict:
                 print("📡 Loading page...")
                 page.goto(url, timeout=120000, wait_until="domcontentloaded")
 
-                # Rewrite country subdomain → www immediately
                 rewrite_to_www(page)
 
                 if is_captcha_page(page):
@@ -749,7 +789,6 @@ def extract_aliexpress_product(url: str) -> dict:
                     browser.close()
                     continue
 
-                # Wait for product title to confirm render
                 print("⏳ Waiting for page render...")
                 try:
                     page.wait_for_selector('[data-pl="product-title"]', timeout=15000)
@@ -760,7 +799,6 @@ def extract_aliexpress_product(url: str) -> dict:
                     except:
                         print("   ⚠️ Render confirmation failed — proceeding")
 
-                # Gentle scroll to trigger lazy loading
                 for _ in range(3):
                     page.mouse.wheel(0, random.randint(150, 300))
                     time.sleep(random.uniform(0.3, 0.6))
