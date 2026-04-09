@@ -39,6 +39,7 @@ ROTATE_WAIT_SECS       = 14
 BASE_URL = (
     "https://www.aliexpress.com/w/wholesale-{slug}.html"
     "?SearchText={query}&catId=0&g=y&page={page}"
+    "&localeSite=pl&language=en&currencyCode=USD"
 )
 
 USER_AGENTS = [
@@ -84,7 +85,12 @@ def make_context(browser):
         user_agent=random.choice(USER_AGENTS),
         viewport={"width": 1920, "height": 1080},
     )
-    # Block images for speed
+    # Set AliExpress locale cookies for Poland + English
+    ctx.add_cookies([
+        {"name": "aep_usuc_f",  "value": "site=pol&c_tp=USD&region=PL&b_locale=en_US", "domain": ".aliexpress.com", "path": "/"},
+        {"name": "xman_us_f",   "value": "x_locale=en_US&x_site=POL",                  "domain": ".aliexpress.com", "path": "/"},
+        {"name": "ali_apache_id","value": "PL",                                          "domain": ".aliexpress.com", "path": "/"},
+    ])
     ctx.route("**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2}", lambda r: r.abort())
     return ctx
 
