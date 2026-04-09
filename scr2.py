@@ -84,15 +84,11 @@ def make_context(browser):
     ctx = browser.new_context(
         user_agent=random.choice(USER_AGENTS),
         viewport={"width": 1920, "height": 1080},
+        locale="en-US",                          # Playwright-level locale
+        extra_http_headers={
+            "Accept-Language": "en-US,en;q=0.9", # HTTP header forcing English
+        }
     )
-    # Set AliExpress locale cookies for Poland + English
-    ctx.add_cookies([
-        {"name": "aep_usuc_f",  "value": "site=pol&c_tp=USD&region=PL&b_locale=en_US", "domain": ".aliexpress.com", "path": "/"},
-        {"name": "xman_us_f",   "value": "x_locale=en_US&x_site=POL",                  "domain": ".aliexpress.com", "path": "/"},
-        {"name": "ali_apache_id","value": "PL",                                          "domain": ".aliexpress.com", "path": "/"},
-    ])
-    ctx.route("**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2}", lambda r: r.abort())
-    return ctx
 
 def make_page(context):
     page = context.new_page()
