@@ -505,7 +505,7 @@ def run_category_scraper(background_tasks: BackgroundTasks):
     def _run(job_id: str):
         try:
             result = subprocess.run(
-                [sys.executable, "scr1.py"],
+                [sys.executable, "scr2.py"],
                 
                 capture_output=True,
                 text=True,
