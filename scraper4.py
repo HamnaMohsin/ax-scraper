@@ -664,17 +664,34 @@ def extract_description(page) -> tuple:
         # only if the inner div isn't found (should never happen after step 2).
         print("   🖼️ Extracting description images...")
         raw_srcs = page.evaluate("""
-            () => {
-                const c = document.querySelector('div.detail-desc-decorate-richtext')
-                       || document.querySelector('#product-description');
-                if (!c) return [];
-                return [...c.querySelectorAll('img')].map(img =>
-                    img.getAttribute('src') ||
-                    img.getAttribute('data-src') ||
-                    img.getAttribute('data-lazy-src') || ''
-                ).filter(Boolean);
+    () => {
+        // Primary: target the content div directly
+        let imgs = [];
+        const c = document.querySelector('div.detail-desc-decorate-richtext');
+        if (c) {
+            imgs = [...c.querySelectorAll('img')];
+        }
+
+        // Secondary: also sweep the outer #product-description in case
+        // the browser's invalid-HTML repair (div inside p) orphaned some
+        // <img> elements outside the inner container but still inside the
+        // outer wrapper.
+        const outer = document.querySelector('#product-description');
+        if (outer) {
+            const outerImgs = [...outer.querySelectorAll('img')];
+            const existing = new Set(imgs);
+            for (const img of outerImgs) {
+                if (!existing.has(img)) imgs.push(img);
             }
-        """)
+        }
+
+        return imgs.map(img =>
+            img.getAttribute('src') ||
+            img.getAttribute('data-src') ||
+            img.getAttribute('data-lazy-src') || ''
+        ).filter(Boolean);
+    }
+""")
         print(f"      Raw img srcs found: {len(raw_srcs)}")
 
         for src in raw_srcs:
