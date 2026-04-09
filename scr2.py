@@ -28,8 +28,6 @@ except ImportError:
 # ── Config ────────────────────────────────────────────────────────────────────
 CATEGORIES = [
     "led strip lights",
-    "phone case",
-    "notebooks",
     "smart watch",
 ]
 MAX_PAGES_PER_CATEGORY = 3
