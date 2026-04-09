@@ -46,7 +46,7 @@ except ImportError:
 CATEGORIES = [
     "led strip lights",
     "phone case",
-    "notebooks"
+    "notebooks",
     "smart watch",
 ]
 MAX_PAGES_PER_CATEGORY = 3
