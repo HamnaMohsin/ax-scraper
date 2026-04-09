@@ -32,10 +32,9 @@ CATEGORIES = [
 ]
 MAX_PAGES_PER_CATEGORY = 3
 OUTPUT_FILE            = "aliexpress_products.json"
-MAX_CAPTCHA_ROTATIONS  = 8     
-ROTATE_WAIT_SECS       = 14    
+MAX_CAPTCHA_ROTATIONS  = 8
+ROTATE_WAIT_SECS       = 14
 
-# Simplified URL - Removed forced locale params for a cleaner request
 BASE_URL = (
     "https://www.aliexpress.com/w/wholesale-{slug}.html"
     "?SearchText={query}&catId=0&g=y&page={page}"
@@ -87,9 +86,9 @@ def make_context(browser):
     )
     # Set AliExpress locale cookies for Poland + English
     ctx.add_cookies([
-        {"name": "aep_usuc_f",  "value": "site=pol&c_tp=USD&region=PL&b_locale=en_US", "domain": ".aliexpress.com", "path": "/"},
-        {"name": "xman_us_f",   "value": "x_locale=en_US&x_site=POL",                  "domain": ".aliexpress.com", "path": "/"},
-        {"name": "ali_apache_id","value": "PL",                                          "domain": ".aliexpress.com", "path": "/"},
+        {"name": "aep_usuc_f",   "value": "site=pol&c_tp=USD&region=PL&b_locale=en_US", "domain": ".aliexpress.com", "path": "/"},
+        {"name": "xman_us_f",    "value": "x_locale=en_US&x_site=POL",                  "domain": ".aliexpress.com", "path": "/"},
+        {"name": "ali_apache_id","value": "PL",                                           "domain": ".aliexpress.com", "path": "/"},
     ])
     ctx.route("**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2}", lambda r: r.abort())
     return ctx
@@ -97,7 +96,7 @@ def make_context(browser):
 def make_page(context):
     page = context.new_page()
     page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver',  {get: () => undefined});
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
         window.chrome = {runtime: {}};
     """)
     return page
@@ -113,7 +112,131 @@ def is_captcha(page) -> bool:
             pass
     return False
 
-# ── Page loading with rotation ──────────────────────────────────────────────
+# ── Language / Region selector ────────────────────────────────────────────────
+def select_poland_english(page) -> bool:
+    """
+    Clicks the ship-to widget, selects Poland as country and English as language,
+    then confirms and waits for the page to reload.
+
+    Returns True if the selection was applied, False if the widget was not found
+    or the current settings are already correct (aria-label contains 'English').
+    """
+    try:
+        # ── 1. Check whether we even need to act ─────────────────────────────
+        ship_btn = page.locator(".ship-to--menuItem--WdBDsYl").first
+        if ship_btn.count() == 0:
+            log("⚙️ ", "Ship-to widget not found — skipping locale selection", indent=2)
+            return False
+
+        aria = ship_btn.get_attribute("aria-label") or ""
+        if "English" in aria and ("PL" in aria or "Poland" in aria or "Polonia" in aria):
+            log("⚙️ ", "Locale already Poland / English — no action needed", indent=2)
+            return True
+
+        log("⚙️ ", "Opening ship-to widget …", indent=2)
+
+        # ── 2. Click the ship-to button ───────────────────────────────────────
+        ship_btn.click()
+        time.sleep(random.uniform(1.0, 1.8))
+
+        # ── 3. Select Poland ──────────────────────────────────────────────────
+        # The country dropdown items contain a <span class="country-flag-y2023 PL">
+        # followed by a text node with the local name (e.g. "Polonia" or "Poland").
+        # We target the wrapper that has both the PL flag span AND the select--text class.
+        poland_selector = (
+            ".select--text--1b85oDo:has(.country-flag-y2023.PL), "          # flag inside wrapper
+            ".select--text--1b85oDo:has(span.PL)"                           # fallback
+        )
+        try:
+            page.wait_for_selector(poland_selector, timeout=6000)
+            poland_item = page.locator(poland_selector).first
+            poland_item.scroll_into_view_if_needed()
+            poland_item.click()
+            log("🇵🇱", "Poland selected", indent=2)
+            time.sleep(random.uniform(0.8, 1.4))
+        except PlaywrightTimeout:
+            log("⚠️ ", "Poland option not found in dropdown", indent=2)
+            # Try pressing Escape to close the dialog before returning
+            page.keyboard.press("Escape")
+            return False
+
+        # ── 4. Select English ─────────────────────────────────────────────────
+        # The language items are plain .select--text--1b85oDo divs whose visible
+        # text is exactly the language name.  We find the one whose inner text
+        # contains "English".
+        english_selector = ".select--text--1b85oDo"
+        try:
+            page.wait_for_selector(english_selector, timeout=6000)
+            # Iterate visible items and click the one matching "English"
+            items = page.locator(english_selector).all()
+            clicked = False
+            for item in items:
+                try:
+                    txt = (item.inner_text() or "").strip()
+                    if txt.lower() == "english":
+                        item.scroll_into_view_if_needed()
+                        item.click()
+                        log("🌐", "English selected", indent=2)
+                        clicked = True
+                        time.sleep(random.uniform(0.8, 1.4))
+                        break
+                except Exception:
+                    continue
+            if not clicked:
+                log("⚠️ ", "English option not found — trying text search", indent=2)
+                # Last-resort: use Playwright's text locator
+                eng_loc = page.get_by_text("English", exact=True).first
+                eng_loc.click()
+                log("🌐", "English selected (text fallback)", indent=2)
+                time.sleep(random.uniform(0.8, 1.4))
+        except PlaywrightTimeout:
+            log("⚠️ ", "Language options not found", indent=2)
+            page.keyboard.press("Escape")
+            return False
+
+        # ── 5. Confirm / Save ─────────────────────────────────────────────────
+        # AliExpress shows a "Save" or "Confirm" button in the modal.
+        confirm_selectors = [
+            "button.comet-btn-primary",                    # primary action button
+            "button[class*='confirm']",
+            "button[class*='save']",
+            "[class*='ship-to--save']",
+            "[class*='ship-to--confirm']",
+            "button:has-text('Save')",
+            "button:has-text('Confirm')",
+        ]
+        confirmed = False
+        for sel in confirm_selectors:
+            try:
+                btn = page.locator(sel).first
+                if btn.count() > 0 and btn.is_visible():
+                    btn.click()
+                    log("✅", f"Confirmed with selector: {sel}", indent=2)
+                    confirmed = True
+                    break
+            except Exception:
+                continue
+
+        if not confirmed:
+            log("⚠️ ", "No confirm button found — modal may auto-close", indent=2)
+
+        # ── 6. Wait for page to settle after locale change ────────────────────
+        log("⏳", "Waiting for page to reload after locale change …", indent=2)
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except PlaywrightTimeout:
+            pass
+        time.sleep(random.uniform(2.5, 4.0))
+
+        log("✅", "Locale selection complete (Poland / English)", indent=2)
+        return True
+
+    except Exception as exc:
+        log("⚠️ ", f"select_poland_english() error: {exc}", indent=2)
+        return False
+
+
+# ── Page loading with rotation ────────────────────────────────────────────────
 def load_page_with_rotation(browser, url: str):
     for attempt in range(MAX_CAPTCHA_ROTATIONS + 1):
         log("📡", f"Loading attempt {attempt + 1}/{MAX_CAPTCHA_ROTATIONS + 1} …", indent=1)
@@ -131,6 +254,17 @@ def load_page_with_rotation(browser, url: str):
 
             if is_captcha(page):
                 log("❌", "CAPTCHA detected — rotating …", indent=1)
+                ctx.close()
+                rotate_tor_circuit()
+                continue
+
+            # ── Language / region selection ───────────────────────────────────
+            log("🌍", "Ensuring Poland / English locale …", indent=1)
+            select_poland_english(page)
+
+            # After locale change, check for captcha again
+            if is_captcha(page):
+                log("❌", "CAPTCHA after locale change — rotating …", indent=1)
                 ctx.close()
                 rotate_tor_circuit()
                 continue
@@ -218,7 +352,7 @@ def scrape_category(browser, keyword: str, max_pages: int) -> dict:
             for i in range(5):
                 page.evaluate("window.scrollBy(0, window.innerHeight * 0.7)")
                 time.sleep(0.3)
-            
+
             html = page.content()
             page_products, stats = extract_products_from_html(html)
             new_products = [p for p in page_products if p["id"] not in seen_ids]
@@ -235,16 +369,16 @@ def scrape_category(browser, keyword: str, max_pages: int) -> dict:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="AliExpress Scraper v8.1")
-    parser.add_argument("--headless",       default="true", choices=["true", "false"])
-    parser.add_argument("--pages",          type=int, default=MAX_PAGES_PER_CATEGORY)
-    parser.add_argument("--output",         default=OUTPUT_FILE)
-    parser.add_argument("--categories",     nargs="*", default=None)
+    parser = argparse.ArgumentParser(description="AliExpress Scraper v8.2")
+    parser.add_argument("--headless",   default="true", choices=["true", "false"])
+    parser.add_argument("--pages",      type=int, default=MAX_PAGES_PER_CATEGORY)
+    parser.add_argument("--output",     default=OUTPUT_FILE)
+    parser.add_argument("--categories", nargs="*", default=None)
     args = parser.parse_args()
 
     categories = args.categories or CATEGORIES
     headless   = args.headless.lower() == "true"
-    
+
     results = {}
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
@@ -264,7 +398,7 @@ def main():
     # ── SAVE LOGIC: Merge instead of Overwrite ────────────────────────────────
     output_path = Path(args.output)
     existing_data = {"results": {}}
-    
+
     if output_path.exists():
         try:
             with open(output_path, "r", encoding="utf-8") as f:
@@ -273,10 +407,9 @@ def main():
         except Exception as e:
             log("⚠️ ", f"Could not read existing file, starting fresh: {e}")
 
-    # Merge new results into existing results dictionary
     if "results" not in existing_data:
         existing_data["results"] = {}
-    
+
     existing_data["results"].update(results)
     existing_data["last_updated"] = datetime.now().isoformat()
     existing_data["total_products"] = sum(r["count"] for r in existing_data["results"].values())
