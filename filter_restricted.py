@@ -75,7 +75,7 @@ def find_best_restricted_match(title_embedding, restricted_embeddings):
         "matched_keyword_index": best_keyword
     }
 
-def filter_products_by_restricted_keywords(products_file, embeddings_file, output_file, threshold=0.8):
+def filter_products_by_restricted_keywords(products_file, embeddings_file, output_file, threshold=0.5):
     """
     Filter AliExpress products by checking similarity against restricted keywords
     """
@@ -175,5 +175,5 @@ if __name__ == "__main__":
         products_file=PRODUCTS_FILE,
         embeddings_file=EMBEDDINGS_FILE,
         output_file=OUTPUT_FILE,
-        threshold=0.8  # Adjust as needed (0.8 = strict)
+        threshold=0.5  
     )
