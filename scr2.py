@@ -27,10 +27,11 @@ except ImportError:
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CATEGORIES = [
-    "led strip lights",
     "smart watch",
+    "notebook",
+    "dyson",
 ]
-MAX_PAGES_PER_CATEGORY = 3
+MAX_PAGES_PER_CATEGORY = 2
 OUTPUT_FILE            = "aliexpress_products.json"
 MAX_CAPTCHA_ROTATIONS  = 8
 ROTATE_WAIT_SECS       = 14
