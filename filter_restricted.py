@@ -24,38 +24,38 @@ def cosine_similarity(vec1, vec2):
     v2 = np.array(vec2)
     return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
 
+
 def load_restricted_embeddings(embeddings_file):
-    """Handles ANY pickle format - column A=keyword, column B=embedding"""
+    """Handles list of dicts format: [{'keyword': ..., 'embedding': [...]}, ...]"""
     with open(embeddings_file, "rb") as f:
         data = pickle.load(f)
     
-    print(f"📋 Raw data type: {type(data)}")
+    print(f"📋 Raw data type: {type(data)}, length: {len(data)}")
     
-    # CASE 1: List of 2 columns [keywords_list, embeddings_list]
-    if isinstance(data, list) and len(data) >= 2:
-        keywords = data[0]  # First column = keywords
-        embeddings_raw = data[1]  # Second column = embeddings
+    # CASE 1: List of dicts (your actual format)
+    if isinstance(data, list) and isinstance(data[0], dict):
+        keywords = [item['keyword'] for item in data]
+        embeddings = [np.array(item['embedding'], dtype=np.float64) for item in data]
+        print("✅ Detected LIST OF DICTS format")
+    
+    # CASE 2: List of 2 columns [keywords_list, embeddings_list]
+    elif isinstance(data, list) and len(data) >= 2 and not isinstance(data[0], dict):
+        keywords = data[0]
+        embeddings = [np.array(emb, dtype=np.float64) for emb in data[1]]
         print("✅ Detected LIST format")
     
-    # CASE 2: Dict with 'keyword'/'embedding' keys
+    # CASE 3: Dict with 'keyword'/'embedding' keys
     elif isinstance(data, dict):
         keywords = data['keyword']
-        embeddings_raw = data['embedding']
+        embeddings = [np.array(emb, dtype=np.float64) for emb in data['embedding']]
         print("✅ Detected DICT format")
-    
-    # CASE 3: DataFrame-like with column A/B
-    elif isinstance(data, list) and all(isinstance(item, list) for item in data[:2]):
-        keywords = data[0]  # column A
-        embeddings_raw = data[1]  # column B
-        print("✅ Detected DataFrame format")
     
     else:
         raise ValueError(f"Unknown format: {type(data)}")
     
-    # Convert embeddings to numpy arrays
-    embeddings = [np.array(emb) for emb in embeddings_raw]
-    
     print(f"✅ SUCCESS: {len(keywords)} keywords + {len(embeddings)} embeddings")
+    print(f"   Embedding shape: {embeddings[0].shape}, dtype: {embeddings[0].dtype}")
+    print(f"   Keywords: {keywords}")
     return keywords, embeddings
 
 def find_best_restricted_match(title_embedding, restricted_embeddings):
