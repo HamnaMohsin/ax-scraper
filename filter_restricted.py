@@ -130,13 +130,13 @@ def filter_products_by_restricted_keywords(
     products_file:  str,
     embeddings_file: str,
     output_file:    str,
-    threshold:      float = 0.75,   # ← raised from 0.5
+    threshold:      float = 0.45,   
 ) -> dict:
     """
     Filter AliExpress products whose titles are too similar to any restricted keyword.
 
     Improvements over v1:
-      • Threshold raised to 0.75 to eliminate false positives.
+      • Threshold raised to 0.45 to eliminate false positives.
       • Title embeddings are cached on disk — repeated runs skip the API for
         already-seen titles (huge cost & latency saving).
       • Detailed per-product logs show similarity score AND the matched keyword.
@@ -284,5 +284,5 @@ if __name__ == "__main__":
         products_file   = PRODUCTS_FILE,
         embeddings_file = EMBEDDINGS_FILE,
         output_file     = OUTPUT_FILE,
-        threshold       = 0.75,
+        threshold       = 0.45,
     )
