@@ -27,7 +27,7 @@ except ImportError:
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CATEGORIES = [
-    "Shoes,
+    "Shoes",
     "T-shirt",
     "pen",
     "water bottle",
