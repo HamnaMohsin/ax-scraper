@@ -21,7 +21,6 @@ except ImportError:
 # ── Config ────────────────────────────────────────────────────────────────────
 PRODUCT_IDS = [
     "1005010256644429",
-    # Add more product IDs here
 ]
 
 OUTPUT_FILE           = "aliexpress_product_details.json"
@@ -42,22 +41,6 @@ CAPTCHA_SELECTORS  = [
     "[id*='captcha']", "iframe[src*='geetest']", "[class*='captcha']",
 ]
 
-# ── Target selectors ──────────────────────────────────────────────────────────
-# 1. Delivery date
-DELIVERY_SELECTOR  = "strong[data-spm-anchor-id*='i5']"
-
-# 2. Quantity available
-QUANTITY_SELECTOR  = "div.quantity--info--jnoo_pD span"
-
-# 3. Rating
-RATING_SELECTOR    = (
-    "#root > div > div.pdp-body.pdp-wrap > div > "
-    "div.pdp-body-top-left > div.pdp-info > div.pdp-info-right > "
-    "div.reviewer--wrap--vGS7G6P > div > div > "
-    "a.reviewer--rating--xrWWFzx > strong"
-)
-
-# Fallback selectors (more resilient)
 DELIVERY_FALLBACKS = [
     "strong[data-spm-anchor-id*='i5']",
     ".dynamic-shipping-line strong",
@@ -73,6 +56,11 @@ RATING_FALLBACKS = [
     "[class*='reviewer--rating'] strong",
     "[class*='rating'] strong",
 ]
+
+MONTH_MAP = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5,  "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10,"nov": 11, "dec": 12,
+}
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -112,7 +100,6 @@ def make_context(browser):
         {"name": "xman_us_f",     "value": "x_locale=en_US&x_site=POL",                  "domain": ".aliexpress.com", "path": "/"},
         {"name": "ali_apache_id", "value": "PL",                                           "domain": ".aliexpress.com", "path": "/"},
     ])
-    # Block images/fonts to speed up loading
     ctx.route("**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2}", lambda r: r.abort())
     return ctx
 
@@ -136,64 +123,53 @@ def is_captcha(page) -> bool:
     return False
 
 
-# ── Delivery date parsing ─────────────────────────────────────────────────────
-MONTH_MAP = {
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5,  "jun": 6,
-    "jul": 7, "aug": 8, "sep": 9, "oct": 10,"nov": 11, "dec": 12,
-}
-
+# ── Parsing helpers ───────────────────────────────────────────────────────────
 def parse_delivery_dates(raw: str) -> dict:
-    """
-    Parse strings like 'Apr 26 - 29' or 'May 3 - Jun 5' into structured dates.
-    Returns: { "raw": str, "from": "YYYY-MM-DD", "to": "YYYY-MM-DD" }
-    """
-    raw = raw.strip()
-    now = datetime.now()
+    raw  = raw.strip()
+    now  = datetime.now()
     year = now.year
 
-    # Pattern: "Apr 26 - 29"  → same month
+    # "Apr 26 - 29" — same month
     m = re.match(r'([A-Za-z]+)\s+(\d+)\s*[-–]\s*(\d+)', raw)
     if m:
-        month_str, day_from, day_to = m.group(1), int(m.group(2)), int(m.group(3))
-        month = MONTH_MAP.get(month_str.lower()[:3])
+        month = MONTH_MAP.get(m.group(1).lower()[:3])
         if month:
-            # Handle year rollover
-            if month < now.month:
-                year += 1
+            y = year if month >= now.month else year + 1
             try:
-                date_from = datetime(year, month, day_from).strftime("%Y-%m-%d")
-                date_to   = datetime(year, month, day_to).strftime("%Y-%m-%d")
-                return {"raw": raw, "from": date_from, "to": date_to}
+                return {
+                    "raw":  raw,
+                    "from": datetime(y, month, int(m.group(2))).strftime("%Y-%m-%d"),
+                    "to":   datetime(y, month, int(m.group(3))).strftime("%Y-%m-%d"),
+                }
             except ValueError:
                 pass
 
-    # Pattern: "Apr 26 - May 3"  → different months
+    # "Apr 30 - May 3" — cross-month
     m = re.match(r'([A-Za-z]+)\s+(\d+)\s*[-–]\s*([A-Za-z]+)\s+(\d+)', raw)
     if m:
-        m1_str, d1, m2_str, d2 = m.group(1), int(m.group(2)), m.group(3), int(m.group(4))
-        month1 = MONTH_MAP.get(m1_str.lower()[:3])
-        month2 = MONTH_MAP.get(m2_str.lower()[:3])
-        if month1 and month2:
-            y1 = year if month1 >= now.month else year + 1
-            y2 = year if month2 >= now.month else year + 1
+        mo1 = MONTH_MAP.get(m.group(1).lower()[:3])
+        mo2 = MONTH_MAP.get(m.group(3).lower()[:3])
+        if mo1 and mo2:
+            y1 = year if mo1 >= now.month else year + 1
+            y2 = year if mo2 >= now.month else year + 1
             try:
-                date_from = datetime(y1, month1, d1).strftime("%Y-%m-%d")
-                date_to   = datetime(y2, month2, d2).strftime("%Y-%m-%d")
-                return {"raw": raw, "from": date_from, "to": date_to}
+                return {
+                    "raw":  raw,
+                    "from": datetime(y1, mo1, int(m.group(2))).strftime("%Y-%m-%d"),
+                    "to":   datetime(y2, mo2, int(m.group(4))).strftime("%Y-%m-%d"),
+                }
             except ValueError:
                 pass
 
     return {"raw": raw, "from": None, "to": None}
 
 
-# ── Quantity parsing ──────────────────────────────────────────────────────────
 def parse_quantity(raw: str) -> int | None:
-    """Extract integer from strings like '988 available' or '1,234 pieces available'."""
-    m = re.search(r'[\d,]+', raw.replace(",", ""))
-    return int(m.group().replace(",", "")) if m else None
+    m = re.search(r'\d+', raw.replace(",", ""))
+    return int(m.group()) if m else None
 
 
-# ── Single-field extractor (tries multiple selectors) ────────────────────────
+# ── Selector helper ───────────────────────────────────────────────────────────
 def try_selectors(page, selectors: list[str], field_name: str, indent: int = 2) -> str | None:
     for sel in selectors:
         try:
@@ -209,7 +185,7 @@ def try_selectors(page, selectors: list[str], field_name: str, indent: int = 2) 
     return None
 
 
-# ── Product page loader ───────────────────────────────────────────────────────
+# ── Page loader (needs an existing browser instance) ─────────────────────────
 def load_product_page(browser, url: str):
     for attempt in range(MAX_CAPTCHA_ROTATIONS + 1):
         log("📡", f"Loading attempt {attempt + 1}/{MAX_CAPTCHA_ROTATIONS + 1} …", indent=1)
@@ -218,12 +194,10 @@ def load_product_page(browser, url: str):
 
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
-
-            # Wait for meaningful content
             try:
                 page.wait_for_selector(".pdp-info, .product-info, [class*='pdp-body']", timeout=15000)
             except PlaywrightTimeout:
-                log("⚠️ ", "PDP container not found — page may not have loaded correctly", indent=1)
+                log("⚠️ ", "PDP container not found", indent=1)
 
             time.sleep(random.uniform(2, 4))
 
@@ -233,7 +207,6 @@ def load_product_page(browser, url: str):
                 rotate_tor_circuit()
                 continue
 
-            # Scroll to trigger lazy-loaded content
             for _ in range(4):
                 page.evaluate("window.scrollBy(0, window.innerHeight * 0.6)")
                 time.sleep(0.4)
@@ -251,11 +224,10 @@ def load_product_page(browser, url: str):
     return None, None
 
 
-# ── Per-product scraper ───────────────────────────────────────────────────────
+# ── Per-product scraper (uses existing browser) ───────────────────────────────
 def scrape_product(browser, product_id: str) -> dict:
     url = PRODUCT_URL.format(product_id=product_id)
     log("🛒", f"Scraping product ID: {product_id}")
-    log("🔗", f"URL: {url}", indent=1)
 
     result = {
         "product_id":    product_id,
@@ -273,27 +245,18 @@ def scrape_product(browser, product_id: str) -> dict:
         return result
 
     try:
-        # ── 1. Delivery date ──────────────────────────────────────────────────
-        log("📦", "Extracting delivery date …", indent=1)
         raw_delivery = try_selectors(page, DELIVERY_FALLBACKS, "Delivery date")
         if raw_delivery:
             result["delivery_date"] = parse_delivery_dates(raw_delivery)
         else:
             result["errors"].append("delivery_date: not found")
 
-        # ── 2. Quantity available ─────────────────────────────────────────────
-        log("📊", "Extracting quantity …", indent=1)
         raw_qty = try_selectors(page, QUANTITY_FALLBACKS, "Quantity")
         if raw_qty:
-            result["quantity"] = {
-                "raw":   raw_qty,
-                "value": parse_quantity(raw_qty),
-            }
+            result["quantity"] = {"raw": raw_qty, "value": parse_quantity(raw_qty)}
         else:
             result["errors"].append("quantity: not found")
 
-        # ── 3. Rating ─────────────────────────────────────────────────────────
-        log("⭐", "Extracting rating …", indent=1)
         raw_rating = try_selectors(page, RATING_FALLBACKS, "Rating")
         if raw_rating:
             try:
@@ -310,21 +273,78 @@ def scrape_product(browser, product_id: str) -> dict:
     return result
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Self-contained scraper — NO browser argument needed (for FastAPI import) ──
+def scrape_product_details(product_id: int) -> dict:
+    """
+    Standalone entry point used by main.py.
+    Spins up its own Playwright + Tor browser, scrapes one product, closes.
+    """
+    url = PRODUCT_URL.format(product_id=str(product_id))
+    result = {
+        "product_id":    product_id,
+        "url":           url,
+        "scraped_at":    datetime.utcnow().isoformat(),
+        "delivery_date": None,
+        "quantity":      None,
+        "rating":        None,
+        "errors":        [],
+    }
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            headless=True,
+            proxy={"server": "socks5://127.0.0.1:9050"},
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        )
+        try:
+            page, ctx = load_product_page(browser, url)
+            if page is None:
+                result["errors"].append("Failed to load page after max retries")
+                return result
+
+            try:
+                raw_delivery = try_selectors(page, DELIVERY_FALLBACKS, "Delivery date")
+                if raw_delivery:
+                    result["delivery_date"] = parse_delivery_dates(raw_delivery)
+                else:
+                    result["errors"].append("delivery_date: not found")
+
+                raw_qty = try_selectors(page, QUANTITY_FALLBACKS, "Quantity")
+                if raw_qty:
+                    result["quantity"] = {"raw": raw_qty, "value": parse_quantity(raw_qty)}
+                else:
+                    result["errors"].append("quantity: not found")
+
+                raw_rating = try_selectors(page, RATING_FALLBACKS, "Rating")
+                if raw_rating:
+                    try:
+                        result["rating"] = float(raw_rating.strip())
+                    except ValueError:
+                        result["rating"] = raw_rating.strip()
+                else:
+                    result["errors"].append("rating: not found")
+
+            finally:
+                ctx.close()
+        finally:
+            browser.close()
+
+    return result
+
+
+# ── CLI entry point ───────────────────────────────────────────────────────────
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="AliExpress Product Detail Scraper")
-    parser.add_argument("--headless",  default="true", choices=["true", "false"])
-    parser.add_argument("--output",    default=OUTPUT_FILE)
-    parser.add_argument("--ids",       nargs="*", default=None,
-                        help="Product IDs to scrape (overrides PRODUCT_IDS list)")
+    parser.add_argument("--headless", default="true", choices=["true", "false"])
+    parser.add_argument("--output",   default=OUTPUT_FILE)
+    parser.add_argument("--ids",      nargs="*", default=None)
     args = parser.parse_args()
 
     product_ids = args.ids or PRODUCT_IDS
-    headless    = args.headless.lower() == "true"
 
     log_separator("═")
-    log("🚀", f"AliExpress Product Detail Scraper")
+    log("🚀", "AliExpress Product Detail Scraper")
     log("📋", f"Products to scrape: {len(product_ids)}")
     log_separator("═")
 
@@ -332,7 +352,7 @@ def main():
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
-            headless=headless,
+            headless=args.headless.lower() == "true",
             proxy={"server": "socks5://127.0.0.1:9050"},
             args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
         )
@@ -342,26 +362,22 @@ def main():
                 log("🗂️ ", f"Product {i}/{len(product_ids)}: {pid}")
                 result = scrape_product(browser, pid)
                 all_results.append(result)
-
                 if i < len(product_ids):
                     wait = random.uniform(5, 12)
-                    log("⏳", f"Waiting {wait:.1f}s before next product …", indent=1)
+                    log("⏳", f"Waiting {wait:.1f}s …", indent=1)
                     time.sleep(wait)
                     rotate_tor_circuit()
         finally:
             browser.close()
 
-    # ── Save / Merge ──────────────────────────────────────────────────────────
     output_path = Path(args.output)
     existing: dict = {"products": {}}
-
     if output_path.exists():
         try:
             with open(output_path, "r", encoding="utf-8") as f:
                 existing = json.load(f)
-            log("💾", "Existing data found — merging …")
-        except Exception as e:
-            log("⚠️ ", f"Could not read existing file, starting fresh: {e}")
+        except Exception:
+            pass
 
     if "products" not in existing:
         existing["products"] = {}
@@ -377,7 +393,7 @@ def main():
 
     log_separator("═")
     log("🎉", f"COMPLETE. Saved to {args.output}")
-    log("📊", f"Total products in file: {existing['total_products']}")
+    log("📊", f"Total products: {existing['total_products']}")
     log_separator("═")
 
 
