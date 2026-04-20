@@ -41,6 +41,18 @@ from scr2 import (
     MAX_PAGES_PER_CATEGORY,
     scrape_category,
 )
+
+from scr01 import (
+    load_product_page,
+    make_context,
+    make_page,
+    try_selectors,
+    parse_delivery_dates,
+    parse_quantity,
+    DELIVERY_FALLBACKS,
+    QUANTITY_FALLBACKS,
+    RATING_FALLBACKS,
+)
 # ── App init ──────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="AX-Scraper", version="1.0")
