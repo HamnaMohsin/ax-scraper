@@ -21,6 +21,7 @@ from schemas import (
     CategoryStandaloneOut,
     ProductFullOut,
     ManufacturerInfoOut,
+    ProductDetailsRequest,
 )
 from scraper3       import extract_aliexpress_product
 from llm_refiner2   import refine_product
@@ -42,7 +43,7 @@ from scr2 import (
     scrape_category,
 )
 
-from scr01 import scrape_product_details
+from scr01 import scrape_product_details, scrape_product_details_bulk
 # ── App init ──────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="AX-Scraper", version="1.0")
@@ -535,43 +536,93 @@ def get_scraper_job(job_id: str):
     return job
 
 
-@app.get("/product-details/{product_id}")
-def get_product_details(product_id: int, db: Session = Depends(get_db)):
-    """
-    Scrapes live delivery date, quantity, and rating for a product
-    that already exists in the DB. Run /scrape or /scrape-only first.
+
+# ── Product Details Endpoints (scr01) ─────────────────────────────────────────
  
-    Returns:
-        delivery_date: { raw, from (YYYY-MM-DD), to (YYYY-MM-DD) }
-        quantity:      { raw, value (int) }
-        rating:        float e.g. 4.8
-        errors:        list of fields that couldn't be found
+@app.post("/product-details")
+def get_product_details_bulk(
+    request: ProductDetailsRequest,
+    db: Session = Depends(get_db),
+):
     """
-    product = db.query(ProductFetched).filter_by(product_id=product_id).first()
-    if not product:
+    Scrape live rating, delivery, price, and quantity for a list of product IDs.
+    - Checks each ID exists in DB first (run /scrape or /scrape-only first).
+    - Runs scr01 scraper on all IDs and saves results to output_file (default: ax_products.json).
+ 
+    Request body:
+        {
+            "ids": [1005011748833056, 1005011606028187],
+            "output_file": "ax_products.json"   // optional
+        }
+    """
+    # Validate all IDs exist in DB
+    missing = []
+    for pid in request.ids:
+        if not db.query(ProductFetched).filter_by(product_id=pid).first():
+            missing.append(pid)
+ 
+    if missing:
         raise HTTPException(
             status_code=404,
-            detail=f"Product {product_id} not found. Run /scrape or /scrape-only first.",
+            detail=f"Products not found in DB (run /scrape first): {missing}",
         )
  
-    details = scrape_product_details(product_id)   # ✅ from scr01
+    summary = scrape_product_details_bulk(
+        product_ids = request.ids,
+        output_file = request.output_file,
+    )
  
     return {
-        "product_id":    product_id,
-        "title":         product.title,
-        "url":           details["url"],
-        "scraped_at":    details["scraped_at"],
-        "delivery_date": details["delivery_date"],
-        "quantity":      details["quantity"],
-        "rating":        details["rating"],
-        "errors":        details["errors"],
+        "total":      summary["total"],
+        "saved_to":   summary["saved_to"],
+        "scraped_at": datetime.utcnow().isoformat(),
+        "results": [
+            {
+                "product_id": r["id"],
+                "url":        r.get("url"),
+                "rating":     r.get("rating"),
+                "delivery":   r.get("delivery"),
+                "price":      r.get("price"),
+                "quantity":   r.get("quantity"),
+                "errors":     r.get("errors", []),
+            }
+            for r in summary["results"]
+        ],
     }
  
  
-@app.get("/product-details/{product_id}/raw")
-def get_product_details_no_db(product_id: int):
+@app.post("/product-details/raw")
+def get_product_details_bulk_no_db(request: ProductDetailsRequest):
     """
-    Scrapes live delivery date, quantity, and rating for any product ID —
-    no DB existence check required.
+    Scrape live rating, delivery, price, and quantity for a list of product IDs —
+    no DB existence check required. Results saved to output_file.
+ 
+    Request body:
+        {
+            "ids": [1005011748833056, 1005011606028187],
+            "output_file": "ax_products.json"   // optional
+        }
     """
-    return scrape_product_details(product_id)       # ✅ from scr01
+    summary = scrape_product_details_bulk(
+        product_ids = request.ids,
+        output_file = request.output_file,
+    )
+ 
+    return {
+        "total":      summary["total"],
+        "saved_to":   summary["saved_to"],
+        "scraped_at": datetime.utcnow().isoformat(),
+        "results": [
+            {
+                "product_id": r["id"],
+                "url":        r.get("url"),
+                "rating":     r.get("rating"),
+                "delivery":   r.get("delivery"),
+                "price":      r.get("price"),
+                "quantity":   r.get("quantity"),
+                "errors":     r.get("errors", []),
+            }
+            for r in summary["results"]
+        ],
+    }
+ 
