@@ -38,8 +38,8 @@ PRODUCT_IDS = [
     "1005011606028187",
 ]
 
-BASE_URL   = "https://pl.aliexpress.com/item/{id}.html"
-OUTPUT_FILE = "aliexpress_products.json"
+BASE_URL   = "https://pl.aliexpress.com/item/{id}.html?language=en&currency=PLN"
+OUTPUT_FILE = "ax_products.json"
 DEBUG_DIR   = Path("debug")
 DEBUG_FAILED = True
 
@@ -78,19 +78,50 @@ RATING_HTML_PATTERNS = [
     r'starScore["\s:]+(\d\.\d)',
 ]
 
+# Selectors specifically for the date line (contentLayout), not the free-shipping title line
 DELIVERY_SELECTORS = [
     "#root > div > div.pdp-body.pdp-wrap > div > div.pdp-body-top-right > div > div > div:nth-child(5) > div:nth-child(1) > div > div > div.dynamic-shipping-line.dynamic-shipping-contentLayout > span:nth-child(1) > span > strong",
-    "div.dynamic-shipping-line strong",
-    "[class*='dynamic-shipping'] strong",
-    "[class*='dynamic-shipping-line'] strong",
-    "[class*='shippingLine'] strong",
-    "[class*='delivery'] strong",
+    "div.dynamic-shipping-contentLayout strong",
+    "[class*='dynamic-shipping-contentLayout'] strong",
 ]
 
+# Month names in Polish and English for date validation
+DATE_RE = re.compile(
+    r'(\d{1,2}).{0,6}'
+    r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec'
+    r'|Sty|Lut|Mar|Kwi|Maj|Cze|Lip|Sie|Wrz|Paz|Lis|Gru)',
+    re.IGNORECASE
+)
+
 DELIVERY_HTML_PATTERNS = [
-    r'(?:Get it before|Delivery(?:\s*by)?)[^<"]{5,60}(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[^<"]{1,20}',
+    r'(?:Get it before|odbierz przed)[^<"]{5,60}(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Sty|Lut|Kwi|Maj|Cze|Lip|Sie|Wrz|Paz|Lis|Gru)[^<"]{1,20}',
     r'"deliveryDayMax":\s*"([^"]+)"',
     r'"promiseDate":\s*"([^"]+)"',
+]
+
+PRICE_SELECTORS = [
+    "#root > div > div.pdp-body.pdp-wrap > div > div.pdp-body-top-left > div.pdp-info > div.pdp-info-right > div.price-default--wrap--uwQneeq > div > div.price-default--bannerContent--RVEikiQ > div.price-default--priceWrap--y4ppSfS > div.price-default--currentWrap--A_MNgCG > span",
+    "[class*='price-default--current']",
+    "[class*='price--currentPriceText']",
+    "[class*='uniform-banner-box-price']",
+]
+
+PRICE_HTML_PATTERNS = [
+    r'"discountPrice":\s*\{[^}]*"formattedPrice":\s*"([^"]+)"',
+    r'"salePrice":\s*\{[^}]*"formattedPrice":\s*"([^"]+)"',
+    r'"originalPrice":\s*\{[^}]*"formattedPrice":\s*"([^"]+)"',
+]
+
+QUANTITY_SELECTORS = [
+    "#root > div > div.pdp-body.pdp-wrap > div > div.pdp-body-top-right > div > div > div:nth-child(7) > div.quantity--info--jnoo_pD > div > span",
+    "[class*='quantity--info'] span",
+    "[class*='quantity--info'] div span",
+]
+
+QUANTITY_HTML_PATTERNS = [
+    r'"totalAvailQuantity":\s*(\d+)',
+    r'"availQuantity":\s*(\d+)',
+    r'Only\s+(\d+)\s+left',
 ]
 
 
@@ -126,12 +157,12 @@ def make_context(browser):
         permissions=["geolocation"],
         viewport={"width": 1280, "height": 800},
         extra_http_headers={
-            "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Language": "en-US,en;q=0.9,pl;q=0.8",
         },
     )
     ctx.add_cookies([
-        {"name": "aep_usuc_f",  "value": "site=glo&c_tp=PLN&region=PL&b_locale=pl_PL", "domain": ".aliexpress.com", "path": "/"},
-        {"name": "intl_locale", "value": "pl_PL",  "domain": ".aliexpress.com", "path": "/"},
+        {"name": "aep_usuc_f",  "value": "site=glo&c_tp=PLN&region=PL&b_locale=en_US", "domain": ".aliexpress.com", "path": "/"},
+        {"name": "intl_locale", "value": "en_US",  "domain": ".aliexpress.com", "path": "/"},
         {"name": "aep_history", "value": "PL",     "domain": ".aliexpress.com", "path": "/"},
     ])
     # Block heavy assets
@@ -237,16 +268,53 @@ def clean_delivery(text):
     # Strip any language prefix like "Delivery:", "Dostawa:", etc.
     return re.sub(r"^[^:]+:\s*", "", text, flags=re.IGNORECASE).strip()
 
+def has_date(text):
+    """Return True only if the text contains a recognisable delivery date."""
+    return bool(DATE_RE.search(text))
+
 def get_delivery(page):
-    # CSS selectors
+    # CSS selectors — only accept if text contains an actual date
     text, method = scrape_selector(page, DELIVERY_SELECTORS)
-    if text:
+    if text and has_date(text):
         return clean_delivery(text), method
+
+    # Fallback: scan ALL strong tags for one containing a date
+    try:
+        for el in page.locator("strong").all():
+            try:
+                t = el.inner_text(timeout=1000).strip()
+                if has_date(t):
+                    return clean_delivery(t), "strong scan"
+            except Exception:
+                continue
+    except Exception:
+        pass
 
     # HTML regex
     text, method = scrape_html_regex(page, DELIVERY_HTML_PATTERNS)
     if text:
         text = clean_delivery(text)
+    return text, method
+
+def get_price(page):
+    # CSS selectors
+    text, method = scrape_selector(page, PRICE_SELECTORS)
+    if text:
+        return text.strip(), method
+    # HTML regex
+    return scrape_html_regex(page, PRICE_HTML_PATTERNS)
+
+def get_quantity(page):
+    # CSS selectors
+    text, method = scrape_selector(page, QUANTITY_SELECTORS)
+    if text:
+        return text.strip(), method
+    # HTML regex — returns a number string
+    text, method = scrape_html_regex(page, QUANTITY_HTML_PATTERNS)
+    if text:
+        # If we got a raw number from JSON, format it nicely
+        if text.isdigit():
+            text = f"Only {text} left" if int(text) < 50 else text
     return text, method
 
 
@@ -315,16 +383,23 @@ def scrape_product(browser, product_id):
 
             rating,   r_method = get_rating(page)
             delivery, d_method = get_delivery(page)
+            price,    p_method = get_price(page)
+            quantity, q_method = get_quantity(page)
 
             icon_r = "✅" if rating   else "❌"
             icon_d = "✅" if delivery else "❌"
+            icon_p = "✅" if price    else "❌"
+            icon_q = "✅" if quantity else "❌"
             log(icon_r, f"Rating  : {rating   or 'not found'}  ({r_method})", indent=1)
             log(icon_d, f"Delivery: {delivery or 'not found'}  ({d_method})", indent=1)
+            log(icon_p, f"Price   : {price    or 'not found'}  ({p_method})", indent=1)
+            log(icon_q, f"Quantity: {quantity or 'not found'}  ({q_method})", indent=1)
 
-            if DEBUG_FAILED and (not rating or not delivery):
+            if DEBUG_FAILED and not all([rating, delivery, price]):
                 dump_debug(page, product_id)
 
-            return {"id": product_id, "rating": rating, "delivery": delivery}
+            return {"id": product_id, "rating": rating, "delivery": delivery,
+                    "price": price, "quantity": quantity}
 
         except Exception as e:
             log("✗", f"Error: {e}", indent=1)
@@ -406,12 +481,14 @@ def main():
     print("\n" + "=" * 55)
     print("RESULTS SUMMARY")
     print("=" * 55)
-    print(f"  {'ID':<25} {'Rating':<10} {'Delivery'}")
-    print(f"  {'-'*24} {'-'*9} {'-'*30}")
+    print(f"  {'ID':<25} {'Rating':<8} {'Price':<14} {'Quantity':<16} {'Delivery'}")
+    print(f"  {'-'*24} {'-'*7} {'-'*13} {'-'*15} {'-'*30}")
     for r in results:
-        rating   = r["rating"]   or "N/A"
-        delivery = r["delivery"] or "N/A"
-        print(f"  {r['id']:<25} {rating:<10} {delivery}")
+        rating   = r.get("rating")   or "N/A"
+        delivery = r.get("delivery") or "N/A"
+        price    = r.get("price")    or "N/A"
+        quantity = r.get("quantity") or "N/A"
+        print(f"  {r['id']:<25} {rating:<8} {price:<14} {quantity:<16} {delivery}")
     print(f"\n  Saved → {args.output}")
 
 
