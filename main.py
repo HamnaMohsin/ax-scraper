@@ -42,17 +42,7 @@ from scr2 import (
     scrape_category,
 )
 
-from scr01 import (
-    load_product_page,
-    make_context,
-    make_page,
-    try_selectors,
-    parse_delivery_dates,
-    parse_quantity,
-    DELIVERY_FALLBACKS,
-    QUANTITY_FALLBACKS,
-    RATING_FALLBACKS,
-)
+from scr01 import scrape_product_details
 # ── App init ──────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="AX-Scraper", version="1.0")
@@ -544,20 +534,19 @@ def get_scraper_job(job_id: str):
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
     return job
 
+
 @app.get("/product-details/{product_id}")
 def get_product_details(product_id: int, db: Session = Depends(get_db)):
     """
-    Scrapes live delivery date, quantity, and rating for a given product ID.
+    Scrapes live delivery date, quantity, and rating for a product
+    that already exists in the DB. Run /scrape or /scrape-only first.
  
-    - Checks that the product exists in the DB (scraped previously).
-    - Launches a headless Playwright browser via Tor.
-    - Returns structured delivery_date (with from/to dates), quantity (int),
-      and rating (float).
- 
-    Example:
-        GET /product-details/1005010256644429
+    Returns:
+        delivery_date: { raw, from (YYYY-MM-DD), to (YYYY-MM-DD) }
+        quantity:      { raw, value (int) }
+        rating:        float e.g. 4.8
+        errors:        list of fields that couldn't be found
     """
-    # Verify product exists in DB
     product = db.query(ProductFetched).filter_by(product_id=product_id).first()
     if not product:
         raise HTTPException(
@@ -565,28 +554,24 @@ def get_product_details(product_id: int, db: Session = Depends(get_db)):
             detail=f"Product {product_id} not found. Run /scrape or /scrape-only first.",
         )
  
-    details = _scrape_product_details(product_id)
+    details = scrape_product_details(product_id)   # ✅ from scr01
  
     return {
         "product_id":    product_id,
         "title":         product.title,
         "url":           details["url"],
         "scraped_at":    details["scraped_at"],
-        "delivery_date": details["delivery_date"],  # { raw, from (YYYY-MM-DD), to (YYYY-MM-DD) }
-        "quantity":      details["quantity"],        # { raw, value (int) }
-        "rating":        details["rating"],          # float e.g. 4.8
-        "errors":        details["errors"],          # list of any fields that failed
+        "delivery_date": details["delivery_date"],
+        "quantity":      details["quantity"],
+        "rating":        details["rating"],
+        "errors":        details["errors"],
     }
  
  
 @app.get("/product-details/{product_id}/raw")
 def get_product_details_no_db(product_id: int):
     """
-    Same as GET /product-details/{product_id} but skips the DB existence check.
-    Useful for scraping any product ID directly without a prior /scrape step.
- 
-    Example:
-        GET /product-details/1005010256644429/raw
+    Scrapes live delivery date, quantity, and rating for any product ID —
+    no DB existence check required.
     """
-    details = _scrape_product_details(product_id)
-    return details
+    return scrape_product_details(product_id)       # ✅ from scr01
