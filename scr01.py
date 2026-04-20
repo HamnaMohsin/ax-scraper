@@ -494,3 +494,109 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# ── Public API (importable by FastAPI / main.py) ──────────────────────────────
+
+def scrape_product_details(product_id: int | str) -> dict:
+    """
+    Scrape a single product and return a structured dict.
+    Called by FastAPI endpoints in main.py.
+    """
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            headless=True,
+            proxy={"server": "socks5://127.0.0.1:9050"},
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-ipc-flooding-protection",
+                "--disable-renderer-backgrounding",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-background-timer-throttling",
+                "--window-size=1920,1080",
+            ],
+        )
+        try:
+            result = scrape_product(browser, str(product_id))
+        finally:
+            browser.close()
+
+    errors = [f for f in ["rating", "delivery", "price"] if not result.get(f)]
+    return {
+        "url":        BASE_URL.format(id=product_id),
+        "scraped_at": datetime.now().isoformat(),
+        "rating":     result.get("rating"),
+        "delivery":   result.get("delivery"),
+        "price":      result.get("price"),
+        "quantity":   result.get("quantity"),
+        "errors":     errors,
+    }
+
+
+def scrape_product_details_bulk(
+    product_ids: list,
+    output_file: str = OUTPUT_FILE,
+) -> dict:
+    """
+    Scrape a list of product IDs, save to JSON, return summary dict.
+    Called by FastAPI bulk endpoints in main.py.
+    """
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            headless=True,
+            proxy={"server": "socks5://127.0.0.1:9050"},
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-ipc-flooding-protection",
+                "--disable-renderer-backgrounding",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-background-timer-throttling",
+                "--window-size=1920,1080",
+            ],
+        )
+        results = []
+        try:
+            for i, pid in enumerate(product_ids):
+                r = scrape_product(browser, str(pid))
+                r["scraped_at"] = datetime.now().isoformat()
+                r["url"]        = BASE_URL.format(id=pid)
+                r["errors"]     = [f for f in ["rating", "delivery", "price"] if not r.get(f)]
+                results.append(r)
+                if i < len(product_ids) - 1:
+                    time.sleep(random.uniform(3, 6))
+        finally:
+            browser.close()
+
+    # Merge into output JSON
+    output_path = Path(output_file)
+    existing = {"results": []}
+    if output_path.exists():
+        try:
+            existing = json.loads(output_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    raw = existing.get("results", [])
+    existing_map = raw if isinstance(raw, dict) else {
+        r["id"]: r for r in raw if isinstance(r, dict) and "id" in r
+    }
+    for r in results:
+        existing_map[r["id"]] = r
+
+    output_data = {
+        "last_updated": datetime.now().isoformat(),
+        "total":        len(existing_map),
+        "results":      list(existing_map.values()),
+    }
+    output_path.write_text(
+        json.dumps(output_data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    return {
+        "saved_to":   str(output_path.resolve()),
+        "total":      len(results),
+        "results":    results,
+    }
