@@ -80,3 +80,6 @@ class ManufacturerInfoOut(BaseModel):
     phone:      Optional[str] = None
 
     model_config = {"from_attributes": True}
+class ProductDetailsRequest(BaseModel):
+    ids: List[int]
+    output_file: str = "ax_products.json"
