@@ -1,3 +1,17 @@
+"""
+AliExpress Product Scraper
+- Scrapes: star rating + delivery date per product ID
+- Runs through Tor proxy (VM-ready)
+- Multiple selector strategies + HTML regex fallbacks
+- Debug dumps HTML + screenshot on failure
+
+Requirements:
+    pip install playwright beautifulsoup4 stem
+    playwright install chromium
+    # Tor must be running:  sudo apt install tor && sudo service tor start
+"""
+
+import argparse
 import json
 import re
 import sys
@@ -20,14 +34,17 @@ except ImportError:
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PRODUCT_IDS = [
-    "1005010256644429",
+    "1005011748833056",
+    "1005011606028187",
 ]
 
-OUTPUT_FILE           = "aliexpress_product_details.json"
-MAX_CAPTCHA_ROTATIONS = 8
-ROTATE_WAIT_SECS      = 14
+BASE_URL   = "https://pl.aliexpress.com/item/{id}.html"
+OUTPUT_FILE = "aliexpress_products.json"
+DEBUG_DIR   = Path("debug")
+DEBUG_FAILED = True
 
-PRODUCT_URL = "https://pl.aliexpress.com/item/{product_id}.html"
+MAX_CAPTCHA_ROTATIONS = 5
+ROTATE_WAIT_SECS      = 14
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -41,42 +58,52 @@ CAPTCHA_SELECTORS  = [
     "[id*='captcha']", "iframe[src*='geetest']", "[class*='captcha']",
 ]
 
-DELIVERY_FALLBACKS = [
-    "strong[data-spm-anchor-id*='i5']",
-    ".dynamic-shipping-line strong",
-    "[class*='shipping'] strong",
-]
-QUANTITY_FALLBACKS = [
-    "div.quantity--info--jnoo_pD span",
-    "[class*='quantity--info'] span",
-    "[class*='quantity'] span[data-spm-anchor-id*='i7']",
-]
-RATING_FALLBACKS = [
-    "a.reviewer--rating--xrWWFzx > strong",
+
+# ── Selectors ─────────────────────────────────────────────────────────────────
+RATING_SELECTORS = [
+    "#root > div > div.pdp-body.pdp-wrap > div > div.pdp-body-top-left > div.pdp-info > div.pdp-info-right > div.reviewer--wrap--vGS7G6P > div > div > a.reviewer--rating--xrWWFzx > strong",
+    "a.reviewer--rating--xrWWFzx strong",
+    "strong[data-spm-anchor-id]",
+    "[class*='reviewer--wrap'] strong",
     "[class*='reviewer--rating'] strong",
-    "[class*='rating'] strong",
+    "[class*='reviewer'] strong",
 ]
 
-MONTH_MAP = {
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5,  "jun": 6,
-    "jul": 7, "aug": 8, "sep": 9, "oct": 10,"nov": 11, "dec": 12,
-}
+RATING_HTML_PATTERNS = [
+    r"(?:&nbsp;|\s){1,4}(\d\.\d)(?:&nbsp;|\s){1,4}",
+    r'"reviewStar":\s*"?(\d\.\d)"?',
+    r'"averageStar":\s*"?(\d\.\d)"?',
+    r'"starRating":\s*"?(\d\.\d)"?',
+    r'"rating":\s*"?(\d\.\d)"?',
+    r'starScore["\s:]+(\d\.\d)',
+]
+
+DELIVERY_SELECTORS = [
+    "#root > div > div.pdp-body.pdp-wrap > div > div.pdp-body-top-right > div > div > div:nth-child(5) > div:nth-child(1) > div > div > div.dynamic-shipping-line.dynamic-shipping-contentLayout > span:nth-child(1) > span > strong",
+    "div.dynamic-shipping-line strong",
+    "[class*='dynamic-shipping'] strong",
+    "[class*='dynamic-shipping-line'] strong",
+    "[class*='shippingLine'] strong",
+    "[class*='delivery'] strong",
+]
+
+DELIVERY_HTML_PATTERNS = [
+    r'(?:Get it before|Delivery(?:\s*by)?)[^<"]{5,60}(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[^<"]{1,20}',
+    r'"deliveryDayMax":\s*"([^"]+)"',
+    r'"promiseDate":\s*"([^"]+)"',
+]
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-def ts() -> str:
+def ts():
     return datetime.now().strftime("%H:%M:%S")
 
-def log(emoji: str, msg: str, indent: int = 0) -> None:
-    prefix = "  " * indent
-    print(f"[{ts()}] {prefix}{emoji}  {msg}", flush=True)
-
-def log_separator(char: str = "─", width: int = 68) -> None:
-    print(char * width, flush=True)
+def log(emoji, msg, indent=0):
+    print(f"[{ts()}] {'  ' * indent}{emoji}  {msg}", flush=True)
 
 
 # ── Tor ───────────────────────────────────────────────────────────────────────
-def rotate_tor_circuit(wait: int = ROTATE_WAIT_SECS) -> bool:
+def rotate_tor_circuit(wait=ROTATE_WAIT_SECS):
     try:
         with Controller.from_port(port=9051) as ctrl:
             ctrl.authenticate()
@@ -89,29 +116,61 @@ def rotate_tor_circuit(wait: int = ROTATE_WAIT_SECS) -> bool:
         return False
 
 
-# ── Browser context / page factories ─────────────────────────────────────────
+# ── Browser context ───────────────────────────────────────────────────────────
 def make_context(browser):
     ctx = browser.new_context(
         user_agent=random.choice(USER_AGENTS),
-        viewport={"width": 1920, "height": 1080},
+        locale="pl-PL",
+        timezone_id="Europe/Warsaw",
+        geolocation={"latitude": 52.2297, "longitude": 21.0122},
+        permissions=["geolocation"],
+        viewport={"width": 1280, "height": 800},
+        extra_http_headers={
+            "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
+        },
     )
     ctx.add_cookies([
-        {"name": "aep_usuc_f",    "value": "site=pol&c_tp=USD&region=PL&b_locale=en_US", "domain": ".aliexpress.com", "path": "/"},
-        {"name": "xman_us_f",     "value": "x_locale=en_US&x_site=POL",                  "domain": ".aliexpress.com", "path": "/"},
-        {"name": "ali_apache_id", "value": "PL",                                           "domain": ".aliexpress.com", "path": "/"},
+        {"name": "aep_usuc_f",  "value": "site=glo&c_tp=PLN&region=PL&b_locale=pl_PL", "domain": ".aliexpress.com", "path": "/"},
+        {"name": "intl_locale", "value": "pl_PL",  "domain": ".aliexpress.com", "path": "/"},
+        {"name": "aep_history", "value": "PL",     "domain": ".aliexpress.com", "path": "/"},
     ])
-    ctx.route("**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2}", lambda r: r.abort())
+    # Block heavy assets
+    ctx.route("**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2,ttf}", lambda r: r.abort())
     return ctx
 
-def make_page(context):
-    page = context.new_page()
+def make_page(ctx):
+    page = ctx.new_page()
     page.add_init_script("""
         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-        window.chrome = {runtime: {}};
+        window.chrome = {runtime: {}, loadTimes: () => {}, csi: () => {}, app: {}};
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [
+                {name: 'Chrome PDF Plugin',  filename: 'internal-pdf-viewer'},
+                {name: 'Chrome PDF Viewer',  filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai'},
+                {name: 'Native Client',      filename: 'internal-nacl-plugin'},
+            ]
+        });
+        Object.defineProperty(navigator, 'languages', {get: () => ['pl-PL', 'pl', 'en-US', 'en']});
+        const origQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (p) =>
+            p.name === 'notifications'
+                ? Promise.resolve({state: Notification.permission})
+                : origQuery(p);
+        Object.defineProperty(screen, 'width',       {get: () => 1920});
+        Object.defineProperty(screen, 'height',      {get: () => 1080});
+        Object.defineProperty(screen, 'availWidth',  {get: () => 1920});
+        Object.defineProperty(screen, 'availHeight', {get: () => 1040});
+        Object.defineProperty(screen, 'colorDepth',  {get: () => 24});
+        Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+        Object.defineProperty(navigator, 'deviceMemory',        {get: () => 8});
+        delete window.__playwright;
+        delete window.__pw_manual;
+        delete window.callPhantom;
+        delete window._phantom;
     """)
     return page
 
-def is_captcha(page) -> bool:
+def is_captcha(page):
     if any(t in page.url.lower() for t in CAPTCHA_URL_TOKENS):
         return True
     for sel in CAPTCHA_SELECTORS:
@@ -123,278 +182,237 @@ def is_captcha(page) -> bool:
     return False
 
 
-# ── Parsing helpers ───────────────────────────────────────────────────────────
-def parse_delivery_dates(raw: str) -> dict:
-    raw  = raw.strip()
-    now  = datetime.now()
-    year = now.year
-
-    # "Apr 26 - 29" — same month
-    m = re.match(r'([A-Za-z]+)\s+(\d+)\s*[-–]\s*(\d+)', raw)
-    if m:
-        month = MONTH_MAP.get(m.group(1).lower()[:3])
-        if month:
-            y = year if month >= now.month else year + 1
-            try:
-                return {
-                    "raw":  raw,
-                    "from": datetime(y, month, int(m.group(2))).strftime("%Y-%m-%d"),
-                    "to":   datetime(y, month, int(m.group(3))).strftime("%Y-%m-%d"),
-                }
-            except ValueError:
-                pass
-
-    # "Apr 30 - May 3" — cross-month
-    m = re.match(r'([A-Za-z]+)\s+(\d+)\s*[-–]\s*([A-Za-z]+)\s+(\d+)', raw)
-    if m:
-        mo1 = MONTH_MAP.get(m.group(1).lower()[:3])
-        mo2 = MONTH_MAP.get(m.group(3).lower()[:3])
-        if mo1 and mo2:
-            y1 = year if mo1 >= now.month else year + 1
-            y2 = year if mo2 >= now.month else year + 1
-            try:
-                return {
-                    "raw":  raw,
-                    "from": datetime(y1, mo1, int(m.group(2))).strftime("%Y-%m-%d"),
-                    "to":   datetime(y2, mo2, int(m.group(4))).strftime("%Y-%m-%d"),
-                }
-            except ValueError:
-                pass
-
-    return {"raw": raw, "from": None, "to": None}
-
-
-def parse_quantity(raw: str) -> int | None:
-    m = re.search(r'\d+', raw.replace(",", ""))
-    return int(m.group()) if m else None
-
-
-# ── Selector helper ───────────────────────────────────────────────────────────
-def try_selectors(page, selectors: list[str], field_name: str, indent: int = 2) -> str | None:
+# ── Scraping helpers ──────────────────────────────────────────────────────────
+def scrape_selector(page, selectors):
+    """Try each CSS selector, return first non-empty inner text."""
     for sel in selectors:
         try:
-            loc = page.locator(sel).first
-            if loc.count() > 0:
-                text = loc.inner_text().strip()
+            el = page.locator(sel).first
+            if el.count() > 0:
+                text = el.inner_text(timeout=3000).strip()
                 if text:
-                    log("✓", f"{field_name} found via '{sel}': {text!r}", indent=indent)
-                    return text
+                    return text, f"selector"
         except Exception:
             continue
-    log("⚠️ ", f"{field_name} not found with any selector", indent=indent)
-    return None
+    return None, "none"
+
+def scrape_html_regex(page, patterns):
+    """Try each regex against raw page HTML."""
+    try:
+        html = page.content()
+        for pattern in patterns:
+            m = re.search(pattern, html, re.IGNORECASE)
+            if m:
+                value = m.group(1) if m.lastindex else m.group()
+                value = re.sub(r"&nbsp;", " ", value).strip()
+                return value, "html regex"
+    except Exception:
+        pass
+    return None, "none"
+
+def get_rating(page):
+    # CSS selectors
+    text, method = scrape_selector(page, RATING_SELECTORS)
+    if text:
+        m = re.search(r"\d\.\d", text)
+        if m:
+            return m.group(), method
+
+    # All <strong> tags scan
+    try:
+        for el in page.locator("strong").all():
+            try:
+                text = el.inner_text(timeout=1000).strip()
+                if re.fullmatch(r"\d\.\d", text):
+                    return text, "strong scan"
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # HTML regex
+    return scrape_html_regex(page, RATING_HTML_PATTERNS)
+
+def clean_delivery(text):
+    # Strip any language prefix like "Delivery:", "Dostawa:", etc.
+    return re.sub(r"^[^:]+:\s*", "", text, flags=re.IGNORECASE).strip()
+
+def get_delivery(page):
+    # CSS selectors
+    text, method = scrape_selector(page, DELIVERY_SELECTORS)
+    if text:
+        return clean_delivery(text), method
+
+    # HTML regex
+    text, method = scrape_html_regex(page, DELIVERY_HTML_PATTERNS)
+    if text:
+        text = clean_delivery(text)
+    return text, method
 
 
-# ── Page loader (needs an existing browser instance) ─────────────────────────
-def load_product_page(browser, url: str):
+# ── Debug dump ────────────────────────────────────────────────────────────────
+def dump_debug(page, product_id):
+    DEBUG_DIR.mkdir(exist_ok=True)
+    html_path = DEBUG_DIR / f"{product_id}.html"
+    shot_path = DEBUG_DIR / f"{product_id}.png"
+    try:
+        html = page.content()
+        html_path.write_text(html, encoding="utf-8")
+        page.screenshot(path=str(shot_path), full_page=False)
+        log("🐛", f"Debug saved → {html_path} | {shot_path}", indent=1)
+
+        # Show relevant classes
+        for keyword in ["reviewer", "shipping", "delivery", "dynamic"]:
+            classes = re.findall(rf'class="([^"]*{keyword}[^"]*)"', html, re.IGNORECASE)
+            if classes:
+                log("🔍", f"'{keyword}' classes:", indent=2)
+                for c in sorted(set(classes))[:5]:
+                    print(f"         {c}")
+    except Exception as e:
+        log("⚠️ ", f"Debug dump failed: {e}", indent=1)
+
+
+# ── Per-product scraper ───────────────────────────────────────────────────────
+def scrape_product(browser, product_id):
+    url = BASE_URL.format(id=product_id)
+    log("📦", f"Product ID: {product_id}")
+    log("🔗", f"URL: {url}", indent=1)
+
     for attempt in range(MAX_CAPTCHA_ROTATIONS + 1):
-        log("📡", f"Loading attempt {attempt + 1}/{MAX_CAPTCHA_ROTATIONS + 1} …", indent=1)
         ctx  = make_context(browser)
         page = make_page(ctx)
 
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            log("→", f"Loading (attempt {attempt + 1}) …", indent=1)
+            page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+
+            # Wait for rating or delivery element
+            for sel in RATING_SELECTORS[:2] + DELIVERY_SELECTORS[:2]:
+                try:
+                    page.wait_for_selector(sel, timeout=6_000)
+                    break
+                except PlaywrightTimeout:
+                    pass
+
+            # Human-like mouse movement + scroll to avoid bot detection
             try:
-                page.wait_for_selector(".pdp-info, .product-info, [class*='pdp-body']", timeout=15000)
-            except PlaywrightTimeout:
-                log("⚠️ ", "PDP container not found", indent=1)
+                page.mouse.move(random.randint(300, 900), random.randint(200, 600))
+                time.sleep(random.uniform(0.3, 0.7))
+                page.mouse.move(random.randint(100, 800), random.randint(100, 500))
+                page.evaluate("window.scrollBy(0, {y})".format(y=random.randint(200, 500)))
+                time.sleep(random.uniform(0.5, 1.0))
+                page.evaluate("window.scrollBy(0, {y})".format(y=random.randint(100, 300)))
+            except Exception:
+                pass
 
             time.sleep(random.uniform(2, 4))
 
             if is_captcha(page):
-                log("❌", "CAPTCHA detected — rotating …", indent=1)
+                log("❌", "CAPTCHA — rotating Tor …", indent=1)
                 ctx.close()
                 rotate_tor_circuit()
                 continue
 
-            for _ in range(4):
-                page.evaluate("window.scrollBy(0, window.innerHeight * 0.6)")
-                time.sleep(0.4)
-            page.evaluate("window.scrollTo(0, 0)")
-            time.sleep(1)
+            rating,   r_method = get_rating(page)
+            delivery, d_method = get_delivery(page)
 
-            log("✅", "Page loaded successfully", indent=1)
-            return page, ctx
+            icon_r = "✅" if rating   else "❌"
+            icon_d = "✅" if delivery else "❌"
+            log(icon_r, f"Rating  : {rating   or 'not found'}  ({r_method})", indent=1)
+            log(icon_d, f"Delivery: {delivery or 'not found'}  ({d_method})", indent=1)
 
-        except Exception as exc:
-            log("❌", f"Navigation error: {exc}", indent=1)
-            ctx.close()
+            if DEBUG_FAILED and (not rating or not delivery):
+                dump_debug(page, product_id)
+
+            return {"id": product_id, "rating": rating, "delivery": delivery}
+
+        except Exception as e:
+            log("✗", f"Error: {e}", indent=1)
+            try:
+                dump_debug(page, product_id)
+            except Exception:
+                pass
             rotate_tor_circuit()
-
-    return None, None
-
-
-# ── Per-product scraper (uses existing browser) ───────────────────────────────
-def scrape_product(browser, product_id: str) -> dict:
-    url = PRODUCT_URL.format(product_id=product_id)
-    log("🛒", f"Scraping product ID: {product_id}")
-
-    result = {
-        "product_id":    product_id,
-        "url":           url,
-        "scraped_at":    datetime.now().isoformat(),
-        "delivery_date": None,
-        "quantity":      None,
-        "rating":        None,
-        "errors":        [],
-    }
-
-    page, ctx = load_product_page(browser, url)
-    if page is None:
-        result["errors"].append("Failed to load page after max retries")
-        return result
-
-    try:
-        raw_delivery = try_selectors(page, DELIVERY_FALLBACKS, "Delivery date")
-        if raw_delivery:
-            result["delivery_date"] = parse_delivery_dates(raw_delivery)
-        else:
-            result["errors"].append("delivery_date: not found")
-
-        raw_qty = try_selectors(page, QUANTITY_FALLBACKS, "Quantity")
-        if raw_qty:
-            result["quantity"] = {"raw": raw_qty, "value": parse_quantity(raw_qty)}
-        else:
-            result["errors"].append("quantity: not found")
-
-        raw_rating = try_selectors(page, RATING_FALLBACKS, "Rating")
-        if raw_rating:
-            try:
-                result["rating"] = float(raw_rating.strip())
-            except ValueError:
-                result["rating"] = raw_rating.strip()
-        else:
-            result["errors"].append("rating: not found")
-
-    finally:
-        ctx.close()
-
-    log("✅", f"Done — delivery: {result['delivery_date']}, qty: {result['quantity']}, rating: {result['rating']}", indent=1)
-    return result
-
-
-# ── Self-contained scraper — NO browser argument needed (for FastAPI import) ──
-def scrape_product_details(product_id: int) -> dict:
-    """
-    Standalone entry point used by main.py.
-    Spins up its own Playwright + Tor browser, scrapes one product, closes.
-    """
-    url = PRODUCT_URL.format(product_id=str(product_id))
-    result = {
-        "product_id":    product_id,
-        "url":           url,
-        "scraped_at":    datetime.utcnow().isoformat(),
-        "delivery_date": None,
-        "quantity":      None,
-        "rating":        None,
-        "errors":        [],
-    }
-
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(
-            headless=True,
-            proxy={"server": "socks5://127.0.0.1:9050"},
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-        )
-        try:
-            page, ctx = load_product_page(browser, url)
-            if page is None:
-                result["errors"].append("Failed to load page after max retries")
-                return result
-
-            try:
-                raw_delivery = try_selectors(page, DELIVERY_FALLBACKS, "Delivery date")
-                if raw_delivery:
-                    result["delivery_date"] = parse_delivery_dates(raw_delivery)
-                else:
-                    result["errors"].append("delivery_date: not found")
-
-                raw_qty = try_selectors(page, QUANTITY_FALLBACKS, "Quantity")
-                if raw_qty:
-                    result["quantity"] = {"raw": raw_qty, "value": parse_quantity(raw_qty)}
-                else:
-                    result["errors"].append("quantity: not found")
-
-                raw_rating = try_selectors(page, RATING_FALLBACKS, "Rating")
-                if raw_rating:
-                    try:
-                        result["rating"] = float(raw_rating.strip())
-                    except ValueError:
-                        result["rating"] = raw_rating.strip()
-                else:
-                    result["errors"].append("rating: not found")
-
-            finally:
-                ctx.close()
         finally:
-            browser.close()
+            ctx.close()
 
-    return result
+    log("❌", f"Failed after {MAX_CAPTCHA_ROTATIONS + 1} attempts", indent=1)
+    return {"id": product_id, "rating": None, "delivery": None}
 
 
-# ── CLI entry point ───────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="AliExpress Product Detail Scraper")
+    parser = argparse.ArgumentParser(description="AliExpress Rating + Delivery Scraper")
     parser.add_argument("--headless", default="true", choices=["true", "false"])
     parser.add_argument("--output",   default=OUTPUT_FILE)
-    parser.add_argument("--ids",      nargs="*", default=None)
+    parser.add_argument("ids", nargs="*", default=PRODUCT_IDS,
+                        help="Product IDs to scrape (overrides PRODUCT_IDS in script)")
     args = parser.parse_args()
 
-    product_ids = args.ids or PRODUCT_IDS
-
-    log_separator("═")
-    log("🚀", "AliExpress Product Detail Scraper")
-    log("📋", f"Products to scrape: {len(product_ids)}")
-    log_separator("═")
-
-    all_results = []
+    headless = args.headless.lower() == "true"
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
-            headless=args.headless.lower() == "true",
-            proxy={"server": "socks5://127.0.0.1:9050"},
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            headless=headless,
+            proxy={"server": "socks5://127.0.0.1:9050"},   # Tor SOCKS5 proxy
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-ipc-flooding-protection",
+                "--disable-renderer-backgrounding",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-background-timer-throttling",
+                "--window-size=1920,1080",
+            ],
         )
+
+        results = []
         try:
-            for i, pid in enumerate(product_ids, 1):
-                log_separator()
-                log("🗂️ ", f"Product {i}/{len(product_ids)}: {pid}")
-                result = scrape_product(browser, pid)
-                all_results.append(result)
-                if i < len(product_ids):
-                    wait = random.uniform(5, 12)
-                    log("⏳", f"Waiting {wait:.1f}s …", indent=1)
-                    time.sleep(wait)
-                    rotate_tor_circuit()
+            for i, product_id in enumerate(args.ids):
+                result = scrape_product(browser, product_id)
+                results.append(result)
+                if i < len(args.ids) - 1:
+                    time.sleep(random.uniform(3, 6))
         finally:
             browser.close()
 
+    # ── Save ──────────────────────────────────────────────────────────────────
     output_path = Path(args.output)
-    existing: dict = {"products": {}}
+    existing = {"results": []}
     if output_path.exists():
         try:
-            with open(output_path, "r", encoding="utf-8") as f:
-                existing = json.load(f)
+            existing = json.loads(output_path.read_text(encoding="utf-8"))
         except Exception:
             pass
 
-    if "products" not in existing:
-        existing["products"] = {}
+    # Merge by ID — guard against malformed existing data
+    raw = existing.get("results", [])
+    if isinstance(raw, dict):
+        existing_map = raw
+    else:
+        existing_map = {r["id"]: r for r in raw if isinstance(r, dict) and "id" in r}
+    for r in results:
+        existing_map[r["id"]] = r
 
-    for r in all_results:
-        existing["products"][r["product_id"]] = r
+    output_data = {
+        "last_updated": datetime.now().isoformat(),
+        "total": len(existing_map),
+        "results": list(existing_map.values()),
+    }
+    output_path.write_text(json.dumps(output_data, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    existing["last_updated"]   = datetime.now().isoformat()
-    existing["total_products"] = len(existing["products"])
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(existing, f, indent=2, ensure_ascii=False)
-
-    log_separator("═")
-    log("🎉", f"COMPLETE. Saved to {args.output}")
-    log("📊", f"Total products: {existing['total_products']}")
-    log_separator("═")
+    # ── Summary ───────────────────────────────────────────────────────────────
+    print("\n" + "=" * 55)
+    print("RESULTS SUMMARY")
+    print("=" * 55)
+    print(f"  {'ID':<25} {'Rating':<10} {'Delivery'}")
+    print(f"  {'-'*24} {'-'*9} {'-'*30}")
+    for r in results:
+        rating   = r["rating"]   or "N/A"
+        delivery = r["delivery"] or "N/A"
+        print(f"  {r['id']:<25} {rating:<10} {delivery}")
+    print(f"\n  Saved → {args.output}")
 
 
 if __name__ == "__main__":
