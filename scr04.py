@@ -542,10 +542,20 @@ def main():
     # ── Save ──────────────────────────────────────────────────────────────────
     output_path = Path(args.output)
 
+        # new - merges with existing
+    existing = {"results": []}
+    if output_path.exists():
+        try:
+            existing = json.loads(output_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    existing_map = {r["id"]: r for r in existing.get("results", []) if isinstance(r, dict) and "id" in r}
+    for r in results:
+        existing_map[r["id"]] = r
     output_data = {
         "last_updated": datetime.now().isoformat(),
-        "total": len(results),
-        "results": results,
+        "total": len(existing_map),
+        "results": list(existing_map.values()),
     }
     output_path.write_text(json.dumps(output_data, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -663,14 +673,22 @@ def scrape_product_details_bulk(
 
     # Save fresh results — no merging with old data
     output_path = Path(output_file)
+        # new - merges with existing
+    existing2 = {"results": []}
+    if output_path.exists():
+        try:
+            existing2 = json.loads(output_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    merged_map = {r["id"]: r for r in existing2.get("results", []) if isinstance(r, dict) and "id" in r}
+    for r in fresh_results:
+        merged_map[str(r["id"])] = r
     output_data = {
         "last_updated": datetime.now().isoformat(),
-        "total":        len(fresh_results),
-        "results":      fresh_results,
+        "total":        len(merged_map),
+        "results":      list(merged_map.values()),
     }
-    output_path.write_text(
-        json.dumps(output_data, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    output_path.write_text(json.dumps(output_data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     return {
         "saved_to": str(output_path.resolve()),
