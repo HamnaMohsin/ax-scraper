@@ -33,10 +33,7 @@ except ImportError:
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
-PRODUCT_IDS = [
-    "1005011748833056",
-    "1005011606028187",
-]
+PRODUCT_IDS = []  # Pass IDs via CLI args or the FastAPI bulk endpoint
 
 BASE_URL   = "https://pl.aliexpress.com/item/{id}.html?language=en&currency=PLN"
 OUTPUT_FILE = "ax_products.json"
@@ -507,8 +504,12 @@ def main():
     parser.add_argument("--headless", default="true", choices=["true", "false"])
     parser.add_argument("--output",   default=OUTPUT_FILE)
     parser.add_argument("ids", nargs="*", default=PRODUCT_IDS,
-                        help="Product IDs to scrape (overrides PRODUCT_IDS in script)")
+                        help="Product IDs to scrape  e.g.  1005011748833056 1005011606028187")
     args = parser.parse_args()
+
+    if not args.ids:
+        parser.error("No product IDs provided. Pass them as positional arguments:\n"
+                     "  python scraper.py 1005011748833056 1005011606028187")
 
     headless = args.headless.lower() == "true"
 
