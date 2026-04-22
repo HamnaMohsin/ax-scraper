@@ -43,7 +43,7 @@ from scr2 import (
     scrape_category,
 )
 
-from scr03 import scrape_product_details, scrape_product_details_bulk
+from scr04 import scrape_product_details, scrape_product_details_bulk
 # ── App init ──────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="AX-Scraper", version="1.0")
