@@ -61,7 +61,7 @@ print("─" * 55)
 
 # ── Import & run scraper ──────────────────────────────────────────────────────
 try:
-    from scraper import scrape_product_details_bulk
+    from scr04 import scrape_product_details_bulk
 except ImportError:
     sys.exit(
         "[ERROR] Cannot import scraper.py — make sure it's in the same directory.\n"
