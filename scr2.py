@@ -27,9 +27,7 @@ except ImportError:
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CATEGORIES = [
-    "Shoes",
     "T-shirt",
-    "pen",
     "water bottle",
 ]
 MAX_PAGES_PER_CATEGORY = 2
