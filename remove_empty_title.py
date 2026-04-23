@@ -1,6 +1,6 @@
 import json
 import os
-
+import re
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -21,12 +21,16 @@ def filter_no_title(input_file: str, output_file: str) -> None:
         kept     = []
         removed  = 0
 
-        for product in products:
-            title = product.get("title", "").strip()
-            if title:
-                kept.append(product)
-            else:
-                removed += 1
+     
+
+    JUNK_TITLE = re.compile(r'^[\s\W_]+$')
+    
+    for product in products:
+        title = product.get("title", "").strip()
+        if title and not JUNK_TITLE.match(title):
+            kept.append(product)
+        else:
+            removed += 1
 
         total_original += len(products)
         total_removed  += removed
