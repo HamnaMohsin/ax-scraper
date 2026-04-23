@@ -70,7 +70,7 @@ def filter_no_title(input_file: str, output_file: str) -> None:
 
 
 if __name__ == "__main__":
-    INPUT_FILE  = "aliexpress_products_filtered.json"
-    OUTPUT_FILE = "aliexpress_products_filtered.json"   # overwrites in-place
+    INPUT_FILE  = "aliexpress_products.json"
+    OUTPUT_FILE = "aliexpress_products.json"   # overwrites in-place
 
     filter_no_title(INPUT_FILE, OUTPUT_FILE)
