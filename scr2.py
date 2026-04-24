@@ -27,8 +27,8 @@ except ImportError:
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CATEGORIES = [
-    "T-shirt",
-    "water bottle",
+    "Nintendo",
+    "Hand Bags"
 ]
 MAX_PAGES_PER_CATEGORY = 2
 OUTPUT_FILE            = "aliexpress_products.json"
