@@ -3,6 +3,10 @@ AliExpress Store Item Count Scraper
 ====================================
 Extracts the total item count from an AliExpress store page.
 
+The Baxia security system injects a modal dialog (.baxia-dialog) on top of the
+normal page. The page itself loads correctly underneath — we just need to
+dismiss the dialog by clicking .baxia-dialog-close, then extract the count.
+
 Target element:
   <span style="font-size: 15px; font-weight: 400; color: rgb(25, 25, 25);">82 items</span>
 
@@ -42,7 +46,7 @@ STORE_URL_TEMPLATE = (
     "?shop_sortType=bestmatch_sort&gatewayAdapt=glo2swe"
 )
 
-MAX_RETRIES      = 4
+MAX_RETRIES      = 5
 ROTATE_WAIT_SECS = 14
 
 USER_AGENTS = [
@@ -51,30 +55,17 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 ]
 
-# ── REAL captcha signals only ──────────────────────────────────────────────────
-# NOTE: Do NOT include iframe[src*='recaptcha'] — AliExpress loads reCAPTCHA
-#       as a background trust signal on normal store pages. It is NOT a block page.
-CAPTCHA_URL_PATHS = [
+# ── Baxia dialog detection ─────────────────────────────────────────────────────
+# The baxia-dialog is an OVERLAY on top of a normally loaded page.
+# The page loads fine underneath — we dismiss the dialog, then scrape.
+BAXIA_DIALOG_SELECTOR = ".baxia-dialog"
+BAXIA_CLOSE_SELECTOR  = ".baxia-dialog-close"
+
+# A REAL block page (not just the overlay dialog) — these mean we should rotate
+HARD_BLOCK_URL_PATHS = [
+    "/_____tmd_____/punish",   # full-page punish redirect (no underlying page)
     "/baxia-punish",
-    "/_____tmd_____/punish",
-    "/punish",
     "baxia.aliexpress.com",
-    "baxia-security",
-]
-
-CAPTCHA_DOM_SELECTORS = [
-    ".baxia-punish",       # AliExpress block page wrapper
-    "#captcha-verify",     # explicit captcha verify box
-    "#nc_1_n1z",           # AliExpress slider captcha track
-    ".nc-container",       # AliExpress drag-slider wrapper
-    "[id^='baxia']",       # any baxia-prefixed ID
-    # NOTE: "iframe[src*='geetest']" kept — GeeTest only appears on block pages
-    "iframe[src*='geetest']",
-    # NOTE: "iframe[src*='recaptcha']" REMOVED — present on normal store pages too
-]
-
-CAPTCHA_TITLE_KEYWORDS = [
-    "captcha", "security check", "robot", "blocked", "access denied",
 ]
 
 
@@ -113,7 +104,7 @@ def make_context(browser):
         locale="en-US",
         timezone_id="America/New_York",
     )
-    # Block images/fonts only — keep JS and CSS intact
+    # Block images/fonts — keep JS and CSS
     ctx.route("**/*.{png,jpg,jpeg,gif,webp,ico,woff,woff2}", lambda r: r.abort())
     return ctx
 
@@ -127,28 +118,78 @@ def make_page(ctx):
     return page
 
 
-# ── Captcha check ──────────────────────────────────────────────────────────────
-def is_captcha(page) -> bool:
+# ── Hard block check (full-page redirect, needs Tor rotation) ─────────────────
+def is_hard_blocked(page) -> bool:
+    """
+    Returns True only when the entire page IS a block/punish page,
+    meaning there is no underlying store content at all.
+    The baxia-dialog overlay on top of a normal page is NOT a hard block.
+    """
     url = page.url.lower()
-    for p in CAPTCHA_URL_PATHS:
-        if p in url:
-            log("🚫", f"Captcha URL match: {p}", indent=2)
+    for path in HARD_BLOCK_URL_PATHS:
+        # Only flag if the path is in the URL path component, not just any query param
+        if path in url.split("?")[0]:
+            log("🚫", f"Hard block URL: {path}", indent=2)
             return True
-    for sel in CAPTCHA_DOM_SELECTORS:
-        try:
-            if page.locator(sel).count() > 0:
-                log("🚫", f"Captcha DOM match: {sel}", indent=2)
-                return True
-        except Exception:
-            pass
+
+    # Check title for block pages
     try:
         title = page.title().lower()
-        if any(k in title for k in CAPTCHA_TITLE_KEYWORDS):
-            log("🚫", f"Captcha page title: {page.title()}", indent=2)
+        if any(k in title for k in ["access denied", "403 forbidden", "blocked"]):
+            log("🚫", f"Hard block title: {page.title()}", indent=2)
             return True
     except Exception:
         pass
+
     return False
+
+
+# ── Dismiss baxia-dialog overlay ──────────────────────────────────────────────
+def dismiss_baxia_dialog(page) -> bool:
+    """
+    If the baxia security dialog is showing as an OVERLAY on top of the page,
+    click the X button to close it, then wait for the underlying content.
+    Returns True if a dialog was found and dismissed.
+    """
+    try:
+        dialog = page.locator(BAXIA_DIALOG_SELECTOR)
+        if dialog.count() == 0:
+            return False
+
+        # Check it's visible (style="display: block")
+        style = dialog.first.get_attribute("style") or ""
+        if "display: none" in style:
+            return False
+
+        log("🔔", "Baxia dialog detected — attempting to dismiss …", indent=1)
+
+        close_btn = page.locator(BAXIA_CLOSE_SELECTOR)
+        if close_btn.count() > 0:
+            close_btn.first.click()
+            log("✅", "Clicked .baxia-dialog-close", indent=1)
+            time.sleep(random.uniform(1.5, 2.5))
+
+            # Confirm dialog is gone
+            try:
+                page.wait_for_selector(
+                    f"{BAXIA_DIALOG_SELECTOR}[style*='display: none']",
+                    timeout=5000
+                )
+                log("✅", "Baxia dialog dismissed successfully", indent=1)
+            except PlaywrightTimeout:
+                # Dialog might still be there but hidden via class change — continue anyway
+                log("⚠️ ", "Dialog close not confirmed — continuing anyway", indent=1)
+            return True
+        else:
+            # No close button — try pressing Escape
+            log("⚠️ ", "No close button found — trying Escape key", indent=1)
+            page.keyboard.press("Escape")
+            time.sleep(1.0)
+            return True
+
+    except Exception as e:
+        log("⚠️ ", f"dismiss_baxia_dialog error: {e}", indent=2)
+        return False
 
 
 # ── Debug snapshot ─────────────────────────────────────────────────────────────
@@ -159,15 +200,25 @@ def snapshot(page, store_id, attempt):
         log("📸", f"{stem}.png", indent=2)
         Path(f"{stem}.html").write_text(page.content(), encoding="utf-8")
         log("📄", f"{stem}.html", indent=2)
-        log("🔗", f"URL: {page.url}", indent=2)
+        log("🔗", f"URL  : {page.url}", indent=2)
         log("📝", f"Title: {page.title()}", indent=2)
 
+        # Check for baxia dialog
+        dialog = page.locator(BAXIA_DIALOG_SELECTOR)
+        if dialog.count() > 0:
+            style = dialog.first.get_attribute("style") or ""
+            log("🔔", f"Baxia dialog present, style='{style}'", indent=2)
+        else:
+            log("✅", "No baxia dialog in DOM", indent=2)
+
+        # Show #right content
         try:
             right_text = page.locator("#right").inner_text(timeout=3000)
-            log("📦", f"#right text (first 400 chars): {repr(right_text[:400])}", indent=2)
+            log("📦", f"#right text: {repr(right_text[:400])}", indent=2)
         except Exception:
-            log("📦", "#right not found in DOM", indent=2)
+            log("📦", "#right not found or empty", indent=2)
 
+        # Show spans with digits
         digit_spans = []
         for s in page.locator("span").all():
             try:
@@ -191,41 +242,31 @@ def scroll_to_load(page):
 
 
 # ── MutationObserver: wait for "N items" span ─────────────────────────────────
-def wait_for_item_count_js(page, timeout_ms=25000) -> str | None:
-    log("🔬", "MutationObserver watching for item count span …", indent=1)
+def wait_for_item_count_js(page, timeout_ms=20000) -> str | None:
+    log("🔬", "Watching for item count …", indent=1)
     try:
         result = page.evaluate(f"""
             () => new Promise((resolve, reject) => {{
                 const TIMEOUT = {timeout_ms};
                 const PATTERN = /^(\\d[\\d,]*)\\s+items?$/i;
 
-                function scanAndResolve() {{
+                function scan() {{
                     for (const el of document.querySelectorAll('span, div')) {{
                         const t = ((el.innerText || el.textContent) || '').trim();
-                        if (PATTERN.test(t)) {{
-                            return t;
-                        }}
+                        if (PATTERN.test(t)) return t;
                     }}
                     return null;
                 }}
 
-                // Check existing DOM first
-                const existing = scanAndResolve();
+                const existing = scan();
                 if (existing) {{ resolve(existing); return; }}
 
                 const observer = new MutationObserver(() => {{
-                    const found = scanAndResolve();
-                    if (found) {{
-                        observer.disconnect();
-                        resolve(found);
-                    }}
+                    const found = scan();
+                    if (found) {{ observer.disconnect(); resolve(found); }}
                 }});
                 observer.observe(document.body, {{childList: true, subtree: true, characterData: true}});
-
-                setTimeout(() => {{
-                    observer.disconnect();
-                    reject(new Error('timeout'));
-                }}, TIMEOUT);
+                setTimeout(() => {{ observer.disconnect(); reject(new Error('timeout')); }}, TIMEOUT);
             }})
         """)
         return result
@@ -246,31 +287,41 @@ def load_store_page(browser, store_id: str, debug: bool = False) -> dict:
         page = make_page(ctx)
 
         try:
-            # ── Navigate — use domcontentloaded (fast) ─────────────────────────
-            # networkidle hangs on AliExpress due to persistent background requests
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
             log("🌍", f"URL  : {page.url}", indent=1)
             log("📝", f"Title: {page.title()}", indent=1)
 
-            # ── Short pause for initial JS hydration ───────────────────────────
-            time.sleep(random.uniform(2.5, 3.5))
+            # Wait for initial JS
+            time.sleep(random.uniform(2.5, 4.0))
 
-            # ── Captcha check ──────────────────────────────────────────────────
-            if is_captcha(page):
-                log("❌", "Real captcha/block page — rotating …", indent=1)
+            # ── Hard block? (need Tor rotation) ───────────────────────────────
+            if is_hard_blocked(page):
+                log("❌", "Full page block — rotating Tor …", indent=1)
                 if debug:
                     snapshot(page, store_id, attempt)
                 ctx.close()
                 rotate_tor()
                 continue
 
-            log("✅", "No captcha detected", indent=1)
+            # ── Baxia dialog overlay? (dismiss it, page is fine underneath) ──
+            baxia_visible = page.locator(f"{BAXIA_DIALOG_SELECTOR}[style*='display: block']").count() > 0
+            if baxia_visible:
+                dismissed = dismiss_baxia_dialog(page)
+                if not dismissed:
+                    log("⚠️ ", "Could not dismiss dialog — rotating Tor …", indent=1)
+                    if debug:
+                        snapshot(page, store_id, attempt)
+                    ctx.close()
+                    rotate_tor()
+                    continue
+            else:
+                log("✅", "No blocking dialog present", indent=1)
 
-            # ── Scroll to trigger lazy rendering ──────────────────────────────
+            # ── Scroll to trigger lazy-loaded components ────────────────────
             scroll_to_load(page)
 
-            # ── MutationObserver wait ─────────────────────────────────────────
-            raw_text = wait_for_item_count_js(page, timeout_ms=25000)
+            # ── Wait for item count ────────────────────────────────────────
+            raw_text = wait_for_item_count_js(page, timeout_ms=20000)
 
             if raw_text:
                 m = re.search(r"([\d,]+)", raw_text)
@@ -279,14 +330,13 @@ def load_store_page(browser, store_id: str, debug: bool = False) -> dict:
                 if debug:
                     snapshot(page, store_id, attempt)
                 ctx.close()
-                return {"raw_text": raw_text, "count": count, "selector": "MutationObserver/span+div scan"}
+                return {"raw_text": raw_text, "count": count, "selector": "MutationObserver"}
 
-            # ── Not found ──────────────────────────────────────────────────────
             log("⚠️ ", "Item count not found this attempt", indent=1)
             if debug:
                 snapshot(page, store_id, attempt)
             else:
-                log("💡", "Run with --debug for screenshots + HTML dumps", indent=1)
+                log("💡", "Run with --debug for screenshots + HTML", indent=1)
 
             ctx.close()
             time.sleep(random.uniform(3, 5))
