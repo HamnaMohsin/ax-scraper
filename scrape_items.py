@@ -7,7 +7,8 @@ The Baxia security system injects a modal dialog (.baxia-dialog) on top of the
 normal page. The page itself loads correctly underneath — we just need to
 dismiss the dialog by clicking .baxia-dialog-close, then extract the count.
 
-Target element:
+Target element (precise selector):
+  #right > div > div:nth-child(2) > span
   <span style="font-size: 15px; font-weight: 400; color: rgb(25, 25, 25);">82 items</span>
 
 Usage:
@@ -56,17 +57,20 @@ USER_AGENTS = [
 ]
 
 # ── Baxia dialog detection ─────────────────────────────────────────────────────
-# The baxia-dialog is an OVERLAY on top of a normally loaded page.
-# The page loads fine underneath — we dismiss the dialog, then scrape.
 BAXIA_DIALOG_SELECTOR = ".baxia-dialog"
 BAXIA_CLOSE_SELECTOR  = ".baxia-dialog-close"
 
 # A REAL block page (not just the overlay dialog) — these mean we should rotate
 HARD_BLOCK_URL_PATHS = [
-    "/_____tmd_____/punish",   # full-page punish redirect (no underlying page)
+    "/_____tmd_____/punish",
     "/baxia-punish",
     "baxia.aliexpress.com",
 ]
+
+# ── Item count selectors (precise first, broad fallback) ───────────────────────
+# Precise: the span at the top-right of the all-items page showing "82 items"
+ITEM_COUNT_SELECTOR = "#right > div > div:nth-child(2) > span"
+ITEM_COUNT_PATTERN  = re.compile(r"^([\d,]+)\s+items?$", re.IGNORECASE)
 
 
 # ── Logging ────────────────────────────────────────────────────────────────────
@@ -118,7 +122,7 @@ def make_page(ctx):
     return page
 
 
-# ── Hard block check (full-page redirect, needs Tor rotation) ─────────────────
+# ── Hard block check ───────────────────────────────────────────────────────────
 def is_hard_blocked(page) -> bool:
     """
     Returns True only when the entire page IS a block/punish page,
@@ -127,12 +131,10 @@ def is_hard_blocked(page) -> bool:
     """
     url = page.url.lower()
     for path in HARD_BLOCK_URL_PATHS:
-        # Only flag if the path is in the URL path component, not just any query param
         if path in url.split("?")[0]:
             log("🚫", f"Hard block URL: {path}", indent=2)
             return True
 
-    # Check title for block pages
     try:
         title = page.title().lower()
         if any(k in title for k in ["access denied", "403 forbidden", "blocked"]):
@@ -156,7 +158,6 @@ def dismiss_baxia_dialog(page) -> bool:
         if dialog.count() == 0:
             return False
 
-        # Check it's visible (style="display: block")
         style = dialog.first.get_attribute("style") or ""
         if "display: none" in style:
             return False
@@ -169,7 +170,6 @@ def dismiss_baxia_dialog(page) -> bool:
             log("✅", "Clicked .baxia-dialog-close", indent=1)
             time.sleep(random.uniform(1.5, 2.5))
 
-            # Confirm dialog is gone
             try:
                 page.wait_for_selector(
                     f"{BAXIA_DIALOG_SELECTOR}[style*='display: none']",
@@ -177,11 +177,9 @@ def dismiss_baxia_dialog(page) -> bool:
                 )
                 log("✅", "Baxia dialog dismissed successfully", indent=1)
             except PlaywrightTimeout:
-                # Dialog might still be there but hidden via class change — continue anyway
                 log("⚠️ ", "Dialog close not confirmed — continuing anyway", indent=1)
             return True
         else:
-            # No close button — try pressing Escape
             log("⚠️ ", "No close button found — trying Escape key", indent=1)
             page.keyboard.press("Escape")
             time.sleep(1.0)
@@ -203,7 +201,6 @@ def snapshot(page, store_id, attempt):
         log("🔗", f"URL  : {page.url}", indent=2)
         log("📝", f"Title: {page.title()}", indent=2)
 
-        # Check for baxia dialog
         dialog = page.locator(BAXIA_DIALOG_SELECTOR)
         if dialog.count() > 0:
             style = dialog.first.get_attribute("style") or ""
@@ -211,14 +208,23 @@ def snapshot(page, store_id, attempt):
         else:
             log("✅", "No baxia dialog in DOM", indent=2)
 
-        # Show #right content
         try:
             right_text = page.locator("#right").inner_text(timeout=3000)
             log("📦", f"#right text: {repr(right_text[:400])}", indent=2)
         except Exception:
             log("📦", "#right not found or empty", indent=2)
 
-        # Show spans with digits
+        # Show the precise target element if present
+        try:
+            target = page.locator(ITEM_COUNT_SELECTOR)
+            if target.count() > 0:
+                log("🎯", f"Precise selector text: {repr(target.first.inner_text())}", indent=2)
+            else:
+                log("🎯", "Precise selector not found in DOM", indent=2)
+        except Exception:
+            pass
+
+        # Fallback: show all short spans containing digits
         digit_spans = []
         for s in page.locator("span").all():
             try:
@@ -241,21 +247,45 @@ def scroll_to_load(page):
     time.sleep(0.8)
 
 
-# ── MutationObserver: wait for "N items" span ─────────────────────────────────
+# ── MutationObserver: wait for item count span ────────────────────────────────
 def wait_for_item_count_js(page, timeout_ms=20000) -> str | None:
+    """
+    Primary strategy: query the known precise CSS selector.
+      #right > div > div:nth-child(2) > span
+
+    Falls back to a broad scan of all span/div elements if the precise
+    selector is not found within the timeout (e.g. if AliExpress changes DOM).
+    """
     log("🔬", "Watching for item count …", indent=1)
+    log("🎯", f"Precise selector: {ITEM_COUNT_SELECTOR}", indent=2)
+
     try:
         result = page.evaluate(f"""
             () => new Promise((resolve, reject) => {{
-                const TIMEOUT = {timeout_ms};
-                const PATTERN = /^(\\d[\\d,]*)\\s+items?$/i;
+                const TIMEOUT          = {timeout_ms};
+                const PRECISE_SELECTOR = {json.dumps(ITEM_COUNT_SELECTOR)};
+                const PATTERN          = /^(\\d[\\d,]*)\\s+items?$/i;
 
-                function scan() {{
+                // ── Precise selector scan ──────────────────────────────────
+                function scanPrecise() {{
+                    const el = document.querySelector(PRECISE_SELECTOR);
+                    if (!el) return null;
+                    const t = (el.innerText || el.textContent || '').trim();
+                    return PATTERN.test(t) ? t : null;
+                }}
+
+                // ── Broad fallback scan (all span/div) ────────────────────
+                function scanBroad() {{
                     for (const el of document.querySelectorAll('span, div')) {{
                         const t = ((el.innerText || el.textContent) || '').trim();
                         if (PATTERN.test(t)) return t;
                     }}
                     return null;
+                }}
+
+                // Try precise first, then broad
+                function scan() {{
+                    return scanPrecise() || scanBroad();
                 }}
 
                 const existing = scan();
@@ -265,8 +295,13 @@ def wait_for_item_count_js(page, timeout_ms=20000) -> str | None:
                     const found = scan();
                     if (found) {{ observer.disconnect(); resolve(found); }}
                 }});
-                observer.observe(document.body, {{childList: true, subtree: true, characterData: true}});
-                setTimeout(() => {{ observer.disconnect(); reject(new Error('timeout')); }}, TIMEOUT);
+                observer.observe(document.body, {{
+                    childList: true, subtree: true, characterData: true
+                }});
+                setTimeout(() => {{
+                    observer.disconnect();
+                    reject(new Error('timeout'));
+                }}, TIMEOUT);
             }})
         """)
         return result
@@ -320,7 +355,7 @@ def load_store_page(browser, store_id: str, debug: bool = False) -> dict:
             # ── Scroll to trigger lazy-loaded components ────────────────────
             scroll_to_load(page)
 
-            # ── Wait for item count ────────────────────────────────────────
+            # ── Wait for item count ─────────────────────────────────────────
             raw_text = wait_for_item_count_js(page, timeout_ms=20000)
 
             if raw_text:
@@ -330,7 +365,7 @@ def load_store_page(browser, store_id: str, debug: bool = False) -> dict:
                 if debug:
                     snapshot(page, store_id, attempt)
                 ctx.close()
-                return {"raw_text": raw_text, "count": count, "selector": "MutationObserver"}
+                return {"raw_text": raw_text, "count": count, "selector": ITEM_COUNT_SELECTOR}
 
             log("⚠️ ", "Item count not found this attempt", indent=1)
             if debug:
