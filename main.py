@@ -659,7 +659,7 @@ def scrape_stores_by_range(request: StoreScrapeByRangeRequest):
     if row_end < row_start:
         raise HTTPException(status_code=422, detail="row_range end must be ≥ start.")
 
-    csv_path = request.csv_file
+    csv_path = "stores_info_1_fixed.csv"
     if not os.path.isabs(csv_path):
         csv_path = os.path.join(os.path.dirname(__file__), csv_path)
 
