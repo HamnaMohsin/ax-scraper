@@ -22,6 +22,7 @@ from schemas import (
     ProductFullOut,
     ManufacturerInfoOut,
     ProductDetailsRequest,
+    StoreScrapeByRangeRequest,
 )
 from scraper3       import extract_aliexpress_product
 from llm_refiner2   import refine_product
@@ -44,6 +45,11 @@ from scr2 import (
 )
 
 from scr04 import scrape_product_details, scrape_product_details_bulk
+import csv
+        from scr_item_count import (
+            load_store_ids_from_csv,
+            scrape_multiple_stores,
+        )
 # ── App init ──────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="AX-Scraper", version="1.0")
@@ -626,3 +632,100 @@ def get_product_details_bulk_no_db(request: ProductDetailsRequest):
         ],
     }
  
+@app.post("/scrape-stores-by-range", status_code=200)
+def scrape_stores_by_range(request: StoreScrapeByRangeRequest):
+    """
+    Read store IDs from a CSV file (must have a 'MerchantID' column),
+    select a 1-based row range, and run the Tor+camoufox scraper on them.
+ 
+    Request body:
+        {
+            "csv_file":  "stores_info_1.csv",   // optional, default shown
+            "row_range": "1-20"                 // rows 1-20 = first 20 IDs
+        }
+ 
+    Row numbering:
+        Row 1 = first data row (header is NOT counted).
+        "1-20"  → first 20 store IDs
+        "40-50" → IDs at positions 40-50 in the file
+ 
+    Returns:
+        {
+            "csv_file":    "stores_info_1.csv",
+            "row_range":   "1-20",
+            "total_ids":   20,
+            "store_ids":   ["123", "456", ...],
+            "results":     [ { store scrape result }, ... ]
+        }
+    """
+    # ── Parse the range string ─────────────────────────────────────────────
+    range_str = request.row_range.strip()
+    m = _re.fullmatch(r"(\d+)\s*-\s*(\d+)", range_str)
+    if not m:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid row_range '{range_str}'. "
+                "Expected format: '1-20' or '40-50' (start-end, 1-based, inclusive)."
+            ),
+        )
+ 
+    row_start = int(m.group(1))  # 1-based, inclusive
+    row_end   = int(m.group(2))  # 1-based, inclusive
+ 
+    if row_start < 1:
+        raise HTTPException(status_code=422, detail="row_range start must be ≥ 1.")
+    if row_end < row_start:
+        raise HTTPException(status_code=422, detail="row_range end must be ≥ start.")
+ 
+    # ── Load all IDs from CSV ──────────────────────────────────────────────
+    csv_path = request.csv_file
+    if not os.path.isabs(csv_path):
+        # Resolve relative to the directory where main.py lives
+        csv_path = os.path.join(os.path.dirname(__file__), csv_path)
+ 
+    if not os.path.exists(csv_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"CSV file not found: {csv_path}",
+        )
+ 
+    try:
+        all_ids = load_store_ids_from_csv(csv_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read CSV: {e}")
+ 
+    if not all_ids:
+        raise HTTPException(status_code=400, detail="No store IDs found in CSV.")
+ 
+    # ── Slice to requested range (convert 1-based → 0-based) ──────────────
+    idx_start = row_start - 1          # e.g. row 1  → index 0
+    idx_end   = row_end                # e.g. row 20 → slice [:20]
+ 
+    selected_ids = all_ids[idx_start:idx_end]
+ 
+    if not selected_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Row range {row_start}-{row_end} produced no IDs. "
+                f"CSV has {len(all_ids)} data rows."
+            ),
+        )
+ 
+    print(
+        f"\n📋 /scrape-stores-by-range: rows {row_start}-{row_end} "
+        f"→ {len(selected_ids)} IDs from '{csv_path}'"
+    )
+    print(f"   IDs: {selected_ids}\n")
+ 
+    # ── Run the scraper ────────────────────────────────────────────────────
+    results = scrape_multiple_stores(selected_ids)
+ 
+    return {
+        "csv_file":  request.csv_file,
+        "row_range": range_str,
+        "total_ids": len(selected_ids),
+        "store_ids": selected_ids,
+        "results":   results,
+    }
