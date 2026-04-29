@@ -32,6 +32,7 @@ Usage:
     HEADLESS=0 python aliexpress_scraper.py 1764075   # visible browser
 """
 
+from datetime import datetime
 import sys
 import os
 import re
@@ -753,31 +754,56 @@ def _print_result(r: dict):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def scrape_multiple_stores(store_ids: list[str]) -> list[dict]:
+def scrape_multiple_stores(store_ids: list[str], results_file: str = "store_results.json") -> list[dict]:
     results = []
     print(f"\n🚀 Starting batch scrape for {len(store_ids)} stores\n")
+
+    # ── Resume: load existing results if file already exists ─────────────
+    if os.path.exists(results_file):
+        try:
+            with open(results_file, "r", encoding="utf-8") as f:
+                results = json.load(f)
+            print(f"📂 Resuming — loaded {len(results)} existing results from {results_file}")
+        except Exception as e:
+            print(f"⚠️  Could not load existing results: {e} — starting fresh")
+            results = []
+
+    already_done = {str(r["store_id"]) for r in results}
 
     for i, sid in enumerate(store_ids, 1):
         print(f"\n==============================")
         print(f"🔢 {i}/{len(store_ids)} → Store {sid}")
         print(f"==============================")
 
+        if sid in already_done:
+            print(f"⏭️  Already scraped — skipping")
+            continue
+
         try:
             result = scrape_store_item_count(sid)
-            results.append(result)
         except Exception as e:
             print(f"❌ Failed store {sid}: {e}")
-            results.append({
-                "store_id": sid,
-                "url": None,
+            result = {
+                "store_id":        sid,
+                "url":             None,
                 "item_count_text": None,
-                "item_count": None,
-                "error": str(e),
-            })
+                "item_count":      None,
+                "error":           str(e),
+                "source":          "exception",
+            }
+
+        result["scraped_at"] = datetime.utcnow().isoformat()
+        results.append(result)
+
+        # ── Write immediately after every store ───────────────────────────
+        try:
+            with open(results_file, "w", encoding="utf-8") as f:
+                json.dump(results, f, indent=2, ensure_ascii=False)
+            print(f"   💾 Saved → {results_file} ({len(results)} total)")
+        except Exception as e:
+            print(f"   ⚠️  Write failed: {e}")
 
     return results
-
-
 def main():
     if len(sys.argv) > 1:
         # Single store ID passed on command line
