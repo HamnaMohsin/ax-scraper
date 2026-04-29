@@ -4,14 +4,15 @@ Base URL: http://34.10.186.46:8001
 """
 
 import os
+import re
 import asyncio
 from datetime import datetime
 from typing import Optional
-from fastapi import FastAPI, Depends, HTTPException, Query,BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from database import get_db, init_db
-from models import ProductFetched, ProductRefined, CategoryAssignment,ManufacturerInfo
+from models import ProductFetched, ProductRefined, CategoryAssignment, ManufacturerInfo
 from schemas import (
     ScrapeRequest,
     CategorizeRequest,
@@ -24,8 +25,8 @@ from schemas import (
     ProductDetailsRequest,
     StoreScrapeByRangeRequest,
 )
-from scraper3       import extract_aliexpress_product
-from llm_refiner2   import refine_product
+from scraper3 import extract_aliexpress_product
+from llm_refiner2 import refine_product
 from assign_embeddings2 import categorize_product as assign_category
 
 from data.export_to_template import (
@@ -38,18 +39,19 @@ import uuid
 import subprocess
 from enum import Enum
 import sys
+import csv
+
 from scr2 import (
     CATEGORIES as DEFAULT_CATEGORIES,
     MAX_PAGES_PER_CATEGORY,
     scrape_category,
 )
-
 from scr04 import scrape_product_details, scrape_product_details_bulk
-import csv
-        from scr_item_count import (
-            load_store_ids_from_csv,
-            scrape_multiple_stores,
-        )
+from scr_item_count import (
+    load_store_ids_from_csv,
+    scrape_multiple_stores,
+)
+
 # ── App init ──────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="AX-Scraper", version="1.0")
@@ -185,13 +187,13 @@ def _scrape_and_save(db: Session, url: str) -> dict:
     _upsert_manufacturer(db, data.get("store_info", {}), data.get("compliance_info", {}))
 
     return {
-        "url":         url,
-        "success":     True,
-        "product_id":  product.product_id,
-        "title":       product.title,
-        "description": product.description,
-        "images":      product.images,
-        "store_info":   data.get("store_info", {}),
+        "url":             url,
+        "success":         True,
+        "product_id":      product.product_id,
+        "title":           product.title,
+        "description":     product.description,
+        "images":          product.images,
+        "store_info":      data.get("store_info", {}),
         "compliance_info": data.get("compliance_info", {}),
     }
 
@@ -228,16 +230,16 @@ def _run_export(only_new: bool = False) -> dict:
         all_written_ids.extend(written_ids)
 
         files_summary.append({
-            "category_id":    cat_id,
-            "category_name":  cat_name,
-            "product_count":  len(written_ids),
-            "file":           out_path,
+            "category_id":   cat_id,
+            "category_name": cat_name,
+            "product_count": len(written_ids),
+            "file":          out_path,
             "products": [
                 {
-                    "product_id":       str(p["product_id"]),
-                    "title":            (p["enhanced_title"] or p["original_title"])[:80],
-                    "image_count":      len(p["images"]),
-                    "has_description":  bool(p["enhanced_description"] or p["original_description"]),
+                    "product_id":      str(p["product_id"]),
+                    "title":           (p["enhanced_title"] or p["original_title"])[:80],
+                    "image_count":     len(p["images"]),
+                    "has_description": bool(p["enhanced_description"] or p["original_description"]),
                 }
                 for p in products
             ],
@@ -268,6 +270,7 @@ def _run_export(only_new: bool = False) -> dict:
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
 @app.post("/scrape")
 def scrape_full(request: ScrapeRequest, db: Session = Depends(get_db)):
     """Full pipeline: scrape → refine → categorize → save."""
@@ -280,26 +283,24 @@ def scrape_full(request: ScrapeRequest, db: Session = Depends(get_db)):
     for url in urls:
         try:
             data = extract_aliexpress_product(url)
-            
-            # ✅ Check if scrape succeeded BEFORE processing
+
             if not data.get("title"):
                 fail_count += 1
                 results.append({"url": url, "success": False, "error": "Scrape failed or blocked"})
                 continue
 
-            # ✅ Now process the successful scrape
             product = _upsert(db, url, data)
             success_count += 1
             results.append({
-                "url": url,
-                "success": True,
-                "product_id": product.product_id,
-                "original_title": product.title,
-                "enhanced_title": product.refined.enhanced_title if product.refined else None,
+                "url":               url,
+                "success":           True,
+                "product_id":        product.product_id,
+                "original_title":    product.title,
+                "enhanced_title":    product.refined.enhanced_title if product.refined else None,
                 "assigned_category": product.category.assigned_category if product.category else None,
-                "category_id": product.category.category_id if product.category else None,
-                "similarity_score": product.category.similarity_score if product.category else None,
-                "images": product.images,
+                "category_id":       product.category.category_id if product.category else None,
+                "similarity_score":  product.category.similarity_score if product.category else None,
+                "images":            product.images,
             })
         except Exception as e:
             fail_count += 1
@@ -390,7 +391,6 @@ def assign_cat(product_id: int, db: Session = Depends(get_db)):
 
     db.commit()
     db.refresh(cat_row)
-
     return CategoryAssignmentOut.model_validate(cat_row)
 
 
@@ -486,10 +486,12 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Product not found")
     return _build_full_out(p)
 
+
 @app.get("/manufacturer", response_model=list[ManufacturerInfoOut])
 def get_manufacturers(limit: int = 10, db: Session = Depends(get_db)):
     rows = db.query(ManufacturerInfo).limit(limit).all()
     return rows
+
 
 # ── Category Scraper ──────────────────────────────────────────────────────────
 
@@ -499,23 +501,22 @@ _scraper_jobs: dict[str, dict] = {}
 @app.post("/run-category-scraper", status_code=202)
 def run_category_scraper(background_tasks: BackgroundTasks):
     """
-    Runs aliexpress_scraper_tor.py as a background process.
+    Runs scr2.py as a background process.
     Returns job_id immediately — poll /run-category-scraper/{job_id} for status.
     """
     job_id = str(uuid.uuid4())
     _scraper_jobs[job_id] = {
-        "job_id":     job_id,
-        "status":     "running",
-        "started_at": datetime.utcnow().isoformat(),
+        "job_id":      job_id,
+        "status":      "running",
+        "started_at":  datetime.utcnow().isoformat(),
         "finished_at": None,
-        "error":      None,
+        "error":       None,
     }
 
     def _run(job_id: str):
         try:
             result = subprocess.run(
                 [sys.executable, "scr2.py"],
-                
                 capture_output=True,
                 text=True,
             )
@@ -529,8 +530,11 @@ def run_category_scraper(background_tasks: BackgroundTasks):
             _scraper_jobs[job_id]["error"]       = str(e)
 
     background_tasks.add_task(_run, job_id)
-
-    return {"job_id": job_id, "status": "running", "message": "Scraper started. Poll /run-category-scraper/{job_id} for status."}
+    return {
+        "job_id":   job_id,
+        "status":   "running",
+        "message":  "Scraper started. Poll /run-category-scraper/{job_id} for status.",
+    }
 
 
 @app.get("/run-category-scraper/{job_id}")
@@ -542,9 +546,8 @@ def get_scraper_job(job_id: str):
     return job
 
 
+# ── Product Details Endpoints (scr04) ─────────────────────────────────────────
 
-# ── Product Details Endpoints (scr01) ─────────────────────────────────────────
- 
 @app.post("/product-details")
 def get_product_details_bulk(
     request: ProductDetailsRequest,
@@ -552,32 +555,24 @@ def get_product_details_bulk(
 ):
     """
     Scrape live rating, delivery, price, and quantity for a list of product IDs.
-    - Checks each ID exists in DB first (run /scrape or /scrape-only first).
-    - Runs scr01 scraper on all IDs and saves results to output_file (default: ax_products.json).
- 
-    Request body:
-        {
-            "ids": [1005011748833056, 1005011606028187],
-            "output_file": "ax_products.json"   // optional
-        }
+    Checks each ID exists in DB first (run /scrape or /scrape-only first).
     """
-    # Validate all IDs exist in DB
     missing = []
     for pid in request.ids:
         if not db.query(ProductFetched).filter_by(product_id=pid).first():
             missing.append(pid)
- 
+
     if missing:
         raise HTTPException(
             status_code=404,
             detail=f"Products not found in DB (run /scrape first): {missing}",
         )
- 
+
     summary = scrape_product_details_bulk(
-        product_ids = request.ids,
-        output_file = request.output_file,
+        product_ids=request.ids,
+        output_file=request.output_file,
     )
- 
+
     return {
         "total":      summary["total"],
         "saved_to":   summary["saved_to"],
@@ -595,25 +590,18 @@ def get_product_details_bulk(
             for r in summary["results"]
         ],
     }
- 
- 
+
+
 @app.post("/product-details/raw")
 def get_product_details_bulk_no_db(request: ProductDetailsRequest):
     """
-    Scrape live rating, delivery, price, and quantity for a list of product IDs —
-    no DB existence check required. Results saved to output_file.
- 
-    Request body:
-        {
-            "ids": [1005011748833056, 1005011606028187],
-            "output_file": "ax_products.json"   // optional
-        }
+    Scrape live rating, delivery, price, and quantity — no DB check required.
     """
     summary = scrape_product_details_bulk(
-        product_ids = request.ids,
-        output_file = request.output_file,
+        product_ids=request.ids,
+        output_file=request.output_file,
     )
- 
+
     return {
         "total":      summary["total"],
         "saved_to":   summary["saved_to"],
@@ -631,36 +619,29 @@ def get_product_details_bulk_no_db(request: ProductDetailsRequest):
             for r in summary["results"]
         ],
     }
- 
+
+
+# ── Store Item Count Scraper ───────────────────────────────────────────────────
+
 @app.post("/scrape-stores-by-range", status_code=200)
 def scrape_stores_by_range(request: StoreScrapeByRangeRequest):
     """
     Read store IDs from a CSV file (must have a 'MerchantID' column),
     select a 1-based row range, and run the Tor+camoufox scraper on them.
- 
+
     Request body:
         {
             "csv_file":  "stores_info_1.csv",   // optional, default shown
             "row_range": "1-20"                 // rows 1-20 = first 20 IDs
         }
- 
+
     Row numbering:
         Row 1 = first data row (header is NOT counted).
         "1-20"  → first 20 store IDs
         "40-50" → IDs at positions 40-50 in the file
- 
-    Returns:
-        {
-            "csv_file":    "stores_info_1.csv",
-            "row_range":   "1-20",
-            "total_ids":   20,
-            "store_ids":   ["123", "456", ...],
-            "results":     [ { store scrape result }, ... ]
-        }
     """
-    # ── Parse the range string ─────────────────────────────────────────────
     range_str = request.row_range.strip()
-    m = _re.fullmatch(r"(\d+)\s*-\s*(\d+)", range_str)
+    m = re.fullmatch(r"(\d+)\s*-\s*(\d+)", range_str)
     if not m:
         raise HTTPException(
             status_code=422,
@@ -669,41 +650,33 @@ def scrape_stores_by_range(request: StoreScrapeByRangeRequest):
                 "Expected format: '1-20' or '40-50' (start-end, 1-based, inclusive)."
             ),
         )
- 
-    row_start = int(m.group(1))  # 1-based, inclusive
-    row_end   = int(m.group(2))  # 1-based, inclusive
- 
+
+    row_start = int(m.group(1))
+    row_end   = int(m.group(2))
+
     if row_start < 1:
         raise HTTPException(status_code=422, detail="row_range start must be ≥ 1.")
     if row_end < row_start:
         raise HTTPException(status_code=422, detail="row_range end must be ≥ start.")
- 
-    # ── Load all IDs from CSV ──────────────────────────────────────────────
+
     csv_path = request.csv_file
     if not os.path.isabs(csv_path):
-        # Resolve relative to the directory where main.py lives
         csv_path = os.path.join(os.path.dirname(__file__), csv_path)
- 
+
     if not os.path.exists(csv_path):
-        raise HTTPException(
-            status_code=404,
-            detail=f"CSV file not found: {csv_path}",
-        )
- 
+        raise HTTPException(status_code=404, detail=f"CSV file not found: {csv_path}")
+
     try:
         all_ids = load_store_ids_from_csv(csv_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read CSV: {e}")
- 
+
     if not all_ids:
         raise HTTPException(status_code=400, detail="No store IDs found in CSV.")
- 
-    # ── Slice to requested range (convert 1-based → 0-based) ──────────────
-    idx_start = row_start - 1          # e.g. row 1  → index 0
-    idx_end   = row_end                # e.g. row 20 → slice [:20]
- 
-    selected_ids = all_ids[idx_start:idx_end]
- 
+
+    # Convert 1-based inclusive range → 0-based slice
+    selected_ids = all_ids[row_start - 1:row_end]
+
     if not selected_ids:
         raise HTTPException(
             status_code=400,
@@ -712,16 +685,15 @@ def scrape_stores_by_range(request: StoreScrapeByRangeRequest):
                 f"CSV has {len(all_ids)} data rows."
             ),
         )
- 
+
     print(
         f"\n📋 /scrape-stores-by-range: rows {row_start}-{row_end} "
         f"→ {len(selected_ids)} IDs from '{csv_path}'"
     )
     print(f"   IDs: {selected_ids}\n")
- 
-    # ── Run the scraper ────────────────────────────────────────────────────
+
     results = scrape_multiple_stores(selected_ids)
- 
+
     return {
         "csv_file":  request.csv_file,
         "row_range": range_str,
