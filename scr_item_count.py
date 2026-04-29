@@ -748,7 +748,7 @@ def main():
         print(json.dumps(result, indent=2))
     else:
         # Batch mode: read from CSV
-        csv_file = "stores_info_1.csv"
+        csv_file = "stores_info_1_fixed.csv"
         print(f"📂 Loading store IDs from: {csv_file}")
         store_ids = load_store_ids_from_csv(csv_file)
 
