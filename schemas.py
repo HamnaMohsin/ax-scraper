@@ -2,7 +2,10 @@ from typing import Optional, List
 from datetime import datetime
 from pydantic import BaseModel
 
-
+class StoreScrapeByRangeRequest(BaseModel):
+            csv_file: str = "stores_info_1.csv"
+            row_range: str   # e.g. "1-20" or "40-50"
+    
 class ScrapeRequest(BaseModel):
     urls: str   # comma-separated AliExpress URLs
 
