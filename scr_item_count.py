@@ -235,7 +235,35 @@ def rotate_tor_circuit(wait: int = ROTATE_WAIT_SECS) -> bool:
         print(f"   ⚠️  Tor rotation failed: {e}")
         return False
 
+# Selectors for the small floating captcha tab with ✕ close button
+_SMALL_CAPTCHA_CLOSE_SELECTORS = [
+    "[class*='captcha'] [class*='close']",
+    "[class*='captcha'] [class*='btn-close']",
+    "[class*='captcha-close']",
+    "[class*='nc_iconfont']",          # AliExpress slider captcha close icon
+    "[class*='slideWrap'] [class*='close']",
+    "button[class*='close'][style*='position']",   # floating close buttons
+    "[class*='dialog'] button[class*='close']",
+    "[aria-label='Close'][class*='captcha']",
+]
 
+def _try_close_small_captcha(page) -> bool:
+    """
+    Silently attempt to close the small floating captcha tab (✕ button).
+    Returns True if something was clicked, False otherwise.
+    Does NOT block or wait — fire-and-forget.
+    """
+    for sel in _SMALL_CAPTCHA_CLOSE_SELECTORS:
+        try:
+            loc = page.locator(sel)
+            if loc.count() > 0 and loc.first.is_visible():
+                loc.first.click()
+                print(f"   🔒 Closed small captcha tab via: {sel}")
+                time.sleep(1)
+                return True
+        except Exception:
+            continue
+    return False
 # ── Browser launch / teardown ─────────────────────────────────────────────────
 
 def launch_browser_and_page(store_id: str):
@@ -629,11 +657,12 @@ def scrape_store_item_count(store_id: str) -> dict:
                 return result
 
             # ── Poll for item count ───────────────────────────────────────────
+            # ── Poll for item count ───────────────────────────────────────────────────────
             print("   ⏳ Polling for item count (up to 60s)...")
             deadline  = time.time() + 60
             check_at  = time.time() + 10
             item_count_text = None
-
+            
             while time.time() < deadline:
                 if time.time() >= check_at:
                     if has_baxia_modal(page):
@@ -644,12 +673,21 @@ def scrape_store_item_count(store_id: str) -> dict:
                             break
                         scroll_gently(page)
                     check_at = time.time() + 10
-
+            
+                # ── Try to dismiss small captcha tab (✕ button) ───────────────────────
+                _try_close_small_captcha(page)
+            
                 text = try_css_selectors(page) or try_span_scan(page)
                 if text:
-                    item_count_text = text
-                    print(f"   ✅ Found: '{text}'")
-                    break
+                    count = extract_count(text)
+                    if count == 0:
+                        print(f"   ⚠️  Got '0 items' — likely captcha overlay still active, retrying...")
+                        time.sleep(3)
+                        continue   # keep polling, never accept 0
+                    if count is not None:
+                        item_count_text = text
+                        print(f"   ✅ Found: '{text}'")
+                        break
                 time.sleep(2)
 
             if not item_count_text:
