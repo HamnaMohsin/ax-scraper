@@ -666,7 +666,7 @@ def scrape_stores_by_range(
         )
 
     job_id = str(uuid.uuid4())
-    results_file = f"store_results_{job_id[:8]}.json"
+    results_file = "store_results.json"
 
     _store_scrape_jobs[job_id] = {
         "job_id":       job_id,
@@ -677,7 +677,7 @@ def scrape_stores_by_range(
         "started_at":   datetime.utcnow().isoformat(),
         "finished_at":  None,
         "completed":    0,        # incremented after each store
-        "results_file": results_file,
+        "results_file": "store_results.json",
         "error":        None,
     }
 
