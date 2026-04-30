@@ -622,34 +622,22 @@ def get_product_details_bulk_no_db(request: ProductDetailsRequest):
 
 
 # ── Store Item Count Scraper ───────────────────────────────────────────────────
+# ── Store scraper jobs tracker ─────────────────────────────────────────────
+_store_scrape_jobs: dict[str, dict] = {}
 
-@app.post("/scrape-stores-by-range", status_code=200)
-def scrape_stores_by_range(request: StoreScrapeByRangeRequest):
+@app.post("/scrape-stores-by-range", status_code=202)
+def scrape_stores_by_range(
+    request: StoreScrapeByRangeRequest,
+    background_tasks: BackgroundTasks,
+):
     """
-    Read store IDs from a CSV file (must have a 'MerchantID' column),
-    select a 1-based row range, and run the Tor+camoufox scraper on them.
-
-    Request body:
-        {
-            "csv_file":  "stores_info_1.csv",   // optional, default shown
-            "row_range": "1-20"                 // rows 1-20 = first 20 IDs
-        }
-
-    Row numbering:
-        Row 1 = first data row (header is NOT counted).
-        "1-20"  → first 20 store IDs
-        "40-50" → IDs at positions 40-50 in the file
+    Starts a background scrape job. Returns job_id immediately.
+    Poll /scrape-stores-by-range/{job_id} for status and results.
     """
     range_str = request.row_range.strip()
     m = re.fullmatch(r"(\d+)\s*-\s*(\d+)", range_str)
     if not m:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Invalid row_range '{range_str}'. "
-                "Expected format: '1-20' or '40-50' (start-end, 1-based, inclusive)."
-            ),
-        )
+        raise HTTPException(status_code=422, detail=f"Invalid row_range '{range_str}'. Expected '1-20'.")
 
     row_start = int(m.group(1))
     row_end   = int(m.group(2))
@@ -664,40 +652,157 @@ def scrape_stores_by_range(request: StoreScrapeByRangeRequest):
         csv_path = os.path.join(os.path.dirname(__file__), csv_path)
 
     if not os.path.exists(csv_path):
-        raise HTTPException(status_code=404, detail=f"CSV file not found: {csv_path}")
+        raise HTTPException(status_code=404, detail=f"CSV not found: {csv_path}")
 
-    try:
-        all_ids = load_store_ids_from_csv(csv_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read CSV: {e}")
-
+    all_ids = load_store_ids_from_csv(csv_path)
     if not all_ids:
         raise HTTPException(status_code=400, detail="No store IDs found in CSV.")
 
-    # Convert 1-based inclusive range → 0-based slice
     selected_ids = all_ids[row_start - 1:row_end]
-
     if not selected_ids:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Row range {row_start}-{row_end} produced no IDs. "
-                f"CSV has {len(all_ids)} data rows."
-            ),
+            detail=f"Range {row_start}-{row_end} produced no IDs. CSV has {len(all_ids)} rows."
         )
 
-    print(
-        f"\n📋 /scrape-stores-by-range: rows {row_start}-{row_end} "
-        f"→ {len(selected_ids)} IDs from '{csv_path}'"
-    )
-    print(f"   IDs: {selected_ids}\n")
+    job_id = str(uuid.uuid4())
+    results_file = f"store_results_{job_id[:8]}.json"
 
-    results = scrape_multiple_stores(selected_ids)
+    _store_scrape_jobs[job_id] = {
+        "job_id":       job_id,
+        "status":       "running",
+        "row_range":    range_str,
+        "total_ids":    len(selected_ids),
+        "store_ids":    selected_ids,
+        "started_at":   datetime.utcnow().isoformat(),
+        "finished_at":  None,
+        "completed":    0,        # incremented after each store
+        "results_file": results_file,
+        "error":        None,
+    }
+
+    def _run(job_id: str, store_ids: list[str], results_file: str):
+        try:
+            # Monkey-patch scrape_multiple_stores to update job progress
+            results = []
+            already_done = set()
+
+            import os as _os
+            if _os.path.exists(results_file):
+                try:
+                    with open(results_file, "r", encoding="utf-8") as f:
+                        results = json.load(f)
+                    already_done = {str(r["store_id"]) for r in results}
+                    _store_scrape_jobs[job_id]["completed"] = len(results)
+                except Exception:
+                    pass
+
+            for sid in store_ids:
+                if sid in already_done:
+                    continue
+
+                try:
+                    from scr_item_count import scrape_store_item_count
+                    result = scrape_store_item_count(sid)
+                except Exception as e:
+                    result = {
+                        "store_id":        sid,
+                        "url":             None,
+                        "item_count_text": None,
+                        "item_count":      None,
+                        "error":           str(e),
+                        "source":          "exception",
+                    }
+
+                result["scraped_at"] = datetime.utcnow().isoformat()
+                results.append(result)
+
+                # Save after every store
+                with open(results_file, "w", encoding="utf-8") as f:
+                    json.dump(results, f, indent=2, ensure_ascii=False)
+
+                # Update job progress counter
+                _store_scrape_jobs[job_id]["completed"] += 1
+
+            _store_scrape_jobs[job_id]["status"]      = "completed"
+            _store_scrape_jobs[job_id]["finished_at"] = datetime.utcnow().isoformat()
+
+        except Exception as e:
+            _store_scrape_jobs[job_id]["status"]      = "failed"
+            _store_scrape_jobs[job_id]["finished_at"] = datetime.utcnow().isoformat()
+            _store_scrape_jobs[job_id]["error"]       = str(e)
+
+    background_tasks.add_task(_run, job_id, selected_ids, results_file)
+
+    print(f"\n📋 Job {job_id[:8]} started: rows {row_start}-{row_end} → {len(selected_ids)} stores")
 
     return {
-        "csv_file":  request.csv_file,
-        "row_range": range_str,
-        "total_ids": len(selected_ids),
-        "store_ids": selected_ids,
-        "results":   results,
+        "job_id":       job_id,
+        "status":       "running",
+        "row_range":    range_str,
+        "total_ids":    len(selected_ids),
+        "store_ids":    selected_ids,
+        "results_file": results_file,
+        "message":      f"Poll /scrape-stores-by-range/{job_id} for status.",
+    }
+
+
+@app.get("/scrape-stores-by-range/{job_id}")
+def get_store_scrape_job(job_id: str):
+    """Poll status of a running store scrape job."""
+    job = _store_scrape_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+
+    total     = job["total_ids"]
+    completed = job["completed"]
+    pct       = round((completed / total) * 100, 1) if total else 0
+
+    # Read latest results from file if available
+    results = []
+    results_file = job.get("results_file")
+    if results_file and os.path.exists(results_file):
+        try:
+            with open(results_file, "r", encoding="utf-8") as f:
+                results = json.load(f)
+        except Exception:
+            pass
+
+    return {
+        "job_id":       job_id,
+        "status":       job["status"],
+        "row_range":    job["row_range"],
+        "total_ids":    total,
+        "completed":    completed,
+        "remaining":    total - completed,
+        "progress_pct": pct,
+        "started_at":   job["started_at"],
+        "finished_at":  job["finished_at"],
+        "results_file": results_file,
+        "error":        job["error"],
+        "results":      results,
+    }
+
+
+@app.get("/scrape-stores-by-range/{job_id}/summary")
+def get_store_scrape_summary(job_id: str):
+    """Lightweight status check — no results array, just progress numbers."""
+    job = _store_scrape_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+
+    total     = job["total_ids"]
+    completed = job["completed"]
+
+    return {
+        "job_id":       job_id,
+        "status":       job["status"],
+        "total_ids":    total,
+        "completed":    completed,
+        "remaining":    total - completed,
+        "progress_pct": round((completed / total) * 100, 1) if total else 0,
+        "started_at":   job["started_at"],
+        "finished_at":  job["finished_at"],
+        "error":        job["error"],
+        "results_file": job.get("results_file"),
     }
