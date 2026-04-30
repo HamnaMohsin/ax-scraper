@@ -51,6 +51,7 @@ from scr04 import scrape_product_details, scrape_product_details_bulk
 from scr_item_count import (
     load_store_ids_from_csv,
     scrape_multiple_stores,
+    scrape_store_item_count,
 )
 
 # ── App init ──────────────────────────────────────────────────────────────────
