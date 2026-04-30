@@ -14,6 +14,8 @@ Key changes vs v2:
   - Configurable headless mode (HEADLESS=0 python ... for visible browser)
   - "Something went wrong" page detection: captures exact error text from page
   - Debug screenshot saved as {store_id}.png ONLY after item count or error is found
+  - Silent redirect detection: bails immediately if page redirected away from store
+  - Reduced polling timeout from 60s to 20s to cut losses on bad pages
 
 Requirements:
     pip install camoufox[geoip] playwright stem
@@ -218,6 +220,32 @@ def detect_page_error(page) -> str | None:
     return None
 
 
+# ── Silent redirect detection ─────────────────────────────────────────────────
+
+def detect_silent_redirect(page, store_id: str) -> str | None:
+    """
+    Returns an error string if the page redirected away from the expected store URL.
+    Catches cases where AliExpress silently sends the browser elsewhere,
+    which would otherwise cause the scraper to burn the full polling timeout
+    searching for item count selectors that will never appear.
+    """
+    current = page.url.lower()
+
+    # Redirected away from store pages entirely
+    if "/store/" not in current:
+        return f"Redirected away from store: {page.url}"
+
+    # Landed on a different store's page
+    if f"/store/{store_id}" not in current and f"/store/{store_id.lower()}" not in current:
+        return f"Redirected to wrong store: {page.url}"
+
+    # Landed on homepage or search
+    if any(x in current for x in ["aliexpress.com/wholesale", "aliexpress.com/?", "aliexpress.com/w/"]):
+        return f"Redirected to search/home: {page.url}"
+
+    return None
+
+
 # ── Tor ───────────────────────────────────────────────────────────────────────
 
 def rotate_tor_circuit(wait: int = ROTATE_WAIT_SECS) -> bool:
@@ -265,6 +293,8 @@ def _try_close_small_captcha(page) -> bool:
         except Exception:
             continue
     return False
+
+
 # ── Browser launch / teardown ─────────────────────────────────────────────────
 
 def launch_browser_and_page(store_id: str):
@@ -581,6 +611,23 @@ def scrape_store_item_count(store_id: str) -> dict:
                 close_all(cm, browser, ctx)
                 continue
 
+            # ── Silent redirect check ─────────────────────────────────────────
+            redirect_error = detect_silent_redirect(page, store_id)
+            if redirect_error:
+                print(f"   ❌ Silent redirect: {redirect_error}")
+                save_debug_screenshot(page, store_id)
+                close_all(cm, browser, ctx)
+                result = {
+                    "store_id":        store_id,
+                    "url":             url,
+                    "item_count_text": None,
+                    "item_count":      None,
+                    "error":           redirect_error,
+                    "source":          "redirect",
+                }
+                _print_result(result)
+                return result
+
             # ── Early page error check (before Baxia handling) ────────────────
             page_error = detect_page_error(page)
             if page_error:
@@ -657,13 +704,12 @@ def scrape_store_item_count(store_id: str) -> dict:
                 _print_result(result)
                 return result
 
-            # ── Poll for item count ───────────────────────────────────────────
-            # ── Poll for item count ───────────────────────────────────────────────────────
-            print("   ⏳ Polling for item count (up to 60s)...")
-            deadline  = time.time() + 60
+            # ── Poll for item count (20s max — reduced from 60s) ──────────────
+            print("   ⏳ Polling for item count (up to 20s)...")
+            deadline  = time.time() + 20          # ← reduced from 60s to 20s
             check_at  = time.time() + 10
             item_count_text = None
-            
+
             while time.time() < deadline:
                 if time.time() >= check_at:
                     if has_baxia_modal(page):
@@ -674,10 +720,10 @@ def scrape_store_item_count(store_id: str) -> dict:
                             break
                         scroll_gently(page)
                     check_at = time.time() + 10
-            
-                # ── Try to dismiss small captcha tab (✕ button) ───────────────────────
+
+                # ── Try to dismiss small captcha tab (✕ button) ───────────────
                 _try_close_small_captcha(page)
-            
+
                 text = try_css_selectors(page) or try_span_scan(page)
                 if text:
                     count = extract_count(text)
@@ -804,6 +850,8 @@ def scrape_multiple_stores(store_ids: list[str], results_file: str = "store_resu
             print(f"   ⚠️  Write failed: {e}")
 
     return results
+
+
 def main():
     if len(sys.argv) > 1:
         # Single store ID passed on command line
