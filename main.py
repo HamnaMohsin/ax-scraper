@@ -623,11 +623,43 @@ def get_product_details_bulk_no_db(request: ProductDetailsRequest):
 
 
 # ── Store Item Count Scraper ───────────────────────────────────────────────────
+import shutil
 
+RESULTS_FILE = os.path.join(os.path.dirname(__file__), "store_results.json")
+
+
+def _load_results() -> list[dict]:
+    """Load store results from JSON file, return empty list if missing/corrupt."""
+    if not os.path.exists(RESULTS_FILE):
+        return []
+    try:
+        with open(RESULTS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _save_results(results: list[dict]) -> bool:
+    """Atomically write results to JSON, keeping a .bak of the previous version."""
+    tmp = RESULTS_FILE + ".tmp"
+    bak = RESULTS_FILE + ".bak"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
+        if os.path.exists(RESULTS_FILE):
+            shutil.copy2(RESULTS_FILE, bak)
+        os.replace(tmp, RESULTS_FILE)
+        return True
+    except OSError as e:
+        print(f"⚠️  _save_results failed: {e}")
+        return False
+
+
+# ── Store Item Count Scraper ───────────────────────────────────────────────────
 
 _store_scrape_jobs: dict[str, dict] = {}
- 
- 
+
+
 @app.post("/scrape-stores-by-range", status_code=202)
 def scrape_stores_by_range(
     request: StoreScrapeByRangeRequest,
@@ -635,17 +667,17 @@ def scrape_stores_by_range(
 ):
     """
     Starts a background store-count scrape job. Returns job_id immediately.
- 
+
     Behaviour:
     - By default SKIPS store IDs already in store_results.json (append-only).
     - Pass "force_rescrape": true to re-scrape and overwrite existing entries.
     - Results are written atomically after every single store.
     - A .bak file is kept so a crash never wipes previous data.
- 
+
     Poll endpoints:
     - GET /scrape-stores-by-range/{job_id}/summary  ← lightweight, use for polling
     - GET /scrape-stores-by-range/{job_id}          ← full results array
- 
+
     Request body:
         {
             "row_range": "1-500",
@@ -659,38 +691,37 @@ def scrape_stores_by_range(
             status_code=422,
             detail=f"Invalid row_range '{range_str}'. Expected format: '1-20' or '40-500'.",
         )
- 
+
     row_start = int(m.group(1))
     row_end   = int(m.group(2))
- 
+
     if row_start < 1:
         raise HTTPException(status_code=422, detail="row_range start must be ≥ 1.")
     if row_end < row_start:
         raise HTTPException(status_code=422, detail="row_range end must be ≥ start.")
- 
+
     csv_path = os.path.join(os.path.dirname(__file__), "stores_info_1_fixed.csv")
     if not os.path.exists(csv_path):
         raise HTTPException(status_code=404, detail=f"CSV not found: {csv_path}")
- 
+
     all_ids = load_store_ids_from_csv(csv_path)
     if not all_ids:
         raise HTTPException(status_code=400, detail="No store IDs found in CSV.")
- 
+
     selected_ids = all_ids[row_start - 1:row_end]
     if not selected_ids:
         raise HTTPException(
             status_code=400,
             detail=f"Range {row_start}-{row_end} produced no IDs. CSV has {len(all_ids)} rows.",
         )
- 
-    # ── Decide which IDs actually need scraping ───────────────────────────
+
     force_rescrape = getattr(request, "force_rescrape", False)
     existing       = _load_results()
     already_done   = set() if force_rescrape else {str(r["store_id"]) for r in existing}
- 
+
     pending_ids = [sid for sid in selected_ids if sid not in already_done]
     skipped     = len(selected_ids) - len(pending_ids)
- 
+
     job_id = str(uuid.uuid4())
     _store_scrape_jobs[job_id] = {
         "job_id":         job_id,
@@ -702,25 +733,23 @@ def scrape_stores_by_range(
         "store_ids":      selected_ids,
         "started_at":     datetime.utcnow().isoformat(),
         "finished_at":    None,
-        "completed":      0,         # stores scraped in THIS job
+        "completed":      0,
         "results_file":   RESULTS_FILE,
         "force_rescrape": force_rescrape,
         "error":          None,
     }
- 
+
     def _run(job_id: str, pending: list[str], force: bool):
         try:
-            # Load current results fresh inside the background thread
             results    = _load_results()
             already    = set() if force else {str(r["store_id"]) for r in results}
             idx_by_sid = {str(r["store_id"]): i for i, r in enumerate(results)}
- 
+
             for sid in pending:
-                # Skip if added by another concurrent job since we started
                 if sid in already and not force:
                     _store_scrape_jobs[job_id]["completed"] += 1
                     continue
- 
+
                 try:
                     result = scrape_store_item_count(sid)
                 except Exception as e:
@@ -732,41 +761,39 @@ def scrape_stores_by_range(
                         "error":           str(e),
                         "source":          "exception",
                     }
- 
+
                 result["scraped_at"] = datetime.utcnow().isoformat()
- 
-                # Append or overwrite
+
                 if force and sid in idx_by_sid:
                     results[idx_by_sid[sid]] = result
                 else:
                     idx_by_sid[sid] = len(results)
                     results.append(result)
- 
-                # Atomic write — .bak is always one step behind
+
                 saved = _save_results(results)
                 print(
                     f"   {'💾 Saved' if saved else '⚠️  Save failed'} "
                     f"({len(results)} total) → store {sid}"
                 )
- 
+
                 _store_scrape_jobs[job_id]["completed"] += 1
- 
+
             _store_scrape_jobs[job_id]["status"]      = "completed"
             _store_scrape_jobs[job_id]["finished_at"] = datetime.utcnow().isoformat()
- 
+
         except Exception as e:
             _store_scrape_jobs[job_id]["status"]      = "failed"
             _store_scrape_jobs[job_id]["finished_at"] = datetime.utcnow().isoformat()
             _store_scrape_jobs[job_id]["error"]       = str(e)
             print(f"❌ Job {job_id[:8]} failed: {e}")
- 
+
     background_tasks.add_task(_run, job_id, pending_ids, force_rescrape)
- 
+
     print(
         f"\n📋 Job {job_id[:8]} started: rows {row_start}-{row_end} "
         f"→ {len(pending_ids)} to scrape, {skipped} already done (skipped)"
     )
- 
+
     return {
         "job_id":         job_id,
         "status":         "running",
@@ -778,8 +805,8 @@ def scrape_stores_by_range(
         "results_file":   RESULTS_FILE,
         "message":        f"Poll /scrape-stores-by-range/{job_id}/summary for progress.",
     }
- 
- 
+
+
 @app.get("/scrape-stores-by-range/{job_id}/summary")
 def get_store_scrape_summary(job_id: str):
     """
@@ -789,10 +816,10 @@ def get_store_scrape_summary(job_id: str):
     job = _store_scrape_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
- 
+
     pending   = job["pending_ids"]
     completed = job["completed"]
- 
+
     return {
         "job_id":        job_id,
         "status":        job["status"],
@@ -808,8 +835,8 @@ def get_store_scrape_summary(job_id: str):
         "error":         job["error"],
         "results_file":  job["results_file"],
     }
- 
- 
+
+
 @app.get("/scrape-stores-by-range/{job_id}")
 def get_store_scrape_job(job_id: str):
     """
@@ -819,11 +846,11 @@ def get_store_scrape_job(job_id: str):
     job = _store_scrape_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
- 
+
     pending   = job["pending_ids"]
     completed = job["completed"]
     results   = _load_results()
- 
+
     return {
         "job_id":        job_id,
         "status":        job["status"],
@@ -841,8 +868,8 @@ def get_store_scrape_job(job_id: str):
         "total_in_file": len(results),
         "results":       results,
     }
- 
- 
+
+
 @app.get("/store-results/summary")
 def store_results_summary():
     """
@@ -852,7 +879,7 @@ def store_results_summary():
     results = _load_results()
     if not results:
         return {"total": 0, "breakdown": {}, "results_file": RESULTS_FILE}
- 
+
     breakdown: dict[str, int] = {}
     errors = 0
     for r in results:
@@ -860,7 +887,7 @@ def store_results_summary():
         breakdown[src] = breakdown.get(src, 0) + 1
         if r.get("error"):
             errors += 1
- 
+
     return {
         "total":        len(results),
         "with_errors":  errors,
