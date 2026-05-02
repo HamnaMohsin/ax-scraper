@@ -62,9 +62,9 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 # ── Config ────────────────────────────────────────────────────────────────────
 
 HEADLESS         = os.environ.get("HEADLESS", "1") != "0"
-MAX_ATTEMPTS     = 9
+MAX_ATTEMPTS     = 3
 ROTATE_WAIT_SECS = 14
-MAX_BAXIA_CYCLES = 2   # give up on attempt if Baxia persists this many cycles
+MAX_BAXIA_CYCLES = 1   # give up on attempt if Baxia persists this many cycles
 
 # Directory where debug screenshots are saved
 SCREENSHOT_DIR = os.environ.get("SCREENSHOT_DIR", "screenshots")
