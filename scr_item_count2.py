@@ -16,9 +16,6 @@ Key changes vs v2:
   - Debug screenshot saved as {store_id}.png ONLY after item count or error is found
   - Silent redirect detection: bails immediately if page redirected away from store
   - Reduced polling timeout from 60s to 20s to cut losses on bad pages
-  - FIX 1: Tor Controller connection now has 10s timeout (was None — hung forever)
-  - FIX 2: Hard 3-minute SIGALRM ceiling per store — no store blocks the job forever
-  - FIX 3: Zombie browser cleanup via pkill after every store
 
 Requirements:
     pip install camoufox[geoip] playwright stem
@@ -45,8 +42,6 @@ import time
 import random
 import json
 import csv
-import signal
-import subprocess
 from stem import Signal
 from stem.control import Controller
 
@@ -255,8 +250,7 @@ def detect_silent_redirect(page, store_id: str) -> str | None:
 
 def rotate_tor_circuit(wait: int = ROTATE_WAIT_SECS) -> bool:
     try:
-        # FIX 1: 10s timeout on Controller — was None so could hang forever
-        with Controller.from_port(port=9051, timeout=10) as ctrl:
+        with Controller.from_port(port=9051) as ctrl:
             ctrl.authenticate()
             ctrl.signal(Signal.NEWNYM)
         print(f"   🔄 Tor NEWNYM — waiting {wait}s...")
@@ -269,21 +263,6 @@ def rotate_tor_circuit(wait: int = ROTATE_WAIT_SECS) -> bool:
     except Exception as e:
         print(f"   ⚠️  Tor rotation failed: {e}")
         return False
-
-
-# ── Zombie browser cleanup (FIX 3) ───────────────────────────────────────────
-
-def kill_zombie_browsers():
-    """
-    Kill any leftover camoufox/firefox processes that close_all() missed.
-    Called after every store to prevent memory buildup over 1000+ stores.
-    """
-    try:
-        subprocess.run(["pkill", "-f", "camoufox-bin"], capture_output=True)
-        subprocess.run(["pkill", "-f", "firefox"],      capture_output=True)
-    except Exception as e:
-        print(f"   ⚠️  Browser cleanup failed: {e}")
-
 
 # Selectors for the small floating captcha tab with ✕ close button
 _SMALL_CAPTCHA_CLOSE_SELECTORS = [
@@ -596,53 +575,9 @@ def scroll_gently(page):
     time.sleep(0.5)
 
 
-# ── Hard timeout wrapper (FIX 2) ─────────────────────────────────────────────
-
-class ScrapingTimeout(Exception):
-    pass
-
-
-def _timeout_handler(signum, frame):
-    raise ScrapingTimeout("Hard 3-minute timeout exceeded")
-
+# ── Core scraper ──────────────────────────────────────────────────────────────
 
 def scrape_store_item_count(store_id: str) -> dict:
-    """
-    FIX 2: Hard 3-minute SIGALRM ceiling wrapping the real scraper.
-    No store can ever block the job for more than 3 minutes regardless
-    of what playwright / camoufox / Tor does internally.
-    After every store, FIX 3 runs to clean up zombie browser processes.
-    """
-    signal.signal(signal.SIGALRM, _timeout_handler)
-    signal.alarm(180)  # 3 minutes hard ceiling per store
-    try:
-        result = _scrape_store_item_count_inner(store_id)
-    except ScrapingTimeout:
-        print(f"\n   ⏰ Hard 3min timeout hit for store {store_id} — killing browser and moving on")
-        kill_zombie_browsers()
-        result = {
-            "store_id":        store_id,
-            "url":             (
-                f"https://www.aliexpress.com/store/{store_id}/pages/all-items.html"
-                f"?shop_sortType=bestmatch_sort&gatewayAdapt=glo2swe"
-            ),
-            "item_count_text": None,
-            "item_count":      None,
-            "error":           "hard_timeout_3min",
-            "source":          "unknown",
-        }
-    finally:
-        signal.alarm(0)  # always cancel alarm so next store gets a clean slate
-
-    # FIX 3: clean up any zombie browsers after every store regardless of outcome
-    kill_zombie_browsers()
-
-    return result
-
-
-# ── Core scraper (inner) ──────────────────────────────────────────────────────
-
-def _scrape_store_item_count_inner(store_id: str) -> dict:
     url = (
         f"https://www.aliexpress.com/store/{store_id}/pages/all-items.html"
         f"?shop_sortType=bestmatch_sort&gatewayAdapt=glo2swe"
@@ -736,8 +671,9 @@ def _scrape_store_item_count_inner(store_id: str) -> dict:
 
             scroll_gently(page)
 
-            # ── Wait for real data to load ────────────────────────────────────
+            # ── Wait for real data to load (CRITICAL FIX) ───────────────────────
             print("   ⏳ Waiting for store data to hydrate...")
+
             try:
                 page.wait_for_function(
                     """() => {
@@ -751,6 +687,7 @@ def _scrape_store_item_count_inner(store_id: str) -> dict:
                 print("   ⚠️ Hydration wait timeout — continuing anyway")
 
             # ── Post-hydration page error check ──────────────────────────────
+            # Re-check after JS finishes loading in case the error rendered late
             page_error = detect_page_error(page)
             if page_error:
                 print(f"   ❌ Page error after hydration: '{page_error}'")
@@ -767,10 +704,10 @@ def _scrape_store_item_count_inner(store_id: str) -> dict:
                 _print_result(result)
                 return result
 
-            # ── Poll for item count (20s max) ─────────────────────────────────
+            # ── Poll for item count (20s max — reduced from 60s) ──────────────
             print("   ⏳ Polling for item count (up to 20s)...")
-            deadline        = time.time() + 20
-            check_at        = time.time() + 10
+            deadline  = time.time() + 20          # ← reduced from 60s to 20s
+            check_at  = time.time() + 10
             item_count_text = None
 
             while time.time() < deadline:
@@ -789,20 +726,36 @@ def _scrape_store_item_count_inner(store_id: str) -> dict:
 
                 text = try_css_selectors(page) or try_span_scan(page)
                 if text:
-                    count = extract_count(text)
-                    if count == 0:
-                        print(f"   ⚠️  Got '0 items' — likely captcha overlay still active, retrying...")
-                        time.sleep(3)
-                        continue   # keep polling, never accept 0
-                    if count is not None:
-                        item_count_text = text
-                        print(f"   ✅ Found: '{text}'")
-                        break
-                time.sleep(2)
+                  count = extract_count(text)
+                  if count == 0:
+                      print(f"   ⚠️  Got '0 items' — waiting 8s to confirm it's not a loading artifact...")
+                      time.sleep(8)
+                      # Re-check after wait
+                      text2 = try_css_selectors(page) or try_span_scan(page)
+                      count2 = extract_count(text2) if text2 else 0
+                      if count2 == 0:
+                          # Confirmed genuine empty store
+                          print(f"   ✅ Confirmed: store genuinely has 0 items")
+                          item_count_text = text2 or text
+                          break
+                      elif count2 is not None and count2 > 0:
+                          # Was a loading artifact — real count loaded
+                          print(f"   ✅ Loading artifact resolved: '{text2}'")
+                          item_count_text = text2
+                          break
+                      # count2 is None — selector disappeared, keep polling
+                      print(f"   ⚠️  Count disappeared after wait — still loading, continuing...")
+                      continue
+                  if count is not None:
+                      item_count_text = text
+                      print(f"   ✅ Found: '{text}'")
+                      break
+              time.sleep(2)
 
             if not item_count_text:
                 api_count = try_api_fallback(page, store_id)
                 if api_count is not None:
+                    # ── Screenshot taken HERE — after final result known ───────
                     save_debug_screenshot(page, store_id)
                     close_all(cm, browser, ctx)
                     result = {
@@ -820,7 +773,10 @@ def _scrape_store_item_count_inner(store_id: str) -> dict:
                 continue
 
             item_count = extract_count(item_count_text)
+            if item_count is None:
+                item_count = 0  
 
+            # ── Screenshot taken HERE — after final result known ──────────────
             save_debug_screenshot(page, store_id)
             close_all(cm, browser, ctx)
 
@@ -844,6 +800,8 @@ def _scrape_store_item_count_inner(store_id: str) -> dict:
             close_all(cm, browser, ctx)
 
     print(f"\n❌  Failed after {MAX_ATTEMPTS} attempts")
+    empty["error"]  = f"Failed after {MAX_ATTEMPTS} attempts — all blocked or timed out"
+    empty["source"] = "unknown"
     return empty
 
 
