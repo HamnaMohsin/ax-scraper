@@ -659,7 +659,7 @@ def _save_results(results: list[dict]) -> bool:
 # ── Store Item Count Scraper ───────────────────────────────────────────────────
 
 _store_scrape_jobs: dict[str, dict] = {}
-
+_cancelled_jobs: set[str] = set()
 
 @app.post("/scrape-stores-by-range", status_code=202)
 def scrape_stores_by_range(
@@ -747,6 +747,9 @@ def scrape_stores_by_range(
             idx_by_sid = {str(r["store_id"]): i for i, r in enumerate(results)}
 
             for sid in pending:
+                if job_id in _cancelled_jobs:
+                    print(f"🛑 Job {job_id[:8]} cancelled after {_store_scrape_jobs[job_id]['completed']} stores.")
+                    break
                 if sid in already and not force:
                     _store_scrape_jobs[job_id]["completed"] += 1
                     continue
@@ -1134,4 +1137,26 @@ def retry_stores_by_error_text(
         "store_ids":    pending_ids,
         "results_file": RESULTS_FILE,
         "message":      f"Poll /scrape-stores-by-range/{job_id}/summary for progress.",
+    }
+
+@app.post("/scrape-stores-by-range/{job_id}/cancel")
+def cancel_store_scrape_job(job_id: str):
+    """Cancel a running store scrape job. Stops after current store finishes."""
+    job = _store_scrape_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    if job["status"] != "running":
+        return {
+            "job_id":  job_id,
+            "status":  job["status"],
+            "message": f"Job is already '{job['status']}' — nothing to cancel.",
+        }
+    _cancelled_jobs.add(job_id)
+    job["status"]      = "cancelled"
+    job["finished_at"] = datetime.utcnow().isoformat()
+    return {
+        "job_id":    job_id,
+        "status":    "cancelled",
+        "completed": job["completed"],
+        "message":   "Cancellation requested. Job stops after current store finishes.",
     }
