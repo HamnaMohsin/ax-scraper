@@ -732,20 +732,22 @@ def scrape_store_item_count(store_id: str) -> dict:
                       time.sleep(8)
                       # Re-check after wait
                       text2 = try_css_selectors(page) or try_span_scan(page)
-                      count2 = extract_count(text2) if text2 else 0
-                      if count2 == 0:
-                          # Confirmed genuine empty store
-                          print(f"   ✅ Confirmed: store genuinely has 0 items")
-                          item_count_text = text2 or text
-                          break
-                      elif count2 is not None and count2 > 0:
+                      count2 = extract_count(text2) if text2 else None
+                  
+                      if count2 is not None and count2 > 0:
                           # Was a loading artifact — real count loaded
                           print(f"   ✅ Loading artifact resolved: '{text2}'")
                           item_count_text = text2
                           break
-                      # count2 is None — selector disappeared, keep polling
-                      print(f"   ⚠️  Count disappeared after wait — still loading, continuing...")
-                      continue
+                      elif count2 == 0:
+                          # Still showing 0 — confirmed genuine empty store
+                          print(f"   ✅ Confirmed: store genuinely has 0 items")
+                          item_count_text = text2 or text
+                          break
+                      else:
+                          # count2 is None — selector disappeared, keep polling
+                          print(f"   ⚠️  Selector gone after wait — still loading, continuing...")
+                          continue
                   if count is not None:
                       item_count_text = text
                       print(f"   ✅ Found: '{text}'")
