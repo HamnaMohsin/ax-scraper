@@ -750,7 +750,7 @@ def scrape_store_item_count(store_id: str) -> dict:
                       item_count_text = text
                       print(f"   ✅ Found: '{text}'")
                       break
-              time.sleep(2)
+                time.sleep(2)
 
             if not item_count_text:
                 api_count = try_api_fallback(page, store_id)
