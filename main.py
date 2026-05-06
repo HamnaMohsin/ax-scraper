@@ -48,7 +48,7 @@ from scr2 import (
     scrape_category,
 )
 from scr04 import scrape_product_details, scrape_product_details_bulk
-from scr_item_count import (
+from scr_item_count2 import (
     load_store_ids_from_csv,
     scrape_multiple_stores,
     scrape_store_item_count,
