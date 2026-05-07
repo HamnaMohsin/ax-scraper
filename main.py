@@ -629,27 +629,29 @@ import shutil
 RESULTS_FILE = os.path.join(os.path.dirname(__file__), "store_results.json")
 
 
-def _load_results() -> list[dict]:
+def _load_results(path: str = None) -> list[dict]:
     """Load store results from JSON file, return empty list if missing/corrupt."""
-    if not os.path.exists(RESULTS_FILE):
+    path = path or RESULTS_FILE
+    if not os.path.exists(path):
         return []
     try:
-        with open(RESULTS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return []
 
 
-def _save_results(results: list[dict]) -> bool:
+def _save_results(results: list[dict], path: str = None) -> bool:
     """Atomically write results to JSON, keeping a .bak of the previous version."""
-    tmp = RESULTS_FILE + ".tmp"
-    bak = RESULTS_FILE + ".bak"
+    path = path or RESULTS_FILE
+    tmp  = path + ".tmp"
+    bak  = path + ".bak"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
-        if os.path.exists(RESULTS_FILE):
-            shutil.copy2(RESULTS_FILE, bak)
-        os.replace(tmp, RESULTS_FILE)
+        if os.path.exists(path):
+            shutil.copy2(path, bak)
+        os.replace(tmp, path)
         return True
     except OSError as e:
         print(f"⚠️  _save_results failed: {e}")
@@ -660,7 +662,6 @@ def _save_results(results: list[dict]) -> bool:
 
 _store_scrape_jobs: dict[str, dict] = {}
 _cancelled_jobs: set[str] = set()
-
 @app.post("/scrape-stores-by-range", status_code=202)
 def scrape_stores_by_range(
     request: StoreScrapeByRangeRequest,
@@ -668,21 +669,26 @@ def scrape_stores_by_range(
 ):
     """
     Starts a background store-count scrape job. Returns job_id immediately.
+    Each job writes to its own file: store_results_{start}_{end}.json
+    No file conflicts when running multiple jobs simultaneously.
 
     Behaviour:
-    - By default SKIPS store IDs already in store_results.json (append-only).
+    - By default SKIPS store IDs already in the job's own file (append-only).
     - Pass "force_rescrape": true to re-scrape and overwrite existing entries.
     - Results are written atomically after every single store.
     - A .bak file is kept so a crash never wipes previous data.
 
     Poll endpoints:
-    - GET /scrape-stores-by-range/{job_id}/summary  ← lightweight, use for polling
-    - GET /scrape-stores-by-range/{job_id}          ← full results array
+    - GET /scrape-stores-by-range/{job_id}/summary
+    - GET /scrape-stores-by-range/{job_id}
+
+    Cancel:
+    - POST /scrape-stores-by-range/{job_id}/cancel
 
     Request body:
         {
-            "row_range": "1-500",
-            "force_rescrape": false    // optional, default false
+            "row_range": "1-200",
+            "force_rescrape": false
         }
     """
     range_str = request.row_range.strip()
@@ -701,6 +707,14 @@ def scrape_stores_by_range(
     if row_end < row_start:
         raise HTTPException(status_code=422, detail="row_range end must be ≥ start.")
 
+    # ── Per-job output file ───────────────────────────────────────────────────
+    output_file = getattr(request, "output_file", None)
+    if not output_file:
+        output_file = os.path.join(
+            os.path.dirname(__file__),
+            f"store_results_{row_start}_{row_end}.json"
+        )
+
     csv_path = os.path.join(os.path.dirname(__file__), "stores_info_1_fixed.csv")
     if not os.path.exists(csv_path):
         raise HTTPException(status_code=404, detail=f"CSV not found: {csv_path}")
@@ -717,8 +731,10 @@ def scrape_stores_by_range(
         )
 
     force_rescrape = getattr(request, "force_rescrape", False)
-    existing       = _load_results()
-    already_done   = set() if force_rescrape else {str(r["store_id"]) for r in existing}
+
+    # ── Skip check uses the job's OWN file, not the global one ───────────────
+    existing     = _load_results(output_file)
+    already_done = set() if force_rescrape else {str(r["store_id"]) for r in existing}
 
     pending_ids = [sid for sid in selected_ids if sid not in already_done]
     skipped     = len(selected_ids) - len(pending_ids)
@@ -735,21 +751,23 @@ def scrape_stores_by_range(
         "started_at":     datetime.utcnow().isoformat(),
         "finished_at":    None,
         "completed":      0,
-        "results_file":   RESULTS_FILE,
+        "results_file":   output_file,
         "force_rescrape": force_rescrape,
         "error":          None,
     }
 
-    def _run(job_id: str, pending: list[str], force: bool):
+    def _run(job_id: str, pending: list[str], force: bool, results_file: str):
         try:
-            results    = _load_results()
+            results    = _load_results(results_file)
             already    = set() if force else {str(r["store_id"]) for r in results}
             idx_by_sid = {str(r["store_id"]): i for i, r in enumerate(results)}
 
             for sid in pending:
+                # ── Cancellation check ────────────────────────────────────
                 if job_id in _cancelled_jobs:
                     print(f"🛑 Job {job_id[:8]} cancelled after {_store_scrape_jobs[job_id]['completed']} stores.")
                     break
+
                 if sid in already and not force:
                     _store_scrape_jobs[job_id]["completed"] += 1
                     continue
@@ -774,10 +792,10 @@ def scrape_stores_by_range(
                     idx_by_sid[sid] = len(results)
                     results.append(result)
 
-                saved = _save_results(results)
+                saved = _save_results(results, results_file)
                 print(
                     f"   {'💾 Saved' if saved else '⚠️  Save failed'} "
-                    f"({len(results)} total) → store {sid}"
+                    f"({len(results)} total) → store {sid} → {os.path.basename(results_file)}"
                 )
 
                 _store_scrape_jobs[job_id]["completed"] += 1
@@ -791,11 +809,12 @@ def scrape_stores_by_range(
             _store_scrape_jobs[job_id]["error"]       = str(e)
             print(f"❌ Job {job_id[:8]} failed: {e}")
 
-    background_tasks.add_task(_run, job_id, pending_ids, force_rescrape)
+    background_tasks.add_task(_run, job_id, pending_ids, force_rescrape, output_file)
 
     print(
         f"\n📋 Job {job_id[:8]} started: rows {row_start}-{row_end} "
         f"→ {len(pending_ids)} to scrape, {skipped} already done (skipped)"
+        f"\n   📄 Output: {output_file}"
     )
 
     return {
@@ -806,11 +825,9 @@ def scrape_stores_by_range(
         "pending_ids":    len(pending_ids),
         "skipped":        skipped,
         "force_rescrape": force_rescrape,
-        "results_file":   RESULTS_FILE,
+        "results_file":   output_file,
         "message":        f"Poll /scrape-stores-by-range/{job_id}/summary for progress.",
     }
-
-
 @app.get("/scrape-stores-by-range/{job_id}/summary")
 def get_store_scrape_summary(job_id: str):
     """
@@ -840,20 +857,20 @@ def get_store_scrape_summary(job_id: str):
         "results_file":  job["results_file"],
     }
 
-
 @app.get("/scrape-stores-by-range/{job_id}")
 def get_store_scrape_job(job_id: str):
     """
-    Full job status including all results from store_results.json.
+    Full job status including all results from this job's results file.
     For polling use /summary instead — this loads the full file every call.
     """
     job = _store_scrape_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
 
-    pending   = job["pending_ids"]
-    completed = job["completed"]
-    results   = _load_results()
+    pending      = job["pending_ids"]
+    completed    = job["completed"]
+    results_file = job["results_file"]
+    results      = _load_results(results_file)
 
     return {
         "job_id":        job_id,
@@ -868,38 +885,57 @@ def get_store_scrape_job(job_id: str):
         "started_at":    job["started_at"],
         "finished_at":   job["finished_at"],
         "error":         job["error"],
-        "results_file":  job["results_file"],
+        "results_file":  results_file,
         "total_in_file": len(results),
         "results":       results,
     }
 
-
 @app.get("/store-results/summary")
 def store_results_summary():
     """
-    Quick summary of store_results.json without returning the full data.
-    Shows total count broken down by source and error status.
+    Aggregates all store_results_*.json files + store_results.json.
+    Shows total count broken down by source and error status across all files.
     """
-    results = _load_results()
-    if not results:
-        return {"total": 0, "breakdown": {}, "results_file": RESULTS_FILE}
+    import glob
+    base_dir = os.path.dirname(__file__)
+
+    # Collect all result files — per-job files + main merged file
+    all_files = sorted(glob.glob(os.path.join(base_dir, "store_results_*.json")))
+    if os.path.exists(RESULTS_FILE):
+        all_files = [RESULTS_FILE] + [f for f in all_files if f != RESULTS_FILE]
+
+    if not all_files:
+        return {"total": 0, "breakdown": {}, "files": []}
 
     breakdown: dict[str, int] = {}
-    errors = 0
-    for r in results:
-        src = r.get("source", "unknown")
-        breakdown[src] = breakdown.get(src, 0) + 1
-        if r.get("error"):
-            errors += 1
+    errors     = 0
+    total      = 0
+    files_info = []
+
+    for fpath in all_files:
+        try:
+            data = _load_results(fpath)
+            file_total = len(data)
+            total += file_total
+            for r in data:
+                src = r.get("source", "unknown")
+                breakdown[src] = breakdown.get(src, 0) + 1
+                if r.get("error"):
+                    errors += 1
+            files_info.append({
+                "file":  os.path.basename(fpath),
+                "count": file_total,
+            })
+        except Exception as e:
+            files_info.append({"file": os.path.basename(fpath), "error": str(e)})
 
     return {
-        "total":        len(results),
+        "total":        total,
         "with_errors":  errors,
-        "successful":   len(results) - errors,
+        "successful":   total - errors,
         "breakdown":    breakdown,
-        "results_file": RESULTS_FILE,
+        "files":        files_info,
     }
-
 # ── Retry by source/error type ────────────────────────────────────────────────
 
 class RetrySource(str, Enum):
@@ -1159,4 +1195,62 @@ def cancel_store_scrape_job(job_id: str):
         "status":    "cancelled",
         "completed": job["completed"],
         "message":   "Cancellation requested. Job stops after current store finishes.",
+    }
+
+
+@app.post("/merge-store-results")
+def merge_store_results():
+    """
+    Merges all store_results_*.json files into store_results.json.
+    Later scraped entries win on duplicate store_id.
+    Run this after all parallel jobs complete.
+    """
+    import glob
+    base_dir = os.path.dirname(__file__)
+    pattern  = os.path.join(base_dir, "store_results_*.json")
+    files    = sorted(glob.glob(pattern))
+
+    if not files:
+        raise HTTPException(status_code=404, detail="No store_results_*.json files found to merge.")
+
+    merged:    dict[str, dict] = {}
+    files_info: list[dict]     = []
+
+    # Load existing main file first so merge only overwrites, doesn't lose old data
+    if os.path.exists(RESULTS_FILE):
+        try:
+            existing = _load_results(RESULTS_FILE)
+            for r in existing:
+                merged[str(r["store_id"])] = r
+            files_info.append({"file": os.path.basename(RESULTS_FILE), "count": len(existing), "type": "existing_main"})
+        except Exception as e:
+            files_info.append({"file": os.path.basename(RESULTS_FILE), "error": str(e)})
+
+    # Merge each per-job file on top (newer scraped_at wins on conflict)
+    for fpath in files:
+        try:
+            data = _load_results(fpath)
+            for r in data:
+                sid = str(r["store_id"])
+                existing_entry = merged.get(sid)
+                if not existing_entry:
+                    merged[sid] = r
+                else:
+                    # Keep whichever was scraped more recently
+                    existing_ts = existing_entry.get("scraped_at", "")
+                    new_ts      = r.get("scraped_at", "")
+                    if new_ts >= existing_ts:
+                        merged[sid] = r
+            files_info.append({"file": os.path.basename(fpath), "count": len(data), "type": "per_job"})
+        except Exception as e:
+            files_info.append({"file": os.path.basename(fpath), "error": str(e)})
+
+    final = list(merged.values())
+    _save_results(final, RESULTS_FILE)
+
+    return {
+        "total_merged": len(final),
+        "files_read":   files_info,
+        "output_file":  RESULTS_FILE,
+        "message":      "All per-job files merged into store_results.json. You can now delete the per-job files.",
     }
