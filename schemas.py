@@ -7,9 +7,9 @@ class ScrapeRequest(BaseModel):
     urls: str   # comma-separated AliExpress URLs
 
 class StoreScrapeByRangeRequest(BaseModel):
-    row_range:      str            # e.g. "1-20" or "40-500"
-    force_rescrape: bool = False   # if True, re-scrapes and overwrites existing entries
- 
+    row_range:      str
+    force_rescrape: bool = False
+    output_file:    Optional[str] = None  # ← add this, None = auto-named
 
 class CategorizeRequest(BaseModel):
     title: str
