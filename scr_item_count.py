@@ -16,6 +16,8 @@ Key changes vs v2:
   - Debug screenshot saved as {store_id}.png ONLY after item count or error is found
   - Silent redirect detection: bails immediately if page redirected away from store
   - Reduced polling timeout from 60s to 20s to cut losses on bad pages
+  - Screenshots disabled by default to save disk space
+  - 0-items: confirmed with 8s wait + Baxia check to avoid false positives
 
 Requirements:
     pip install camoufox[geoip] playwright stem
@@ -66,8 +68,9 @@ MAX_ATTEMPTS     = 3
 ROTATE_WAIT_SECS = 14
 MAX_BAXIA_CYCLES = 1   # give up on attempt if Baxia persists this many cycles
 
-# Directory where debug screenshots are saved
-SCREENSHOT_DIR = os.environ.get("SCREENSHOT_DIR", "screenshots")
+# Set to None to disable screenshots entirely (saves disk space)
+# Set to "screenshots" or a path to enable
+SCREENSHOT_DIR = None
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
@@ -149,9 +152,10 @@ def load_store_ids_from_csv(file_path: str) -> list[str]:
 def save_debug_screenshot(page, store_id: str) -> str | None:
     """
     Save a PNG screenshot named {store_id}.png into SCREENSHOT_DIR.
-    Called ONLY once per store — after the final result (count or error) is known.
-    Returns the file path on success, None on failure.
+    Disabled when SCREENSHOT_DIR is None (default) to save disk space.
     """
+    if not SCREENSHOT_DIR:
+        return None
     try:
         os.makedirs(SCREENSHOT_DIR, exist_ok=True)
         path = os.path.join(SCREENSHOT_DIR, f"{store_id}.png")
@@ -181,7 +185,7 @@ def detect_page_error(page) -> str | None:
         try:
             loc = page.locator(sel)
             count = loc.count()
-            for i in range(min(count, 5)):  # check up to 5 matching elements
+            for i in range(min(count, 5)):
                 try:
                     text = loc.nth(i).text_content(timeout=1_500)
                     if not text:
@@ -191,7 +195,6 @@ def detect_page_error(page) -> str | None:
                         text = text[:500]
                     for pat in PAGE_ERROR_PATTERNS:
                         if pat.search(text):
-                            # Return the most focused fragment we can find
                             lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
                             for line in lines:
                                 if pat.search(line):
@@ -209,9 +212,8 @@ def detect_page_error(page) -> str | None:
             for pat in PAGE_ERROR_PATTERNS:
                 m = pat.search(body_text)
                 if m:
-                    # Return the surrounding sentence (up to 200 chars centred on match)
-                    start = max(0, m.start() - 60)
-                    end   = min(len(body_text), m.end() + 140)
+                    start    = max(0, m.start() - 60)
+                    end      = min(len(body_text), m.end() + 140)
                     fragment = body_text[start:end].strip().replace("\n", " ")
                     return fragment[:300]
     except Exception:
@@ -225,21 +227,15 @@ def detect_page_error(page) -> str | None:
 def detect_silent_redirect(page, store_id: str) -> str | None:
     """
     Returns an error string if the page redirected away from the expected store URL.
-    Catches cases where AliExpress silently sends the browser elsewhere,
-    which would otherwise cause the scraper to burn the full polling timeout
-    searching for item count selectors that will never appear.
     """
     current = page.url.lower()
 
-    # Redirected away from store pages entirely
     if "/store/" not in current:
         return f"Redirected away from store: {page.url}"
 
-    # Landed on a different store's page
     if f"/store/{store_id}" not in current and f"/store/{store_id.lower()}" not in current:
         return f"Redirected to wrong store: {page.url}"
 
-    # Landed on homepage or search
     if any(x in current for x in ["aliexpress.com/wholesale", "aliexpress.com/?", "aliexpress.com/w/"]):
         return f"Redirected to search/home: {page.url}"
 
@@ -264,24 +260,21 @@ def rotate_tor_circuit(wait: int = ROTATE_WAIT_SECS) -> bool:
         print(f"   ⚠️  Tor rotation failed: {e}")
         return False
 
-# Selectors for the small floating captcha tab with ✕ close button
+
+# ── Small captcha close ───────────────────────────────────────────────────────
+
 _SMALL_CAPTCHA_CLOSE_SELECTORS = [
     "[class*='captcha'] [class*='close']",
     "[class*='captcha'] [class*='btn-close']",
     "[class*='captcha-close']",
-    "[class*='nc_iconfont']",          # AliExpress slider captcha close icon
+    "[class*='nc_iconfont']",
     "[class*='slideWrap'] [class*='close']",
-    "button[class*='close'][style*='position']",   # floating close buttons
+    "button[class*='close'][style*='position']",
     "[class*='dialog'] button[class*='close']",
     "[aria-label='Close'][class*='captcha']",
 ]
 
 def _try_close_small_captcha(page) -> bool:
-    """
-    Silently attempt to close the small floating captcha tab (✕ button).
-    Returns True if something was clicked, False otherwise.
-    Does NOT block or wait — fire-and-forget.
-    """
     for sel in _SMALL_CAPTCHA_CLOSE_SELECTORS:
         try:
             loc = page.locator(sel)
@@ -300,25 +293,22 @@ def _try_close_small_captcha(page) -> bool:
 def launch_browser_and_page(store_id: str):
     """Returns (cm, browser, ctx, page). Works for both camoufox and playwright."""
     cookies = [
-    # Primary ship-to cookie — region=SE is the key field
-    {"name": "aep_usuc_f",  "value": "site=glo&c_tp=SEK&region=SE&b_locale=en_US",
-     "domain": ".aliexpress.com", "path": "/"},
-    # Secondary locale cookie — x_site=SWE
-    {"name": "xman_us_f",   "value": "x_locale=en_US&x_site=SWE",
-     "domain": ".aliexpress.com", "path": "/"},
-    # These two are what the ship-to selector actually writes in the browser
-    {"name": "aep_common_f",          "value": "F=F&reg=SE",
-     "domain": ".aliexpress.com", "path": "/"},
-    {"name": "_aep_modified_region",  "value": "SE",
-     "domain": ".aliexpress.com", "path": "/"},
-]
+        {"name": "aep_usuc_f",         "value": "site=glo&c_tp=SEK&region=SE&b_locale=en_US",
+         "domain": ".aliexpress.com", "path": "/"},
+        {"name": "xman_us_f",          "value": "x_locale=en_US&x_site=SWE",
+         "domain": ".aliexpress.com", "path": "/"},
+        {"name": "aep_common_f",       "value": "F=F&reg=SE",
+         "domain": ".aliexpress.com", "path": "/"},
+        {"name": "_aep_modified_region", "value": "SE",
+         "domain": ".aliexpress.com", "path": "/"},
+    ]
 
     if USE_CAMOUFOX:
         cf = Camoufox(
             headless=HEADLESS,
             proxy={"server": "socks5://127.0.0.1:9050"},
-            geoip=True,      # spoof geo to match Tor exit node
-            humanize=True,   # human-like timing and mouse
+            geoip=True,
+            humanize=True,
         )
         browser = cf.__enter__()
         ctx = browser.new_context(
@@ -429,11 +419,10 @@ def handle_baxia_once(page, url: str) -> bool:
     One full Baxia cycle:
       1. Wait 25s for JS challenge to self-complete
       2. Force close if it didn't
-      3. Reload the page (mandatory — content won't appear after a forced close)
+      3. Reload the page
       4. Wait 15s more for any post-reload modal
     Returns True if modal is gone.
     """
-    # Step 1: wait for self-dismiss
     print("   ⏳ Waiting 25s for Baxia to self-dismiss...")
     for _ in range(25):
         if not has_baxia_modal(page):
@@ -442,12 +431,10 @@ def handle_baxia_once(page, url: str) -> bool:
             return True
         time.sleep(1)
 
-    # Step 2: force close
     print("   ⚠️  Timed out — force closing...")
     force_close_modal(page)
     time.sleep(1)
 
-    # Step 3: reload (content won't render after forced close without this)
     print("   🔄 Reloading page after forced close...")
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=60_000)
@@ -459,7 +446,6 @@ def handle_baxia_once(page, url: str) -> bool:
     if not has_baxia_modal(page):
         return True
 
-    # Step 4: short wait after reload
     print("   ⏳ Waiting 15s for post-reload self-dismiss...")
     for _ in range(15):
         if not has_baxia_modal(page):
@@ -528,10 +514,10 @@ def try_api_fallback(page, store_id: str) -> int | None:
                     "Accept": "application/json, text/javascript, */*; q=0.01",
                     "X-Requested-With": "XMLHttpRequest",
                     "Referer": f"https://www.aliexpress.com/store/{store_id}/pages/all-items.html"
-                            f"?shop_sortType=bestmatch_sort&gatewayAdapt=glo2swe",
+                               f"?shop_sortType=bestmatch_sort&gatewayAdapt=glo2swe",
                 },
             )
-            raw = resp.text()
+            raw     = resp.text()
             stripped = raw.strip()
 
             if not stripped.startswith("{") and not stripped.startswith("["):
@@ -591,7 +577,14 @@ def scrape_store_item_count(store_id: str) -> dict:
     print(f"🦊  Engine   : {'camoufox/Firefox' if USE_CAMOUFOX else 'playwright/Chromium'}")
     print("━" * 52 + "\n")
 
-    empty = {"store_id": store_id, "url": url, "item_count_text": None, "item_count": None}
+    empty = {
+        "store_id":        store_id,
+        "url":             url,
+        "item_count_text": None,
+        "item_count":      None,
+        "error":           f"Failed after {MAX_ATTEMPTS} attempts — all blocked or timed out",
+        "source":          "unknown",
+    }
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         print(f"\n📍 Attempt {attempt}/{MAX_ATTEMPTS}")
@@ -628,7 +621,7 @@ def scrape_store_item_count(store_id: str) -> dict:
                 _print_result(result)
                 return result
 
-            # ── Early page error check (before Baxia handling) ────────────────
+            # ── Early page error check ────────────────────────────────────────
             page_error = detect_page_error(page)
             if page_error:
                 print(f"   ❌ Page error detected: '{page_error}'")
@@ -655,7 +648,7 @@ def scrape_store_item_count(store_id: str) -> dict:
                     break
 
             if has_baxia_modal(page):
-                print(f"   ❌ Baxia stuck after {baxia_cycles} cycle(s) — this IP is flagged, rotating...")
+                print(f"   ❌ Baxia stuck after {baxia_cycles} cycle(s) — rotating...")
                 close_all(cm, browser, ctx)
                 continue
 
@@ -671,9 +664,9 @@ def scrape_store_item_count(store_id: str) -> dict:
 
             scroll_gently(page)
 
-            # ── Wait for real data to load (CRITICAL FIX) ───────────────────────
+            # ── Wait for data to load ─────────────────────────────────────────
+            # Accepts ANY count including 0 — zero-item stores are valid
             print("   ⏳ Waiting for store data to hydrate...")
-
             try:
                 page.wait_for_function(
                     """() => {
@@ -682,12 +675,11 @@ def scrape_store_item_count(store_id: str) -> dict:
                     }""",
                     timeout=20000
                 )
-                print("   ✅ Data hydrated (non-zero count detected)")
+                print("   ✅ Data hydrated")
             except Exception:
                 print("   ⚠️ Hydration wait timeout — continuing anyway")
 
             # ── Post-hydration page error check ──────────────────────────────
-            # Re-check after JS finishes loading in case the error rendered late
             page_error = detect_page_error(page)
             if page_error:
                 print(f"   ❌ Page error after hydration: '{page_error}'")
@@ -704,10 +696,10 @@ def scrape_store_item_count(store_id: str) -> dict:
                 _print_result(result)
                 return result
 
-            # ── Poll for item count (20s max — reduced from 60s) ──────────────
+            # ── Poll for item count ───────────────────────────────────────────
             print("   ⏳ Polling for item count (up to 20s)...")
-            deadline  = time.time() + 20          # ← reduced from 60s to 20s
-            check_at  = time.time() + 10
+            deadline        = time.time() + 20
+            check_at        = time.time() + 10
             item_count_text = None
 
             while time.time() < deadline:
@@ -721,39 +713,57 @@ def scrape_store_item_count(store_id: str) -> dict:
                         scroll_gently(page)
                     check_at = time.time() + 10
 
-                # ── Try to dismiss small captcha tab (✕ button) ───────────────
                 _try_close_small_captcha(page)
 
                 text = try_css_selectors(page) or try_span_scan(page)
                 if text:
                     count = extract_count(text)
+
                     if count == 0:
+                        # ── Zero-item confirmation logic ──────────────────────
+                        # Check captcha first — if Baxia is present, 0 is NOT real
+                        if has_baxia_modal(page):
+                            print(f"   ⚠️  Got '0 items' but Baxia modal present — not real, skipping...")
+                            time.sleep(3)
+                            continue
+
                         print(f"   ⚠️  Got '0 items' — waiting 8s to confirm not a loading artifact...")
-                        time.sleep(2)
+                        time.sleep(8)
+
+                        # Re-check after wait
                         text2  = try_css_selectors(page) or try_span_scan(page)
                         count2 = extract_count(text2) if text2 else None
+
                         if count2 is not None and count2 > 0:
+                            # Was a loading artifact — real count loaded
                             print(f"   ✅ Loading artifact resolved: '{text2}'")
                             item_count_text = text2
                             break
+
                         elif count2 == 0:
+                            # Still 0 — but check captcha one more time before confirming
+                            if has_baxia_modal(page):
+                                print(f"   ⚠️  Still 0 but Baxia present — captcha hiding real count, continuing...")
+                                continue
                             print(f"   ✅ Confirmed: store genuinely has 0 items")
                             item_count_text = text2 or text
                             break
+
                         else:
-                            # Selector disappeared — still loading, keep polling
-                            print(f"   ⚠️  Selector gone after wait — continuing...")
+                            # Selector disappeared — page still loading
+                            print(f"   ⚠️  Selector gone after wait — still loading, continuing...")
                             continue
+
                     if count is not None:
                         item_count_text = text
                         print(f"   ✅ Found: '{text}'")
                         break
+
                 time.sleep(2)
 
             if not item_count_text:
                 api_count = try_api_fallback(page, store_id)
                 if api_count is not None:
-                    # ── Screenshot taken HERE — after final result known ───────
                     save_debug_screenshot(page, store_id)
                     close_all(cm, browser, ctx)
                     result = {
@@ -771,8 +781,9 @@ def scrape_store_item_count(store_id: str) -> dict:
                 continue
 
             item_count = extract_count(item_count_text)
+            if item_count is None:
+                item_count = 0  # parsed text but count came out None — treat as 0
 
-            # ── Screenshot taken HERE — after final result known ──────────────
             save_debug_screenshot(page, store_id)
             close_all(cm, browser, ctx)
 
@@ -806,7 +817,7 @@ def _print_result(r: dict):
         print(f"⚠️   Page Error : \"{r['error']}\"")
     else:
         print(f"🏷️   Raw Text  : \"{r['item_count_text']}\"")
-        print(f"🔢  Count      : {r['item_count']:,}" if r["item_count"] else "🔢  Count      : (parse failed)")
+        print(f"🔢  Count      : {r['item_count']:,}" if r["item_count"] else "🔢  Count      : 0")
     print(f"📡  Source     : {r.get('source', '?')}")
     print("━" * 52 + "\n")
 
@@ -817,7 +828,6 @@ def scrape_multiple_stores(store_ids: list[str], results_file: str = "store_resu
     results = []
     print(f"\n🚀 Starting batch scrape for {len(store_ids)} stores\n")
 
-    # ── Resume: load existing results if file already exists ─────────────
     if os.path.exists(results_file):
         try:
             with open(results_file, "r", encoding="utf-8") as f:
@@ -854,7 +864,6 @@ def scrape_multiple_stores(store_ids: list[str], results_file: str = "store_resu
         result["scraped_at"] = datetime.utcnow().isoformat()
         results.append(result)
 
-        # ── Write immediately after every store ───────────────────────────
         try:
             with open(results_file, "w", encoding="utf-8") as f:
                 json.dump(results, f, indent=2, ensure_ascii=False)
@@ -867,12 +876,10 @@ def scrape_multiple_stores(store_ids: list[str], results_file: str = "store_resu
 
 def main():
     if len(sys.argv) > 1:
-        # Single store ID passed on command line
         store_id = sys.argv[1]
         result = scrape_store_item_count(store_id)
         print(json.dumps(result, indent=2))
     else:
-        # Batch mode: read from CSV
         csv_file = "stores_info_1_fixed.csv"
         print(f"📂 Loading store IDs from: {csv_file}")
         store_ids = load_store_ids_from_csv(csv_file)
