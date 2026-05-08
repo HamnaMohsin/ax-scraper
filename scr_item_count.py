@@ -678,7 +678,7 @@ def scrape_store_item_count(store_id: str) -> dict:
                 page.wait_for_function(
                     """() => {
                         const text = document.body.innerText;
-                        return /\\d[\\d,]*\\s*(items|products)/i.test(text) && !/\\b0\\s*(items|products)\\b/i.test(text);
+                        return /\\d[\\d,]*\\s*(items|products)/i.test(text);
                     }""",
                     timeout=20000
                 )
@@ -728,9 +728,22 @@ def scrape_store_item_count(store_id: str) -> dict:
                 if text:
                     count = extract_count(text)
                     if count == 0:
-                        print(f"   ⚠️  Got '0 items' — likely captcha overlay still active, retrying...")
-                        time.sleep(3)
-                        continue   # keep polling, never accept 0
+                        print(f"   ⚠️  Got '0 items' — waiting 8s to confirm not a loading artifact...")
+                        time.sleep(2)
+                        text2  = try_css_selectors(page) or try_span_scan(page)
+                        count2 = extract_count(text2) if text2 else None
+                        if count2 is not None and count2 > 0:
+                            print(f"   ✅ Loading artifact resolved: '{text2}'")
+                            item_count_text = text2
+                            break
+                        elif count2 == 0:
+                            print(f"   ✅ Confirmed: store genuinely has 0 items")
+                            item_count_text = text2 or text
+                            break
+                        else:
+                            # Selector disappeared — still loading, keep polling
+                            print(f"   ⚠️  Selector gone after wait — continuing...")
+                            continue
                     if count is not None:
                         item_count_text = text
                         print(f"   ✅ Found: '{text}'")
