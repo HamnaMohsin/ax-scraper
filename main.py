@@ -951,23 +951,14 @@ def retry_stores_by_source(
     background_tasks: BackgroundTasks,
 ):
     """
-    Re-scrapes all stores in store_results.json that match the given source type.
-
-    Sources:
-    - unknown    → all attempts failed/blocked, no clear reason
-    - redirect   → silently redirected away from store page
-    - page_error → "Something went wrong" or similar
-    - exception  → scraper crashed mid-attempt
-
-    Always force-overwrites matching entries in store_results.json.
-
-    Poll same endpoints as range jobs:
-    - GET /scrape-stores-by-range/{job_id}/summary
-    - GET /scrape-stores-by-range/{job_id}
+    Re-scrapes all stores in master_results.json that match the given source type.
+    Reads from and writes back to master_results.json.
     """
-    results = _load_results()
+    master_file = os.path.join(os.path.dirname(__file__), "master_results.json")
+
+    results = _load_results(master_file)
     if not results:
-        raise HTTPException(status_code=404, detail="store_results.json is empty or missing.")
+        raise HTTPException(status_code=404, detail="master_results.json is empty or missing.")
 
     matching = [
         r for r in results
@@ -995,18 +986,17 @@ def retry_stores_by_source(
         "started_at":     datetime.utcnow().isoformat(),
         "finished_at":    None,
         "completed":      0,
-        "results_file":   RESULTS_FILE,
+        "results_file":   master_file,
         "force_rescrape": True,
         "error":          None,
     }
 
     def _run_retry(job_id: str, ids: list[str]):
         try:
-            results    = _load_results()
+            results    = _load_results(master_file)
             idx_by_sid = {str(r["store_id"]): i for i, r in enumerate(results)}
 
             for sid in ids:
-                # ── Cancellation check ────────────────────────────────────
                 if job_id in _cancelled_jobs:
                     print(f"🛑 Retry job {job_id[:8]} cancelled after {_store_scrape_jobs[job_id]['completed']} stores.")
                     break
@@ -1025,17 +1015,16 @@ def retry_stores_by_source(
 
                 result["scraped_at"] = datetime.utcnow().isoformat()
 
-                # Always overwrite existing entry
                 if sid in idx_by_sid:
                     results[idx_by_sid[sid]] = result
                 else:
                     idx_by_sid[sid] = len(results)
                     results.append(result)
 
-                saved = _save_results(results)
+                saved = _save_results(results, master_file)
                 print(
                     f"   {'💾 Saved' if saved else '⚠️  Save failed'} "
-                    f"({len(results)} total) → store {sid}"
+                    f"({len(results)} total) → store {sid} → master_results.json"
                 )
 
                 _store_scrape_jobs[job_id]["completed"] += 1
@@ -1050,7 +1039,6 @@ def retry_stores_by_source(
             print(f"❌ Retry job {job_id[:8]} failed: {e}")
 
     background_tasks.add_task(_run_retry, job_id, pending_ids)
-
     print(f"\n🔁 Retry job {job_id[:8]} started: source='{source.value}' → {len(pending_ids)} stores")
 
     return {
@@ -1059,10 +1047,9 @@ def retry_stores_by_source(
         "source":       source.value,
         "total_ids":    len(pending_ids),
         "store_ids":    pending_ids,
-        "results_file": RESULTS_FILE,
+        "results_file": master_file,
         "message":      f"Poll /scrape-stores-by-range/{job_id}/summary for progress.",
     }
-
 
 @app.post("/retry-stores-by-error", status_code=202)
 def retry_stores_by_error_text(
@@ -1070,17 +1057,14 @@ def retry_stores_by_error_text(
     background_tasks: BackgroundTasks = None,
 ):
     """
-    Re-scrapes stores whose 'error' field contains the given keyword.
-    More granular than /retry-stores-by-source — lets you target specific
-    error messages like 'hard_timeout_3min', 'Redirected away', etc.
-
-    Example:
-        POST /retry-stores-by-error?keyword=hard_timeout_3min
-        POST /retry-stores-by-error?keyword=Redirected away
+    Re-scrapes stores in master_results.json whose 'error' field contains the keyword.
+    Reads from and writes back to master_results.json.
     """
-    results = _load_results()
+    master_file = os.path.join(os.path.dirname(__file__), "master_results.json")
+
+    results = _load_results(master_file)
     if not results:
-        raise HTTPException(status_code=404, detail="store_results.json is empty or missing.")
+        raise HTTPException(status_code=404, detail="master_results.json is empty or missing.")
 
     keyword_lower = keyword.lower()
     matching = [
@@ -1108,18 +1092,17 @@ def retry_stores_by_error_text(
         "started_at":     datetime.utcnow().isoformat(),
         "finished_at":    None,
         "completed":      0,
-        "results_file":   RESULTS_FILE,
+        "results_file":   master_file,
         "force_rescrape": True,
         "error":          None,
     }
 
     def _run_error_retry(job_id: str, ids: list[str]):
         try:
-            results    = _load_results()
+            results    = _load_results(master_file)
             idx_by_sid = {str(r["store_id"]): i for i, r in enumerate(results)}
 
             for sid in ids:
-                # ── Cancellation check ────────────────────────────────────
                 if job_id in _cancelled_jobs:
                     print(f"🛑 Error-retry job {job_id[:8]} cancelled after {_store_scrape_jobs[job_id]['completed']} stores.")
                     break
@@ -1144,10 +1127,10 @@ def retry_stores_by_error_text(
                     idx_by_sid[sid] = len(results)
                     results.append(result)
 
-                saved = _save_results(results)
+                saved = _save_results(results, master_file)
                 print(
                     f"   {'💾 Saved' if saved else '⚠️  Save failed'} "
-                    f"({len(results)} total) → store {sid}"
+                    f"({len(results)} total) → store {sid} → master_results.json"
                 )
 
                 _store_scrape_jobs[job_id]["completed"] += 1
@@ -1162,7 +1145,6 @@ def retry_stores_by_error_text(
             print(f"❌ Error-retry job {job_id[:8]} failed: {e}")
 
     background_tasks.add_task(_run_error_retry, job_id, pending_ids)
-
     print(f"\n🔁 Error-retry job {job_id[:8]} started: keyword='{keyword}' → {len(pending_ids)} stores")
 
     return {
@@ -1171,10 +1153,10 @@ def retry_stores_by_error_text(
         "keyword":      keyword,
         "total_ids":    len(pending_ids),
         "store_ids":    pending_ids,
-        "results_file": RESULTS_FILE,
+        "results_file": master_file,
         "message":      f"Poll /scrape-stores-by-range/{job_id}/summary for progress.",
     }
-
+    
 @app.post("/scrape-stores-by-range/{job_id}/cancel")
 def cancel_store_scrape_job(job_id: str):
     """Cancel a running store scrape job. Stops after current store finishes."""
