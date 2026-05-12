@@ -11,7 +11,7 @@ import pandas as pd
 from datetime import datetime
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BASE_URL = "http://34.10.186.46:8001"
+BASE_URL = "http://34.57.10.188:8001"
 
 st.set_page_config(
     page_title="AX-Scraper Dashboard",
@@ -268,7 +268,8 @@ with st.sidebar:
         st.markdown('<span class="tag tag-success">● API ONLINE</span>', unsafe_allow_html=True)
     else:
         st.markdown('<span class="tag tag-error">● API OFFLINE</span>', unsafe_allow_html=True)
-        st.caption(f"http://34.10.186.46:8001")
+        st.caption(f"http://34.57.10.188:8001")
+
 
     st.markdown("---")
     st.caption("Navigation")
@@ -766,7 +767,8 @@ with tab6:
 st.markdown("---")
 st.markdown(
     '<p style="text-align:center;color:#374151;font-family:Space Mono,monospace;font-size:0.68rem;letter-spacing:0.1em;">'
-    'AX-SCRAPER DASHBOARD · http://34.10.186.46:8001'
+    'AX-SCRAPER DASHBOARD · http://34.57.10.188:8001'
+
     '</p>',
     unsafe_allow_html=True,
 )
