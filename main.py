@@ -1156,57 +1156,49 @@ def retry_stores_by_error_text(
         "results_file": master_file,
         "message":      f"Poll /scrape-stores-by-range/{job_id}/summary for progress.",
     }
-    
-@app.post("/scrape-stores-by-range/{job_id}/cancel")
-def cancel_store_scrape_job(job_id: str):
-    """Cancel a running store scrape job. Stops after current store finishes."""
-    job = _store_scrape_jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
-    if job["status"] != "running":
-        return {
-            "job_id":  job_id,
-            "status":  job["status"],
-            "message": f"Job is already '{job['status']}' — nothing to cancel.",
-        }
-    _cancelled_jobs.add(job_id)
-    job["status"]      = "cancelled"
-    job["finished_at"] = datetime.utcnow().isoformat()
-    return {
-        "job_id":    job_id,
-        "status":    "cancelled",
-        "completed": job["completed"],
-        "message":   "Cancellation requested. Job stops after current store finishes.",
-    }
-
 @app.post("/merge-store-results")
 def merge_store_results():
     """
-    Merges all store_results*.json files into master_results.json.
+    Merges store_results.json + all store_results_*.json files into master_results.json.
     master_results.json is the final unified file after all jobs complete.
     Later scraped_at wins on duplicate store_id.
     Never reads from master_results.json itself — no self-merge risk.
     """
     import glob
 
-    base_dir     = os.path.dirname(__file__)
-    master_file  = os.path.join(base_dir, "master_results.json")
-    pattern      = os.path.join(base_dir, "store_results*.json")
-    files        = sorted(glob.glob(pattern))
+    base_dir    = os.path.dirname(__file__)
+    master_file = os.path.join(base_dir, "master_results.json")
 
-    if not files:
-        raise HTTPException(status_code=404, detail="No store_results*.json files found to merge.")
+    # ── Build file list ───────────────────────────────────────────────────────
+    # 1. Explicitly include store_results.json (the original main file)
+    # 2. Then all store_results_*.json per-job files via glob
+    # Pattern store_results_*.json requires underscore — never matches master_results.json
+    per_job_files = sorted(glob.glob(os.path.join(base_dir, "store_results_*.json")))
 
+    main_file = os.path.join(base_dir, "store_results.json")
+    if os.path.exists(main_file):
+        all_files = [main_file] + per_job_files
+    else:
+        all_files = per_job_files
+
+    if not all_files:
+        raise HTTPException(
+            status_code=404,
+            detail="No store_results.json or store_results_*.json files found to merge.",
+        )
+
+    # ── Merge ─────────────────────────────────────────────────────────────────
     merged:     dict[str, dict] = {}
     files_info: list[dict]      = []
 
-    for fpath in files:
+    for fpath in all_files:
         try:
-            data = _load_results(fpath)
+            data    = _load_results(fpath)
             added   = 0
             updated = 0
+
             for r in data:
-                sid      = str(r.get("store_id", "")).strip()
+                sid = str(r.get("store_id", "")).strip()
                 if not sid:
                     continue
                 existing = merged.get(sid)
@@ -1219,43 +1211,6 @@ def merge_store_results():
                     if new_ts >= existing_ts:
                         merged[sid] = r
                         updated += 1
+
             files_info.append({
-                "file":    os.path.basename(fpath),
-                "count":   len(data),
-                "added":   added,
-                "updated": updated,
-            })
-            print(f"✅ {os.path.basename(fpath)}: {len(data)} records (added={added}, updated={updated})")
-        except Exception as e:
-            files_info.append({"file": os.path.basename(fpath), "error": str(e)})
-            print(f"❌ {os.path.basename(fpath)}: {e}")
-
-    final = list(merged.values())
-
-    # Sort by store_id numerically for clean output
-    try:
-        final.sort(key=lambda r: int(str(r.get("store_id", 0))))
-    except Exception:
-        pass
-
-    _save_results(final, master_file)
-
-    # Breakdown stats
-    from collections import Counter
-    sources = Counter(r.get("source", "unknown") for r in final)
-    null_c  = sum(1 for r in final if r.get("item_count") is None)
-    zero_c  = sum(1 for r in final if r.get("item_count") == 0)
-    has_c   = sum(1 for r in final if r.get("item_count") and r["item_count"] > 0)
-
-    return {
-        "total_merged":  len(final),
-        "output_file":   master_file,
-        "files_read":    files_info,
-        "breakdown": {
-            "sources":    dict(sources),
-            "has_count":  has_c,
-            "zero":       zero_c,
-            "null":       null_c,
-        },
-        "message": "Merged into master_results.json. Per-job files are unchanged.",
-    }
+                "file":    os.path.basename(fpath
