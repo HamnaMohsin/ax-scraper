@@ -1213,4 +1213,43 @@ def merge_store_results():
                         updated += 1
 
             files_info.append({
-                "file":    os.path.basename(fpath
+                "file":    os.path.basename(fpath),
+                "count":   len(data),
+                "added":   added,
+                "updated": updated,
+            })
+            print(f"✅ {os.path.basename(fpath)}: {len(data)} records (added={added}, updated={updated})")
+
+        except Exception as e:
+            files_info.append({"file": os.path.basename(fpath), "error": str(e)})
+            print(f"❌ {os.path.basename(fpath)}: {e}")
+
+    # ── Write output ──────────────────────────────────────────────────────────
+    final = list(merged.values())
+
+    try:
+        final.sort(key=lambda r: int(str(r.get("store_id", 0))))
+    except Exception:
+        pass
+
+    _save_results(final, master_file)
+
+    # ── Breakdown stats ───────────────────────────────────────────────────────
+    from collections import Counter
+    sources = Counter(r.get("source", "unknown") for r in final)
+    null_c  = sum(1 for r in final if r.get("item_count") is None)
+    zero_c  = sum(1 for r in final if r.get("item_count") == 0)
+    has_c   = sum(1 for r in final if r.get("item_count") and r["item_count"] > 0)
+
+    return {
+        "total_merged": len(final),
+        "output_file":  master_file,
+        "files_read":   files_info,
+        "breakdown": {
+            "sources":   dict(sources),
+            "has_count": has_c,
+            "zero":      zero_c,
+            "null":      null_c,
+        },
+        "message": "Merged into master_results.json. Per-job files are unchanged.",
+    }
