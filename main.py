@@ -1197,60 +1197,83 @@ def cancel_store_scrape_job(job_id: str):
         "message":   "Cancellation requested. Job stops after current store finishes.",
     }
 
-
 @app.post("/merge-store-results")
 def merge_store_results():
     """
-    Merges all store_results_*.json files into store_results.json.
-    Later scraped entries win on duplicate store_id.
-    Run this after all parallel jobs complete.
+    Merges all store_results*.json files into master_results.json.
+    master_results.json is the final unified file after all jobs complete.
+    Later scraped_at wins on duplicate store_id.
+    Never reads from master_results.json itself — no self-merge risk.
     """
     import glob
-    base_dir = os.path.dirname(__file__)
-    pattern  = os.path.join(base_dir, "store_results_*.json")
-    files    = sorted(glob.glob(pattern))
+
+    base_dir     = os.path.dirname(__file__)
+    master_file  = os.path.join(base_dir, "master_results.json")
+    pattern      = os.path.join(base_dir, "store_results*.json")
+    files        = sorted(glob.glob(pattern))
 
     if not files:
-        raise HTTPException(status_code=404, detail="No store_results_*.json files found to merge.")
+        raise HTTPException(status_code=404, detail="No store_results*.json files found to merge.")
 
-    merged:    dict[str, dict] = {}
-    files_info: list[dict]     = []
+    merged:     dict[str, dict] = {}
+    files_info: list[dict]      = []
 
-    # Load existing main file first so merge only overwrites, doesn't lose old data
-    if os.path.exists(RESULTS_FILE):
-        try:
-            existing = _load_results(RESULTS_FILE)
-            for r in existing:
-                merged[str(r["store_id"])] = r
-            files_info.append({"file": os.path.basename(RESULTS_FILE), "count": len(existing), "type": "existing_main"})
-        except Exception as e:
-            files_info.append({"file": os.path.basename(RESULTS_FILE), "error": str(e)})
-
-    # Merge each per-job file on top (newer scraped_at wins on conflict)
     for fpath in files:
         try:
             data = _load_results(fpath)
+            added   = 0
+            updated = 0
             for r in data:
-                sid = str(r["store_id"])
-                existing_entry = merged.get(sid)
-                if not existing_entry:
+                sid      = str(r.get("store_id", "")).strip()
+                if not sid:
+                    continue
+                existing = merged.get(sid)
+                if not existing:
                     merged[sid] = r
+                    added += 1
                 else:
-                    # Keep whichever was scraped more recently
-                    existing_ts = existing_entry.get("scraped_at", "")
+                    existing_ts = existing.get("scraped_at", "")
                     new_ts      = r.get("scraped_at", "")
                     if new_ts >= existing_ts:
                         merged[sid] = r
-            files_info.append({"file": os.path.basename(fpath), "count": len(data), "type": "per_job"})
+                        updated += 1
+            files_info.append({
+                "file":    os.path.basename(fpath),
+                "count":   len(data),
+                "added":   added,
+                "updated": updated,
+            })
+            print(f"✅ {os.path.basename(fpath)}: {len(data)} records (added={added}, updated={updated})")
         except Exception as e:
             files_info.append({"file": os.path.basename(fpath), "error": str(e)})
+            print(f"❌ {os.path.basename(fpath)}: {e}")
 
     final = list(merged.values())
-    _save_results(final, RESULTS_FILE)
+
+    # Sort by store_id numerically for clean output
+    try:
+        final.sort(key=lambda r: int(str(r.get("store_id", 0))))
+    except Exception:
+        pass
+
+    _save_results(final, master_file)
+
+    # Breakdown stats
+    from collections import Counter
+    sources = Counter(r.get("source", "unknown") for r in final)
+    null_c  = sum(1 for r in final if r.get("item_count") is None)
+    zero_c  = sum(1 for r in final if r.get("item_count") == 0)
+    has_c   = sum(1 for r in final if r.get("item_count") and r["item_count"] > 0)
 
     return {
-        "total_merged": len(final),
-        "files_read":   files_info,
-        "output_file":  RESULTS_FILE,
-        "message":      "All per-job files merged into store_results.json. You can now delete the per-job files.",
+        "total_merged":  len(final),
+        "output_file":   master_file,
+        "files_read":    files_info,
+        "breakdown": {
+            "sources":    dict(sources),
+            "has_count":  has_c,
+            "zero":       zero_c,
+            "null":       null_c,
+        },
+        "message": "Merged into master_results.json. Per-job files are unchanged.",
     }
