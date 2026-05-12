@@ -626,7 +626,7 @@ def get_product_details_bulk_no_db(request: ProductDetailsRequest):
 # ── Store Item Count Scraper ───────────────────────────────────────────────────
 import shutil
 
-RESULTS_FILE = os.path.join(os.path.dirname(__file__), "store_results.json")
+RESULTS_FILE = os.path.join(os.path.dirname(__file__), "merged_output.json")
 
 
 def _load_results(path: str = None) -> list[dict]:
