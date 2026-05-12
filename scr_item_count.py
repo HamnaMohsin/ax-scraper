@@ -64,8 +64,8 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 # ── Config ────────────────────────────────────────────────────────────────────
 
 HEADLESS         = os.environ.get("HEADLESS", "1") != "0"
-MAX_ATTEMPTS     = 3
-ROTATE_WAIT_SECS = 14
+MAX_ATTEMPTS     = 2
+ROTATE_WAIT_SECS = 8
 MAX_BAXIA_CYCLES = 1   # give up on attempt if Baxia persists this many cycles
 
 # Set to None to disable screenshots entirely (saves disk space)
@@ -423,8 +423,8 @@ def handle_baxia_once(page, url: str) -> bool:
       4. Wait 15s more for any post-reload modal
     Returns True if modal is gone.
     """
-    print("   ⏳ Waiting 25s for Baxia to self-dismiss...")
-    for _ in range(25):
+    print("   ⏳ Waiting 10s for Baxia to self-dismiss...")
+    for _ in range(10):
         if not has_baxia_modal(page):
             print("   ✅ Baxia self-dismissed — session clean")
             time.sleep(1)
@@ -446,8 +446,8 @@ def handle_baxia_once(page, url: str) -> bool:
     if not has_baxia_modal(page):
         return True
 
-    print("   ⏳ Waiting 15s for post-reload self-dismiss...")
-    for _ in range(15):
+    print("   ⏳ Waiting 8s for post-reload self-dismiss...")
+    for _ in range(8):
         if not has_baxia_modal(page):
             return True
         time.sleep(1)
@@ -562,7 +562,31 @@ def scroll_gently(page):
 
 
 # ── Core scraper ──────────────────────────────────────────────────────────────
-
+def quick_store_check(store_id: str) -> bool:
+    """
+    Fast HTTP check before spinning up a full browser.
+    Returns False if the store is definitely dead — saves 40-90s per dead store.
+    ~46% of stores are dead based on your data.
+    """
+    import requests
+    try:
+        url = f"https://www.aliexpress.com/store/{store_id}"
+        r   = requests.get(
+            url,
+            timeout=6,
+            allow_redirects=True,
+            headers={"User-Agent": random.choice(USER_AGENTS)},
+            proxies={"http": "socks5h://127.0.0.1:9050",
+                     "https": "socks5h://127.0.0.1:9050"},
+        )
+        final_url = r.url.lower()
+        # Redirected away from store page = dead
+        if f"/store/{store_id}" not in final_url and "/store/" not in final_url:
+            print(f"   ⚡ Quick check: store {store_id} appears dead (redirected to {r.url[:60]})")
+            return False
+        return True
+    except Exception:
+        return True  # if check fails, proceed with full scrape
 def scrape_store_item_count(store_id: str) -> dict:
     url = (
         f"https://www.aliexpress.com/store/{store_id}/pages/all-items.html"
@@ -588,7 +612,16 @@ def scrape_store_item_count(store_id: str) -> dict:
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         print(f"\n📍 Attempt {attempt}/{MAX_ATTEMPTS}")
-
+        if attempt == 1:
+            if not quick_store_check(store_id):
+                return {
+                    "store_id":        store_id,
+                    "url":             url,
+                    "item_count_text": None,
+                    "item_count":      None,
+                    "error":           "Quick check: store redirected or unreachable",
+                    "source":          "redirect",
+                }
         if attempt > 1:
             rotate_tor_circuit(wait=ROTATE_WAIT_SECS + attempt * 2)
 
@@ -598,7 +631,7 @@ def scrape_store_item_count(store_id: str) -> dict:
             # ── Navigate ──────────────────────────────────────────────────────
             print("   ⏳ Navigating...")
             page.goto(url, wait_until="domcontentloaded", timeout=90_000)
-            time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(1, 2))
 
             if is_hard_captcha(page):
                 close_all(cm, browser, ctx)
