@@ -53,11 +53,11 @@ from scr_item_count import (
     scrape_multiple_stores,
     scrape_store_item_count,
 )
-
+from translate_endpoint import router as translate_router
 # ── App init ──────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="AX-Scraper", version="1.0")
-
+app.include_router(translate_router)
 OUT_DIR = os.path.join(os.path.dirname(__file__), "data", "output_templates")
 os.makedirs(OUT_DIR, exist_ok=True)
 
