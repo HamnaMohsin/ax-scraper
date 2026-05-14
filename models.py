@@ -27,6 +27,7 @@ class ProductRefined(Base):
     description_marketing = Column(Text, nullable=True)   # HTML, max 5000 chars — LLM output
 
     product = relationship("ProductFetched", back_populates="refined")
+    translation = relationship("ProductTranslation", back_populates="product", uselist=False, cascade="all, delete-orphan")
 
 
 class CategoryAssignment(Base):
