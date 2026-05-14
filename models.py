@@ -51,3 +51,22 @@ class ManufacturerInfo(Base):
     email      = Column(String, nullable=True)
     phone      = Column(String, nullable=True)
     
+
+class ProductTranslation(Base):
+    __tablename__ = "product_translations"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    product_id = Column(BigInteger, ForeignKey("product_refined.product_id", ondelete="CASCADE"), unique=True, nullable=False)
+
+    title_romanian         = Column(Text, nullable=True)
+    description_romanian   = Column(Text, nullable=True)
+    title_german           = Column(Text, nullable=True)
+    description_german     = Column(Text, nullable=True)
+    title_portuguese       = Column(Text, nullable=True)
+    description_portuguese = Column(Text, nullable=True)
+    title_finnish          = Column(Text, nullable=True)
+    description_finnish    = Column(Text, nullable=True)
+    title_french           = Column(Text, nullable=True)
+    description_french     = Column(Text, nullable=True)
+
+    product = relationship("ProductRefined", back_populates="translation")
