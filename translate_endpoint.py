@@ -94,8 +94,31 @@ class ProductTranslation(Base):
     description_french     = Column(Text, nullable=True)
 
 
-# Create the translations table on first import (idempotent)
-Base.metadata.create_all(_engine, tables=[ProductTranslation.__table__])
+# Create the translations table on first import using raw SQL (idempotent).
+# We avoid Base.metadata.create_all() here because product_refined belongs to
+# a different Base (in models.py), and SQLAlchemy can't resolve the FK at DDL
+# time across two separate metadata objects.
+from sqlalchemy import text as _text
+
+with _engine.connect() as _conn:
+    _conn.execute(_text("""
+        CREATE TABLE IF NOT EXISTS product_translations (
+            id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id             INTEGER NOT NULL UNIQUE,
+            title_romanian         TEXT,
+            description_romanian   TEXT,
+            title_german           TEXT,
+            description_german     TEXT,
+            title_portuguese       TEXT,
+            description_portuguese TEXT,
+            title_finnish          TEXT,
+            description_finnish    TEXT,
+            title_french           TEXT,
+            description_french     TEXT,
+            FOREIGN KEY (product_id) REFERENCES product_refined(product_id) ON DELETE CASCADE
+        )
+    """))
+    _conn.commit()
 
 # ── Translation helper ────────────────────────────────────────────────────────
 
