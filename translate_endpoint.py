@@ -37,16 +37,11 @@ import os
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import Column, BigInteger, Integer, Text, ForeignKey
-from sqlalchemy.orm import declarative_base, relationship, Session
+from sqlalchemy.orm import Session
 from openai import OpenAI
 
-# ── Re-use the app's database session if available, else fall back to env var ──
-# If you already have `from database import get_db` in main.py, replace the
-# get_db import below with your own and remove the fallback engine block.
-
-from database import get_db, SessionLocal, engine as _engine
-from models import ProductRefined as _ProductRefined   # reuse the existing mapped class
+from database import get_db
+from models import ProductRefined as _ProductRefined, ProductTranslation
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────
 
@@ -55,70 +50,11 @@ MODEL          = "gpt-4o"
 RETRY_ATTEMPTS = 3
 RETRY_DELAY    = 5  # seconds
 
-client = OpenAI()
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ── Languages ─────────────────────────────────────────────────────────────────
 
 LANGUAGES = ["romanian", "german", "portuguese", "finnish", "french"]
-
-# ── SQLAlchemy model for the new translations table ───────────────────────────
-
-Base = declarative_base()
-
-
-class ProductTranslation(Base):
-    __tablename__ = "product_translations"
-
-    id         = Column(Integer, primary_key=True, autoincrement=True)
-    product_id = Column(
-        BigInteger,
-        ForeignKey("product_refined.product_id", ondelete="CASCADE"),
-        unique=True,
-        nullable=False,
-    )
-
-    # ── Per-language columns (title + description) ────────────────────────────
-    title_romanian         = Column(Text, nullable=True)
-    description_romanian   = Column(Text, nullable=True)
-
-    title_german           = Column(Text, nullable=True)
-    description_german     = Column(Text, nullable=True)
-
-    title_portuguese       = Column(Text, nullable=True)
-    description_portuguese = Column(Text, nullable=True)
-
-    title_finnish          = Column(Text, nullable=True)
-    description_finnish    = Column(Text, nullable=True)
-
-    title_french           = Column(Text, nullable=True)
-    description_french     = Column(Text, nullable=True)
-
-
-# Create the translations table on first import using raw SQL (idempotent).
-# We avoid Base.metadata.create_all() here because product_refined belongs to
-# a different Base (in models.py), and SQLAlchemy can't resolve the FK at DDL
-# time across two separate metadata objects.
-from sqlalchemy import text as _text
-
-with _engine.connect() as _conn:
-    _conn.execute(_text("""
-        CREATE TABLE IF NOT EXISTS product_translations (
-            id                     INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id             INTEGER NOT NULL UNIQUE,
-            title_romanian         TEXT,
-            description_romanian   TEXT,
-            title_german           TEXT,
-            description_german     TEXT,
-            title_portuguese       TEXT,
-            description_portuguese TEXT,
-            title_finnish          TEXT,
-            description_finnish    TEXT,
-            title_french           TEXT,
-            description_french     TEXT,
-            FOREIGN KEY (product_id) REFERENCES product_refined(product_id) ON DELETE CASCADE
-        )
-    """))
-    _conn.commit()
 
 # ── Translation helper ────────────────────────────────────────────────────────
 
