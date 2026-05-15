@@ -18,13 +18,16 @@ class CategorizeRequest(BaseModel):
 
 # ── Single-table views ─────────────────────────────────────────────────────────
 
-class ProductFetchedOut(BaseModel):
-    product_id:  int
-    url:         str
-    title:       Optional[str] = None
-    description: Optional[str] = None
-    images:      Optional[list] = None
-    exported_at: Optional[datetime] = None
+product_id:      int
+    url:             str
+    title:           Optional[str] = None
+    description:     Optional[str] = None
+    images:          Optional[list] = None
+    store_info:      Optional[dict] = None
+    compliance_info: Optional[dict] = None
+    specifications:  Optional[dict] = None
+    exported_at:     Optional[datetime] = None
+
     model_config = {"from_attributes": True}
 
 
