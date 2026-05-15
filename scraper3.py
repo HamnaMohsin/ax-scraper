@@ -334,6 +334,61 @@ def extract_title_universal(page) -> str:
     return ""
 
 
+def extract_specifications(page) -> dict:
+    """
+    Extract product specifications from the #nav-specification section.
+    Each <li> contains pairs of title+desc divs.
+    """
+    specifications = {}
+    print("📋 Extracting specifications...")
+
+    try:
+        spec_selector = "#nav-specification ul li"
+        spec_items = page.locator(spec_selector).all()
+
+        if not spec_items:
+            # Fallback: try scrolling to the section first
+            try:
+                page.locator("#nav-specification").scroll_into_view_if_needed()
+                page.wait_for_timeout(2000)
+                spec_items = page.locator(spec_selector).all()
+            except:
+                pass
+
+        if not spec_items:
+            print("   ⚠️ No specification items found")
+            return specifications
+
+        print(f"   ✓ Found {len(spec_items)} spec <li> rows")
+
+        for item in spec_items:
+            try:
+                # Each <li> may contain multiple prop pairs
+                props = item.locator("div.specification--prop--Jh28bKu").all()
+                for prop in props:
+                    try:
+                        title_el = prop.locator("div.specification--title--SfH3sA8 span").first
+                        desc_el  = prop.locator("div.specification--desc--Dxx6W0W span").first
+
+                        title = title_el.inner_text(timeout=2000).strip() if title_el.count() > 0 else ""
+                        desc  = desc_el.inner_text(timeout=2000).strip()  if desc_el.count()  > 0 else ""
+
+                        if title and desc:
+                            specifications[title] = desc
+                            print(f"      {title}: {desc}")
+                    except:
+                        continue
+            except:
+                continue
+
+        print(f"   ✅ Specifications extracted: {len(specifications)} fields")
+
+    except Exception as e:
+        print(f"⚠️ Specification extraction error: {e}")
+        import traceback
+        traceback.print_exc()
+
+    return specifications
 def extract_aliexpress_product(url: str) -> dict:
     """
     Extract AliExpress product data with Tor routing and anti-detection.
@@ -342,11 +397,12 @@ def extract_aliexpress_product(url: str) -> dict:
     print(f"\n🔍 Scraping: {url}")
 
     empty_result = {
-        "title": "",
-        "description_text": "",
-        "images": [],
-        "store_info": {},
-        "compliance_info":  {},  
+    "title": "",
+    "description_text": "",
+    "images": [],
+    "store_info": {},
+    "compliance_info": {},
+    "specifications": {},
     }
 
     max_retries = 3
@@ -543,6 +599,8 @@ def extract_aliexpress_product(url: str) -> dict:
                     print(f"⚠️ Description extraction error: {e}")
 
                 # SUCCESS
+                specifications = extract_specifications(page)
+
                 browser.close()
 
                 
@@ -552,6 +610,8 @@ def extract_aliexpress_product(url: str) -> dict:
                     "images":           description_images if isinstance(description_images, list) else [],
                     "store_info":       store_info if isinstance(store_info, dict) else {},
                     "compliance_info":  compliance_info if isinstance(compliance_info, dict) else {},  # ← add
+                    "specifications":   specifications if isinstance(specifications, dict) else {},
+
                 }
                 print(f"   compliance_info: {result['compliance_info']}")
 
