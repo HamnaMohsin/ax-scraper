@@ -95,21 +95,23 @@ def _upsert(db: Session, url: str, data: dict) -> ProductFetched:
     product = db.query(ProductFetched).filter_by(url=url).first()
 
     if product:
-        product.title       = data["title"]
-        product.description = data["description_text"]
-        product.images      = data["images"]
-        product.exported_at = None   # reset so it gets re-exported
-    else:
-        product_id = int(url.split("/item/")[-1].split(".")[0].split("?")[0])
-        product = ProductFetched(
-            product_id  = product_id,
-            url         = url,
-            title       = data["title"],
-            description = data["description_text"],
-            images      = data["images"],
-            exported_at = None,
-        )
-        db.add(product)
+    product.title          = data["title"]
+    product.description    = data["description_text"]
+    product.images         = data["images"]
+    product.specifications = data.get("specifications", {})   # ← added
+    product.exported_at    = None
+else:
+    product_id = int(url.split("/item/")[-1].split(".")[0].split("?")[0])
+    product = ProductFetched(
+        product_id     = product_id,
+        url            = url,
+        title          = data["title"],
+        description    = data["description_text"],
+        images         = data["images"],
+        specifications = data.get("specifications", {}),      # ← added
+        exported_at    = None,
+    )
+    db.add(product)
 
     db.flush()
     product_id = product.product_id
@@ -161,26 +163,27 @@ def _upsert(db: Session, url: str, data: dict) -> ProductFetched:
 
 
 def _scrape_and_save(db: Session, url: str) -> dict:
-    """Scrape only — no LLM, no categorization. Resets exported_at."""
     data = extract_aliexpress_product(url)
     if not data.get("title"):
         return {"url": url, "success": False, "error": "Scrape failed or blocked"}
 
     product = db.query(ProductFetched).filter_by(url=url).first()
     if product:
-        product.title       = data["title"]
-        product.description = data["description_text"]
-        product.images      = data["images"]
-        product.exported_at = None
+        product.title          = data["title"]
+        product.description    = data["description_text"]
+        product.images         = data["images"]
+        product.specifications = data.get("specifications", {})  # ← added
+        product.exported_at    = None
     else:
         product_id = int(url.split("/item/")[-1].split(".")[0].split("?")[0])
         product = ProductFetched(
-            product_id  = product_id,
-            url         = url,
-            title       = data["title"],
-            description = data["description_text"],
-            images      = data["images"],
-            exported_at = None,
+            product_id     = product_id,
+            url            = url,
+            title          = data["title"],
+            description    = data["description_text"],
+            images         = data["images"],
+            specifications = data.get("specifications", {}),      # ← added
+            exported_at    = None,
         )
         db.add(product)
 
@@ -195,6 +198,7 @@ def _scrape_and_save(db: Session, url: str) -> dict:
         "title":           product.title,
         "description":     product.description,
         "images":          product.images,
+        "specifications":  product.specifications,                 # ← added
         "store_info":      data.get("store_info", {}),
         "compliance_info": data.get("compliance_info", {}),
     }
