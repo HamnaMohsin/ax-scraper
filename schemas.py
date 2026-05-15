@@ -17,8 +17,8 @@ class CategorizeRequest(BaseModel):
 
 
 # ── Single-table views ─────────────────────────────────────────────────────────
-
-product_id:      int
+class ProductFetchedOut(BaseModel):
+    product_id:      int
     url:             str
     title:           Optional[str] = None
     description:     Optional[str] = None
