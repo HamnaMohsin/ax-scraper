@@ -11,6 +11,7 @@ class ProductFetched(Base):
     title       = Column(String, nullable=True)
     description = Column(Text, nullable=True)
     images      = Column(JSON, nullable=True)
+    specifications = Column(JSON, nullable=True) 
     exported_at = Column(DateTime, nullable=True)
 
     refined  = relationship("ProductRefined",     back_populates="product", uselist=False, cascade="all, delete-orphan")
@@ -25,6 +26,7 @@ class ProductRefined(Base):
     enhanced_title        = Column(String, nullable=True)
     enhanced_description  = Column(Text, nullable=True)
     description_marketing = Column(Text, nullable=True)   # HTML, max 5000 chars — LLM output
+    specifications        = Column(JSON, nullable=True)
 
     product = relationship("ProductFetched", back_populates="refined")
     translation = relationship("ProductTranslation", back_populates="product", uselist=False, cascade="all, delete-orphan")
@@ -55,19 +57,27 @@ class ManufacturerInfo(Base):
 
 class ProductTranslation(Base):
     __tablename__ = "product_translations"
-
     id         = Column(Integer, primary_key=True, autoincrement=True)
     product_id = Column(BigInteger, ForeignKey("product_refined.product_id", ondelete="CASCADE"), unique=True, nullable=False)
 
-    title_romanian         = Column(Text, nullable=True)
-    description_romanian   = Column(Text, nullable=True)
-    title_german           = Column(Text, nullable=True)
-    description_german     = Column(Text, nullable=True)
-    title_portuguese       = Column(Text, nullable=True)
-    description_portuguese = Column(Text, nullable=True)
-    title_finnish          = Column(Text, nullable=True)
-    description_finnish    = Column(Text, nullable=True)
-    title_french           = Column(Text, nullable=True)
-    description_french     = Column(Text, nullable=True)
+    title_romanian              = Column(Text, nullable=True)
+    description_romanian        = Column(Text, nullable=True)
+    specifications_romanian     = Column(JSON, nullable=True)   # ← added
+
+    title_german                = Column(Text, nullable=True)
+    description_german          = Column(Text, nullable=True)
+    specifications_german       = Column(JSON, nullable=True)   # ← added
+
+    title_portuguese            = Column(Text, nullable=True)
+    description_portuguese      = Column(Text, nullable=True)
+    specifications_portuguese   = Column(JSON, nullable=True)   # ← added
+
+    title_finnish               = Column(Text, nullable=True)
+    description_finnish         = Column(Text, nullable=True)
+    specifications_finnish      = Column(JSON, nullable=True)   # ← added
+
+    title_french                = Column(Text, nullable=True)
+    description_french          = Column(Text, nullable=True)
+    specifications_french       = Column(JSON, nullable=True)   # ← added
 
     product = relationship("ProductRefined", back_populates="translation")
