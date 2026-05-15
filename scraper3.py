@@ -393,6 +393,15 @@ def extract_aliexpress_product(url: str) -> dict:
     """
     Extract AliExpress product data with Tor routing and anti-detection.
     """
+    if "gatewayAdapt" in url:
+        # Replace whatever gateway is there with glo2swe
+        url = re.sub(r'gatewayAdapt=[^&]+', 'gatewayAdapt=glo2swe', url)
+    else:
+        # Append it
+        separator = "&" if "?" in url else "?"
+        url = f"{url}{separator}gatewayAdapt=glo2swe"
+
+  
 
     print(f"\n🔍 Scraping: {url}")
 
