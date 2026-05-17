@@ -86,7 +86,6 @@ def _build_full_out(p: ProductFetched) -> ProductFullOut:
         similarity_score      = p.category.similarity_score       if p.category else None,
     )
 
-
 def _upsert(db: Session, url: str, data: dict) -> ProductFetched:
     """
     Insert or update product_fetched, then refine + categorize.
@@ -95,23 +94,23 @@ def _upsert(db: Session, url: str, data: dict) -> ProductFetched:
     product = db.query(ProductFetched).filter_by(url=url).first()
 
     if product:
-    product.title          = data["title"]
-    product.description    = data["description_text"]
-    product.images         = data["images"]
-    product.specifications = data.get("specifications", {})   # ← added
-    product.exported_at    = None
-else:
-    product_id = int(url.split("/item/")[-1].split(".")[0].split("?")[0])
-    product = ProductFetched(
-        product_id     = product_id,
-        url            = url,
-        title          = data["title"],
-        description    = data["description_text"],
-        images         = data["images"],
-        specifications = data.get("specifications", {}),      # ← added
-        exported_at    = None,
-    )
-    db.add(product)
+        product.title          = data["title"]
+        product.description    = data["description_text"]
+        product.images         = data["images"]
+        product.specifications = data.get("specifications", {})
+        product.exported_at    = None
+    else:
+        product_id = int(url.split("/item/")[-1].split(".")[0].split("?")[0])
+        product = ProductFetched(
+            product_id     = product_id,
+            url            = url,
+            title          = data["title"],
+            description    = data["description_text"],
+            images         = data["images"],
+            specifications = data.get("specifications", {}),
+            exported_at    = None,
+        )
+        db.add(product)
 
     db.flush()
     product_id = product.product_id
