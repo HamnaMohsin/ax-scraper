@@ -61,7 +61,57 @@ app.include_router(translate_router)
 OUT_DIR = os.path.join(os.path.dirname(__file__), "data", "output_templates")
 os.makedirs(OUT_DIR, exist_ok=True)
 
+from models import ProductTranslation
 
+@app.get("/products/translations")
+def list_translations(limit: int = 20, offset: int = 0, db: Session = Depends(get_db)):
+    rows = db.query(ProductTranslation).offset(offset).limit(limit).all()
+    return [
+        {
+            "product_id":                  r.product_id,
+            "title_romanian":              r.title_romanian,
+            "description_romanian":        r.description_romanian,
+            "specifications_romanian":     r.specifications_romanian,
+            "title_german":                r.title_german,
+            "description_german":          r.description_german,
+            "specifications_german":       r.specifications_german,
+            "title_portuguese":            r.title_portuguese,
+            "description_portuguese":      r.description_portuguese,
+            "specifications_portuguese":   r.specifications_portuguese,
+            "title_finnish":               r.title_finnish,
+            "description_finnish":         r.description_finnish,
+            "specifications_finnish":      r.specifications_finnish,
+            "title_french":                r.title_french,
+            "description_french":          r.description_french,
+            "specifications_french":       r.specifications_french,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/products/translations/{product_id}")
+def get_translation(product_id: int, db: Session = Depends(get_db)):
+    r = db.query(ProductTranslation).filter_by(product_id=product_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="No translation found for this product")
+    return {
+        "product_id":                  r.product_id,
+        "title_romanian":              r.title_romanian,
+        "description_romanian":        r.description_romanian,
+        "specifications_romanian":     r.specifications_romanian,
+        "title_german":                r.title_german,
+        "description_german":          r.description_german,
+        "specifications_german":       r.specifications_german,
+        "title_portuguese":            r.title_portuguese,
+        "description_portuguese":      r.description_portuguese,
+        "specifications_portuguese":   r.specifications_portuguese,
+        "title_finnish":               r.title_finnish,
+        "description_finnish":         r.description_finnish,
+        "specifications_finnish":      r.specifications_finnish,
+        "title_french":                r.title_french,
+        "description_french":          r.description_french,
+        "specifications_french":       r.specifications_french,
+    }
 @app.on_event("startup")
 def startup():
     init_db()
