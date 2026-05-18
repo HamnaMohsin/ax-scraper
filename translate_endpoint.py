@@ -12,24 +12,28 @@ Endpoint:
 Flow:
   1. Look up product_id in product_refined.
   2. Verify enhanced_title and enhanced_description are not NULL.
-  3. Create table product_translations if it doesn't exist yet.
-  4. If a row for this product_id already exists → return the cached result.
-  5. Otherwise call gpt-4o once (all 5 languages in one shot) and persist.
+  3. If a row for this product_id already exists → return the cached result.
+  4. Otherwise call gpt-4o once (all 5 languages in one shot) and persist.
 
 Table: product_translations
 Columns:
-    id               INTEGER PK autoincrement
-    product_id       BIGINT  FK → product_refined.product_id  UNIQUE
-    title_romanian           TEXT
-    description_romanian     TEXT
-    title_german             TEXT
-    description_german       TEXT
-    title_portuguese         TEXT
-    description_portuguese   TEXT
-    title_finnish            TEXT
-    description_finnish      TEXT
-    title_french             TEXT
-    description_french       TEXT
+    id                        INTEGER PK autoincrement
+    product_id                BIGINT  FK → product_refined.product_id  UNIQUE
+    title_romanian            TEXT
+    description_romanian      TEXT
+    specifications_romanian   JSON
+    title_german              TEXT
+    description_german        TEXT
+    specifications_german     JSON
+    title_portuguese          TEXT
+    description_portuguese    TEXT
+    specifications_portuguese JSON
+    title_finnish             TEXT
+    description_finnish       TEXT
+    specifications_finnish    JSON
+    title_french              TEXT
+    description_french        TEXT
+    specifications_french     JSON
 """
 
 import json
@@ -41,7 +45,7 @@ from sqlalchemy.orm import Session
 from openai import OpenAI
 
 from database import get_db
-from models import ProductRefined as _ProductRefined, ProductTranslation
+from models import ProductRefined as _ProductRefined, ProductTranslation, ProductFetched
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────
 
@@ -60,25 +64,33 @@ LANGUAGES = ["romanian", "german", "portuguese", "finnish", "french"]
 
 SYSTEM_PROMPT = """
 You are a professional product translator.
-You will receive a product title and description in English.
-Translate BOTH fields into each of the 5 requested languages.
+You will receive a product title, description, and specifications (key-value pairs) in English.
+Translate ALL fields into each of the 5 requested languages.
+
+For specifications, translate BOTH the keys and the values.
 
 Respond ONLY with a valid JSON object — no markdown, no extra text.
 Structure:
 {
-  "romanian":   { "title": "...", "description": "..." },
-  "german":     { "title": "...", "description": "..." },
-  "portuguese": { "title": "...", "description": "..." },
-  "finnish":    { "title": "...", "description": "..." },
-  "french":     { "title": "...", "description": "..." }
+  "romanian":   { "title": "...", "description": "...", "specifications": { "translated_key": "translated_value", ... } },
+  "german":     { "title": "...", "description": "...", "specifications": { "translated_key": "translated_value", ... } },
+  "portuguese": { "title": "...", "description": "...", "specifications": { "translated_key": "translated_value", ... } },
+  "finnish":    { "title": "...", "description": "...", "specifications": { "translated_key": "translated_value", ... } },
+  "french":     { "title": "...", "description": "...", "specifications": { "translated_key": "translated_value", ... } }
 }
+
+If specifications is empty or null, return an empty object {} for that field.
 """.strip()
 
 
-def _call_openai(title: str, description: str) -> dict:
-    """One gpt-4o call → translations for all 5 languages."""
+def _call_openai(title: str, description: str, specifications: dict) -> dict:
+    """One gpt-4o call → translations for all 5 languages including specifications."""
     payload = json.dumps(
-        {"title": title, "description": description},
+        {
+            "title":          title,
+            "description":    description,
+            "specifications": specifications or {},
+        },
         ensure_ascii=False,
     )
 
@@ -117,8 +129,8 @@ router = APIRouter(tags=["translations"])
 @router.post("/translate/{product_id}")
 def translate_product(product_id: int, db: Session = Depends(get_db)):
     """
-    Translate a product's enhanced_title and enhanced_description into
-    Romanian, German, Portuguese, Finnish, and French.
+    Translate a product's enhanced_title, enhanced_description, and specifications
+    into Romanian, German, Portuguese, Finnish, and French.
 
     - 404 if product_id not found in product_refined.
     - 422 if enhanced_title or enhanced_description is NULL.
@@ -149,21 +161,27 @@ def translate_product(product_id: int, db: Session = Depends(get_db)):
     if existing:
         return _row_to_response(product_id, existing, cached=True)
 
-    # ── 3. Call OpenAI ────────────────────────────────────────────────────────
+    # ── 3. Fetch specifications from product_fetched ──────────────────────────
+    fetched = db.query(ProductFetched).filter_by(product_id=product_id).first()
+    specifications = (fetched.specifications or {}) if fetched else {}
+
+    # ── 4. Call OpenAI ────────────────────────────────────────────────────────
     try:
         translations = _call_openai(
-            title       = refined.enhanced_title,
-            description = refined.enhanced_description,
+            title          = refined.enhanced_title,
+            description    = refined.enhanced_description,
+            specifications = specifications,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
-    # ── 4. Persist — one loop over all languages ──────────────────────────────
+    # ── 5. Persist — one loop over all languages ──────────────────────────────
     row_data = {"product_id": product_id}
     for lang in LANGUAGES:
         lang_result = translations.get(lang, {})
-        row_data[f"title_{lang}"]       = lang_result.get("title")
-        row_data[f"description_{lang}"] = lang_result.get("description")
+        row_data[f"title_{lang}"]          = lang_result.get("title")
+        row_data[f"description_{lang}"]    = lang_result.get("description")
+        row_data[f"specifications_{lang}"] = lang_result.get("specifications") or {}
 
     new_row = ProductTranslation(**row_data)
     db.add(new_row)
@@ -179,11 +197,12 @@ def _row_to_response(product_id: int, row: ProductTranslation, cached: bool) -> 
     languages = {}
     for lang in LANGUAGES:
         languages[lang] = {
-            "title":       getattr(row, f"title_{lang}"),
-            "description": getattr(row, f"description_{lang}"),
+            "title":          getattr(row, f"title_{lang}"),
+            "description":    getattr(row, f"description_{lang}"),
+            "specifications": getattr(row, f"specifications_{lang}") or {},
         }
     return {
-        "product_id":  product_id,
-        "cached":      cached,
+        "product_id":   product_id,
+        "cached":       cached,
         "translations": languages,
     }
