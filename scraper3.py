@@ -333,52 +333,120 @@ def extract_title_universal(page) -> str:
     print("⚠️ Could not extract title")
     return ""
 
-
 def extract_specifications(page) -> dict:
     """
     Extract product specifications from the #nav-specification section.
-    Each <li> contains pairs of title+desc divs.
+    Uses partial-class matching so hash suffixes don't break selectors.
+    Scrolls through the section incrementally to trigger lazy rendering.
     """
     specifications = {}
     print("📋 Extracting specifications...")
 
     try:
-        spec_selector = "#nav-specification ul li"
-        spec_items = page.locator(spec_selector).all()
+        # ── Step 1: scroll section into view and wait for initial render ──
+        spec_section = page.locator("#nav-specification")
+        if spec_section.count() == 0:
+            print("   ⚠️ #nav-specification not found")
+            return specifications
+
+        spec_section.scroll_into_view_if_needed()
+        page.wait_for_timeout(2500)
+
+        # ── Step 2: slow-scroll through the section to trigger lazy items ──
+        # Grab the bounding box so we know how far to scroll
+        try:
+            box = spec_section.bounding_box()
+            if box:
+                bottom = box["y"] + box["height"]
+                current = box["y"]
+                while current < bottom:
+                    page.mouse.wheel(0, 300)
+                    page.wait_for_timeout(400)
+                    current += 300
+                # Scroll back to the top of the section
+                page.evaluate(
+                    "el => el.scrollIntoView({block:'start'})",
+                    spec_section.element_handle()
+                )
+                page.wait_for_timeout(1000)
+        except Exception as scroll_err:
+            print(f"   ⚠️ Scroll-through error (non-fatal): {scroll_err}")
+
+        # ── Step 3: locate <li> rows with a stable partial class ──
+        # AliExpress uses BEM-style names like "specification--prop--<hash>".
+        # We match on the stable prefix using CSS [class*=...].
+        li_selector = "#nav-specification ul li"
+        spec_items = page.locator(li_selector).all()
 
         if not spec_items:
-            # Fallback: try scrolling to the section first
-            try:
-                page.locator("#nav-specification").scroll_into_view_if_needed()
-                page.wait_for_timeout(2000)
-                spec_items = page.locator(spec_selector).all()
-            except:
-                pass
-
-        if not spec_items:
-            print("   ⚠️ No specification items found")
+            print("   ⚠️ No <li> items found inside #nav-specification ul")
             return specifications
 
         print(f"   ✓ Found {len(spec_items)} spec <li> rows")
 
-        for item in spec_items:
+        # ── Step 4: extract key/value pairs from each row ──
+        # Try three selector strategies per row, from most to least specific:
+        #   A) partial-class prop containers  → title span + desc span
+        #   B) first/second <span> children  → works when the row is flat
+        #   C) raw inner_text split on \n    → last resort
+
+        prop_sel   = "[class*='specification--prop']"
+        title_sel  = "[class*='specification--title'] span, [class*='specTitle'] span"
+        desc_sel   = "[class*='specification--desc'] span, [class*='specValue'] span"
+
+        for idx, item in enumerate(spec_items):
             try:
-                # Each <li> may contain multiple prop pairs
-                props = item.locator("div.specification--prop--Jh28bKu").all()
-                for prop in props:
+                props = item.locator(prop_sel).all()
+
+                if props:
+                    # Strategy A – structured prop containers
+                    for prop in props:
+                        try:
+                            t_el = prop.locator(title_sel).first
+                            d_el = prop.locator(desc_sel).first
+
+                            key = t_el.inner_text(timeout=3000).strip() if t_el.count() > 0 else ""
+                            val = d_el.inner_text(timeout=3000).strip() if d_el.count() > 0 else ""
+
+                            if key and val:
+                                specifications[key] = val
+                                print(f"      [A] {key}: {val}")
+                        except Exception:
+                            continue
+
+                else:
+                    # Strategy B – flat row: two sibling spans
+                    spans = item.locator("span").all()
+                    if len(spans) >= 2:
+                        try:
+                            key = spans[0].inner_text(timeout=2000).strip()
+                            val = spans[1].inner_text(timeout=2000).strip()
+                            if key and val:
+                                specifications[key] = val
+                                print(f"      [B] {key}: {val}")
+                            continue
+                        except Exception:
+                            pass
+
+                    # Strategy C – raw text split
                     try:
-                        title_el = prop.locator("div.specification--title--SfH3sA8 span").first
-                        desc_el  = prop.locator("div.specification--desc--Dxx6W0W span").first
-
-                        title = title_el.inner_text(timeout=2000).strip() if title_el.count() > 0 else ""
-                        desc  = desc_el.inner_text(timeout=2000).strip()  if desc_el.count()  > 0 else ""
-
-                        if title and desc:
-                            specifications[title] = desc
-                            print(f"      {title}: {desc}")
-                    except:
+                        raw = item.inner_text(timeout=2000).strip()
+                        lines = [l.strip() for l in raw.splitlines() if l.strip()]
+                        if len(lines) >= 2:
+                            key, val = lines[0], lines[1]
+                            if key and val:
+                                specifications[key] = val
+                                print(f"      [C] {key}: {val}")
+                        elif len(lines) == 1 and ":" in lines[0]:
+                            k, _, v = lines[0].partition(":")
+                            if k.strip() and v.strip():
+                                specifications[k.strip()] = v.strip()
+                                print(f"      [C:] {k.strip()}: {v.strip()}")
+                    except Exception:
                         continue
-            except:
+
+            except Exception as row_err:
+                print(f"   ⚠️ Row {idx} error: {row_err}")
                 continue
 
         print(f"   ✅ Specifications extracted: {len(specifications)} fields")
@@ -389,6 +457,8 @@ def extract_specifications(page) -> dict:
         traceback.print_exc()
 
     return specifications
+
+
 def extract_aliexpress_product(url: str) -> dict:
     """
     Extract AliExpress product data with Tor routing and anti-detection.
