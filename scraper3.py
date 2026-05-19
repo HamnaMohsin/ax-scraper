@@ -336,8 +336,7 @@ def extract_title_universal(page) -> str:
 def extract_specifications(page) -> dict:
     """
     Extract product specifications from the #nav-specification section.
-    Uses partial-class matching so hash suffixes don't break selectors.
-    Scrolls through the section incrementally to trigger lazy rendering.
+    Clicks 'View more' first to expand the full list.
     """
     specifications = {}
     print("📋 Extracting specifications...")
@@ -352,8 +351,24 @@ def extract_specifications(page) -> dict:
         spec_section.scroll_into_view_if_needed()
         page.wait_for_timeout(2500)
 
-        # ── Step 2: slow-scroll through the section to trigger lazy items ──
-        # Grab the bounding box so we know how far to scroll
+        # ── Step 2: click "View more" button if present ──
+        # Selector targets the button directly inside #nav-specification
+        view_more_sel = "#nav-specification > button"
+        try:
+            view_more_btn = page.locator(view_more_sel).first
+            if view_more_btn.count() > 0:
+                print("   🔽 'View more' button found — clicking...")
+                view_more_btn.scroll_into_view_if_needed()
+                page.wait_for_timeout(500)
+                view_more_btn.click(timeout=5000)
+                page.wait_for_timeout(2000)   # wait for hidden rows to render
+                print("   ✓ 'View more' clicked — full spec list should be visible")
+            else:
+                print("   ℹ️ No 'View more' button — spec list already fully expanded")
+        except Exception as btn_err:
+            print(f"   ⚠️ Could not click 'View more' (non-fatal): {btn_err}")
+
+        # ── Step 3: slow-scroll through the section to trigger lazy items ──
         try:
             box = spec_section.bounding_box()
             if box:
@@ -363,7 +378,6 @@ def extract_specifications(page) -> dict:
                     page.mouse.wheel(0, 300)
                     page.wait_for_timeout(400)
                     current += 300
-                # Scroll back to the top of the section
                 page.evaluate(
                     "el => el.scrollIntoView({block:'start'})",
                     spec_section.element_handle()
@@ -372,9 +386,7 @@ def extract_specifications(page) -> dict:
         except Exception as scroll_err:
             print(f"   ⚠️ Scroll-through error (non-fatal): {scroll_err}")
 
-        # ── Step 3: locate <li> rows with a stable partial class ──
-        # AliExpress uses BEM-style names like "specification--prop--<hash>".
-        # We match on the stable prefix using CSS [class*=...].
+        # ── Step 4: locate <li> rows ──
         li_selector = "#nav-specification ul li"
         spec_items = page.locator(li_selector).all()
 
@@ -384,15 +396,10 @@ def extract_specifications(page) -> dict:
 
         print(f"   ✓ Found {len(spec_items)} spec <li> rows")
 
-        # ── Step 4: extract key/value pairs from each row ──
-        # Try three selector strategies per row, from most to least specific:
-        #   A) partial-class prop containers  → title span + desc span
-        #   B) first/second <span> children  → works when the row is flat
-        #   C) raw inner_text split on \n    → last resort
-
-        prop_sel   = "[class*='specification--prop']"
-        title_sel  = "[class*='specification--title'] span, [class*='specTitle'] span"
-        desc_sel   = "[class*='specification--desc'] span, [class*='specValue'] span"
+        # ── Step 5: extract key/value pairs — three-strategy fallback ──
+        prop_sel  = "[class*='specification--prop']"
+        title_sel = "[class*='specification--title'] span, [class*='specTitle'] span"
+        desc_sel  = "[class*='specification--desc'] span, [class*='specValue'] span"
 
         for idx, item in enumerate(spec_items):
             try:
@@ -457,7 +464,6 @@ def extract_specifications(page) -> dict:
         traceback.print_exc()
 
     return specifications
-
 
 def extract_aliexpress_product(url: str) -> dict:
     """
