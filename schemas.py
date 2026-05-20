@@ -90,3 +90,14 @@ class ManufacturerInfoOut(BaseModel):
 class ProductDetailsRequest(BaseModel):
     ids: List[int]
     output_file: str = "ax_products.json"
+
+class ProductVariantsOut(BaseModel):
+    product_id: int
+    variants:   dict
+    scraped_at: Optional[datetime]
+ 
+    model_config = {"from_attributes": True}
+ 
+class BulkVariantRequest(BaseModel):
+    force_rescrape: bool = False  # if True, re-scrapes products that already have variants
+ 
