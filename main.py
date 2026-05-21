@@ -17,7 +17,7 @@ from models import (
     ProductRefined,
     CategoryAssignment,
     ManufacturerInfo,
-    ProductVariants,
+    ProductVariant,
 )
 from schemas import (
     ScrapeRequest,
@@ -1311,106 +1311,111 @@ def merge_store_results():
         },
         "message": "Merged into master_results.json. Per-job files are unchanged.",
     }
-
-
-
-
-
- 
- 
 # ── Single product variant endpoint ──────────────────────────────────────────
- 
-@app.post("/variants/{product_id}", response_model=ProductVariantsOut)
+
+@app.post("/variants/{product_id}", response_model=list[ProductvariantOut])
 def scrape_and_save_variants(product_id: int, db: Session = Depends(get_db)):
-    """
-    Scrape variants for a single product and save to product_variants table.
- 
-    - product_id must already exist in product_fetched table.
-    - If variants already exist for this product, they are overwritten.
- 
-    Returns the saved variants row.
-    """
-    # Check product exists
+
     product = db.query(ProductFetched).filter_by(product_id=product_id).first()
+
     if not product:
         raise HTTPException(
             status_code=404,
-            detail=f"Product {product_id} not found — run /scrape or /scrape-only first.",
+            detail=f"Product {product_id} not found — run /scrape first.",
         )
- 
-    # Scrape
+
     result = scrape_product_variants(product_id)
- 
+
     if not result["success"]:
         raise HTTPException(
             status_code=502,
-            detail=f"Variant scrape failed for {product_id}: {result.get('error')}",
+            detail=f"variant scrape failed for {product_id}: {result.get('error')}",
         )
- 
-    # Upsert into DB
-    row = db.query(ProductVariants).filter_by(product_id=product_id).first()
-    if row:
-        row.variants   = result["variants"]
-        row.scraped_at = datetime.utcnow()
-    else:
-        row = ProductVariants(
-            product_id = product_id,
-            variants   = result["variants"],
-            scraped_at = datetime.utcnow(),
+
+    scraped_variants = result.get("variants", {})
+
+    if not scraped_variants:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No variants found for product {product_id}",
         )
+
+    # Delete old rows
+    db.query(Productvariant).filter_by(product_id=product_id).delete()
+
+    saved_rows = []
+
+    for variant_type, values in scraped_variants.items():
+
+        if isinstance(values, list):
+            variant_values = ",".join(
+                str(v).strip()
+                for v in values
+                if str(v).strip()
+            )
+        else:
+            variant_values = str(values)
+
+        row = Productvariant(
+            product_id=product_id,
+            variant_type=variant_type,
+            variant_values=variant_values,
+            scraped_at=datetime.utcnow(),
+        )
+
         db.add(row)
- 
+        saved_rows.append(row)
+
     db.commit()
-    db.refresh(row)
- 
-    print(f"✅ Variants saved for product {product_id}: {list(result['variants'].keys())}")
-    return row
- 
- 
-# ── Bulk variant endpoint ─────────────────────────────────────────────────────
- 
+
+    for row in saved_rows:
+        db.refresh(row)
+
+    print(
+        f"✅ variants saved for product {product_id}: "
+        f"{list(scraped_variants.keys())}"
+    )
+
+    return saved_rows
+
+
+# ── Bulk variant endpoint ────────────────────────────────────────────────────
+
 _variant_jobs: dict[str, dict] = {}
- 
- 
+
+
 @app.post("/variants/bulk", status_code=202)
 def scrape_variants_bulk(
     request: BulkVariantRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    """
-    Scrape variants for ALL products in the product_fetched table.
-    Runs as a background job — returns job_id immediately.
- 
-    Request body:
-        {
-            "force_rescrape": false   // false = skip products that already have variants
-                                      // true  = re-scrape and overwrite all
-        }
- 
-    Poll:
-        GET /variants/bulk/{job_id}
-    """
-    # Fetch all product IDs from product_fetched
+
     all_products = db.query(ProductFetched.product_id).all()
-    all_ids      = [p.product_id for p in all_products]
- 
+    all_ids = [p.product_id for p in all_products]
+
     if not all_ids:
-        raise HTTPException(status_code=400, detail="No products found in product_fetched table.")
- 
-    # Determine which IDs to skip
+        raise HTTPException(
+            status_code=400,
+            detail="No products found in product_fetched table.",
+        )
+
     if not request.force_rescrape:
+
         already_done = {
-            r.product_id
-            for r in db.query(ProductVariants.product_id).all()
+            r[0]
+            for r in db.query(Productvariant.product_id).distinct().all()
         }
+
         pending_ids = [pid for pid in all_ids if pid not in already_done]
-        skipped     = len(all_ids) - len(pending_ids)
+        skipped = len(all_ids) - len(pending_ids)
+
     else:
         pending_ids = all_ids
-        skipped     = 0
- 
+        skipped = 0
+
     job_id = str(uuid.uuid4())
+
     _variant_jobs[job_id] = {
         "job_id":         job_id,
         "status":         "running",
@@ -1424,59 +1429,91 @@ def scrape_variants_bulk(
         "finished_at":    None,
         "error":          None,
     }
- 
+
     def _run(job_id: str, ids: list[int], force: bool):
+
         from database import SessionLocal
         from scr_variants import scrape_product_variants
- 
+
         db_thread = SessionLocal()
+
         try:
             for pid in ids:
+
                 try:
                     result = scrape_product_variants(pid)
- 
+
                     if result["success"]:
-                        row = db_thread.query(ProductVariants).filter_by(product_id=pid).first()
-                        if row:
-                            row.variants   = result["variants"]
-                            row.scraped_at = datetime.utcnow()
-                        else:
-                            row = ProductVariants(
-                                product_id = pid,
-                                variants   = result["variants"],
-                                scraped_at = datetime.utcnow(),
+
+                        scraped_variants = result.get("variants", {})
+
+                        db_thread.query(Productvariant).filter_by(
+                            product_id=pid
+                        ).delete()
+
+                        for variant_type, values in scraped_variants.items():
+
+                            if isinstance(values, list):
+                                variant_values = ",".join(
+                                    str(v).strip()
+                                    for v in values
+                                    if str(v).strip()
+                                )
+                            else:
+                                variant_values = str(values)
+
+                            row = Productvariant(
+                                product_id=pid,
+                                variant_type=variant_type,
+                                variant_values=variant_values,
+                                scraped_at=datetime.utcnow(),
                             )
+
                             db_thread.add(row)
+
                         db_thread.commit()
-                        print(f"   ✅ Variants saved for {pid}")
+
+                        print(f"   ✅ variants saved for {pid}")
+
                         _variant_jobs[job_id]["completed"] += 1
+
                     else:
-                        print(f"   ❌ Variant scrape failed for {pid}: {result.get('error')}")
+                        print(
+                            f"   ❌ variant scrape failed for {pid}: "
+                            f"{result.get('error')}"
+                        )
+
                         _variant_jobs[job_id]["failed"] += 1
- 
+
                 except Exception as e:
+
                     print(f"   ❌ Exception for product {pid}: {e}")
+
                     _variant_jobs[job_id]["failed"] += 1
+
                     db_thread.rollback()
- 
-            _variant_jobs[job_id]["status"]      = "completed"
+
+            _variant_jobs[job_id]["status"] = "completed"
             _variant_jobs[job_id]["finished_at"] = datetime.utcnow().isoformat()
- 
+
         except Exception as e:
-            _variant_jobs[job_id]["status"]      = "failed"
+
+            _variant_jobs[job_id]["status"] = "failed"
             _variant_jobs[job_id]["finished_at"] = datetime.utcnow().isoformat()
-            _variant_jobs[job_id]["error"]       = str(e)
+            _variant_jobs[job_id]["error"] = str(e)
+
             print(f"❌ Bulk variant job {job_id[:8]} failed: {e}")
+
         finally:
             db_thread.close()
- 
-    background_tasks.add_task(_run, job_id, pending_ids, request.force_rescrape)
- 
-    print(
-        f"\n📋 Variant job {job_id[:8]} started: "
-        f"{len(pending_ids)} to scrape, {skipped} skipped"
+
+    background_tasks.add_task(
+        _run,
+        job_id,
+        pending_ids,
+        request.force_rescrape,
     )
- 
+
     return {
         "job_id":         job_id,
         "status":         "running",
@@ -1486,37 +1523,52 @@ def scrape_variants_bulk(
         "force_rescrape": request.force_rescrape,
         "message":        f"Poll /variants/bulk/{job_id} for progress.",
     }
- 
- 
+
+
 @app.get("/variants/bulk/{job_id}")
 def get_variant_job(job_id: str):
-    """Poll status of a running bulk variant scrape job."""
+
     job = _variant_jobs.get(job_id)
+
     if not job:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
- 
-    pending   = job["pending_ids"]
-    completed = job["completed"]
-    failed    = job["failed"]
-    done      = completed + failed
- 
-    return {
-        **job,
-        "remaining":    max(0, pending - done),
-        "progress_pct": round((done / pending) * 100, 1) if pending else 100.0,
-    }
- 
- 
-# ── Read endpoint ─────────────────────────────────────────────────────────────
- 
-@app.get("/variants/{product_id}", response_model=ProductVariantsOut)
-def get_variants(product_id: int, db: Session = Depends(get_db)):
-    """Get stored variants for a product."""
-    row = db.query(ProductVariants).filter_by(product_id=product_id).first()
-    if not row:
         raise HTTPException(
             status_code=404,
-            detail=f"No variants found for product {product_id}. Run POST /variants/{product_id} first.",
+            detail=f"Job '{job_id}' not found.",
         )
-    return row
- 
+
+    pending = job["pending_ids"]
+    completed = job["completed"]
+    failed = job["failed"]
+
+    done = completed + failed
+
+    return {
+        **job,
+        "remaining": max(0, pending - done),
+        "progress_pct": round((done / pending) * 100, 1)
+        if pending else 100.0,
+    }
+
+
+# ── Read endpoint ────────────────────────────────────────────────────────────
+
+@app.get("/variants/{product_id}", response_model=list[ProductvariantOut])
+def get_variants(product_id: int, db: Session = Depends(get_db)):
+
+    rows = db.query(Productvariant).filter_by(
+        product_id=product_id
+    ).all()
+
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No variants found for product {product_id}. "
+                f"Run POST /variants/{product_id} first."
+            ),
+        )
+
+    return rows
+
+
+
