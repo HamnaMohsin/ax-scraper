@@ -82,46 +82,17 @@ class ProductTranslation(Base):
 
     product = relationship("ProductRefined", back_populates="translation")
 
+class ProductVarient(Base):
+    __tablename__ = "product_varient"
 
-class ProductVariant(Base):
-    """
-    One row per variant type.
+    id = Column(Integer, primary_key=True, autoincrement=True)
 
-    Example:
+    product_id = Column(Integer, index=True, nullable=False)
 
-        product_id      = 1001
-        variant_type    = "Color"
-        variant_values  = "black,white,blue"
+    varient_type = Column(String, nullable=False)
+    # Example: Color / Size / Material
 
-        product_id      = 1001
-        variant_type    = "Size"
-        variant_values  = "S,M,L"
-    """
-
-    __tablename__ = "product_variant"
-
-    id = Column(Integer, primary_key=True, index=True)
-
-    product_id = Column(Integer, nullable=False, index=True)
-
-    variant_type = Column(String(255), nullable=False, index=True)
-
-    variant_values = Column(Text, nullable=False)
+    varient_values = Column(Text, nullable=False)
+    # Example: black,white,blue
 
     scraped_at = Column(DateTime, nullable=True)
-
-    __table_args__ = (
-        Index(
-            "ix_product_variant_unique",
-            "product_id",
-            "variant_type",
-            unique=True,
-        ),
-    )
-
-    def values_list(self) -> list[str]:
-        return [
-            v.strip()
-            for v in (self.variant_values or "").split(",")
-            if v.strip()
-        ]
