@@ -12,7 +12,13 @@ from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from database import get_db, init_db
-from models import ProductFetched, ProductRefined, CategoryAssignment, ManufacturerInfo
+from models import (
+    ProductFetched,
+    ProductRefined,
+    CategoryAssignment,
+    ManufacturerInfo,
+    ProductVariants,
+)
 from schemas import (
     ScrapeRequest,
     CategorizeRequest,
