@@ -91,11 +91,13 @@ class ProductDetailsRequest(BaseModel):
     ids: List[int]
     output_file: str = "ax_products.json"
 
-class ProductVariantsOut(BaseModel):
+class ProductVariantOut(BaseModel):
+    id: int
     product_id: int
-    variants:   dict
-    scraped_at: Optional[datetime]
- 
+    variant_type: str
+    variant_values: str
+    scraped_at: Optional[datetime] = None
+
     model_config = {"from_attributes": True}
  
 class BulkVariantRequest(BaseModel):
