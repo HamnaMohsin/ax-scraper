@@ -2,6 +2,7 @@ from sqlalchemy import Column, BigInteger, Integer, String, Float, Text, JSON, F
 from sqlalchemy.orm import relationship
 from database import Base
 from sqlalchemy import UniqueConstraint
+from pydantic import BaseModel
 
 class ProductFetched(Base):
     __tablename__ = "product_fetched"
