@@ -2,6 +2,7 @@
 scr_variants.py — AliExpress Product Variant Scraper
 =====================================================
 Scrapes all variant types and values from an AliExpress product page.
+Uses the same Tor + plain playwright pattern as scraper3.py.
 
 Variant types (Color, Size, Material, etc.) are detected from the page.
 Each variant type's values are returned as a comma-separated string.
@@ -14,6 +15,8 @@ Example output:
             "Color": "black,white,pink,blue,Beige",
             "Size": "S,M,L,XL,XXL,XXXL,4XL"
         },
+        "success": True,
+        "error": None,
         "scraped_at": "2026-04-30T10:00:00"
     }
 
@@ -29,178 +32,255 @@ import random
 import json
 from datetime import datetime
 
-try:
-    from camoufox.sync_api import Camoufox
-    USE_CAMOUFOX = True
-except ImportError:
-    from playwright.sync_api import sync_playwright
-    USE_CAMOUFOX = False
-
-from playwright.sync_api import TimeoutError as PlaywrightTimeout
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from stem import Signal
+from stem.control import Controller
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-HEADLESS     = os.environ.get("HEADLESS", "1") != "0"
-MAX_ATTEMPTS = 3
-WAIT_SECS    = 8   # seconds to wait for page JS to hydrate
+MAX_RETRIES = 3
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.4; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
-# ── Browser helpers ───────────────────────────────────────────────────────────
+VIEWPORTS = [
+    {"width": 1366, "height": 768},
+    {"width": 1920, "height": 1080},
+    {"width": 1440, "height": 900},
+    {"width": 1280, "height": 720},
+]
 
-def _launch(url: str):
-    """Launch browser and navigate to URL. Returns (cm, browser, ctx, page)."""
-    cookies = [
-        {"name": "aep_usuc_f", "value": "site=glo&c_tp=SEK&region=SE&b_locale=en_US",
-         "domain": ".aliexpress.com", "path": "/"},
-        {"name": "xman_us_f",  "value": "x_locale=en_US&x_site=SWE",
-         "domain": ".aliexpress.com", "path": "/"},
-    ]
+# ── Tor ───────────────────────────────────────────────────────────────────────
 
-    if USE_CAMOUFOX:
-        cf = Camoufox(headless=HEADLESS, geoip=True, humanize=True)
-        browser = cf.__enter__()
-        ctx  = browser.new_context(locale="en-US")
-        ctx.add_cookies(cookies)
-        page = ctx.new_page()
-        return cf, browser, ctx, page
-    else:
-        pw      = sync_playwright().__enter__()
-        browser = pw.chromium.launch(
-            headless=HEADLESS,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-        )
-        ctx = browser.new_context(
-            user_agent=random.choice(USER_AGENTS),
-            viewport={"width": 1920, "height": 1080},
-            locale="en-US",
-        )
-        ctx.add_cookies(cookies)
-        page = ctx.new_page()
-        page.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-        )
-        return pw, browser, ctx, page
+def rotate_tor_circuit():
+    try:
+        with Controller.from_port(port=9051) as controller:
+            controller.authenticate()
+            controller.signal(Signal.NEWNYM)
+            print("   Waiting 15s for new Tor circuit...")
+            for i in range(15):
+                time.sleep(1)
+                if i % 5 == 4:
+                    print(f"   ... {15 - i - 1}s remaining")
+        print("✅ Tor circuit rotated")
+        return True
+    except Exception as e:
+        print(f"⚠️ Could not rotate Tor circuit: {e}")
+        return False
 
 
-def _close(cm, browser, ctx):
-    for obj in (ctx, browser, cm):
+# ── Captcha detection (same as scraper3) ─────────────────────────────────────
+
+def is_captcha_page(page) -> bool:
+    page_url   = page.url.lower()
+    page_title = page.title().lower()
+
+    if any(kw in page_url for kw in ["baxia", "punish", "captcha", "verify", "_____tmd_____"]):
+        print("❌ CAPTCHA detected in URL")
+        return True
+
+    for selector in ["iframe[src*='recaptcha']", ".baxia-punish", "#captcha-verify",
+                     "[id*='captcha']", "iframe[src*='geetest']", "[class*='captcha']"]:
         try:
-            if hasattr(obj, "close"):       obj.close()
-            elif hasattr(obj, "__exit__"):  obj.__exit__(None, None, None)
+            if page.locator(selector).count() > 0:
+                print(f"❌ CAPTCHA detected: {selector}")
+                return True
         except Exception:
-            pass
+            continue
+
+    is_product = "aliexpress" in page_title and len(page_title) > 40
+    if not is_product and any(kw in page_title for kw in ["verify", "access", "denied", "blocked", "challenge"]):
+        print("❌ Block page detected from title")
+        return True
+
+    return False
 
 
 # ── Variant extraction ────────────────────────────────────────────────────────
 
 def _extract_variants(page) -> dict[str, str]:
     """
-    Parse all SKU variant rows from the page.
+    Extract all SKU variant groups from the rendered page.
 
-    Strategy:
-      1. Find every `.sku-item--skus--StEhULs` container (one per variant type).
-      2. For each container, look for a label element ABOVE it in the DOM
-         (AliExpress renders the label in a sibling/parent span).
-      3. Collect all option values (alt text for images, span text for text options).
-      4. Return { "Color": "black,white,pink", "Size": "S,M,L" }
+    Strategy — multiple passes to handle AliExpress class name changes:
+      Pass 1: Look for elements with 'sku' in their class, group by data-sku-row.
+      Pass 2: Look for the SKU wrap container and parse its structure.
+      Pass 3: Full DOM scan for any image/text option groups near a label.
     """
-    return page.evaluate(r"""
+
+    # ── Pass 1: data-sku-row grouping (most reliable) ─────────────────────
+    variants = page.evaluate(r"""
     () => {
         const result = {};
 
-        // Each SKU row container
-        const rows = document.querySelectorAll('.sku-item--skus--StEhULs');
+        // Group all sku option elements by their data-sku-row attribute
+        const allSkuCols = document.querySelectorAll('[data-sku-col]');
+        if (allSkuCols.length === 0) return null;
 
-        rows.forEach((row, idx) => {
-            // ── Detect variant type label ─────────────────────────────────
-            // AliExpress puts the label in a span inside a sibling div
-            // Walk up to the parent wrapper and search for a title/label element
+        // Build map: rowId -> [elements]
+        const rowMap = {};
+        allSkuCols.forEach(el => {
+            const col = el.getAttribute('data-sku-col') || '';
+            const rowId = col.split('-')[0];
+            if (!rowMap[rowId]) rowMap[rowId] = [];
+            rowMap[rowId].push(el);
+        });
+
+        let rowIndex = 0;
+        for (const [rowId, elements] of Object.entries(rowMap)) {
+            // ── Find label for this row ──────────────────────────────────
+            // Walk up from first element to find a label/title sibling
             let label = null;
+            const firstEl = elements[0];
+            const parent  = firstEl.closest('[class*="sku-item--box"], [class*="skuItem"], [class*="sku-wrap"]')
+                         || firstEl.parentElement?.parentElement;
 
-            // Try: parent's previous sibling contains the label span
-            const parent = row.closest('[class*="sku-item--box"]') || row.parentElement;
             if (parent) {
-                // Look for a span/div with the property name above the options
-                const wrapper = parent.parentElement || parent;
-                // Search all text nodes near this row for the label
-                const labelCandidates = wrapper.querySelectorAll(
+                // Search for a title element near this group
+                const titleCandidates = parent.querySelectorAll(
                     '[class*="sku-item--title"], [class*="sku-title"], ' +
-                    '[class*="property-title"], [class*="variant-title"], ' +
-                    '[class*="sku-item--property"], span[class*="title"]'
+                    '[class*="property-title"], [class*="sku-item--property"], ' +
+                    '[class*="skuTitle"], [class*="attr-title"], ' +
+                    'span[class*="title"], div[class*="label"]'
                 );
-                if (labelCandidates.length > 0) {
-                    // Pick the one closest in DOM order
-                    label = labelCandidates[0].textContent.trim().replace(/:$/, '');
+                if (titleCandidates.length > 0) {
+                    label = titleCandidates[0].textContent.trim().replace(/:$/, '').trim();
                 }
-            }
 
-            // Fallback: look for a sibling element containing a colon-terminated label
-            if (!label) {
-                const grandParent = row.parentElement && row.parentElement.parentElement;
-                if (grandParent) {
-                    for (const child of grandParent.children) {
-                        const txt = child.textContent.trim();
-                        // Short text ending with colon is usually a label
-                        if (txt && txt.length < 40 && !child.querySelector('.sku-item--skus--StEhULs')) {
-                            label = txt.replace(/:$/, '').trim();
-                            break;
+                // Fallback: short sibling text before the options
+                if (!label) {
+                    const gp = parent.parentElement;
+                    if (gp) {
+                        for (const child of gp.children) {
+                            const txt = child.textContent.trim();
+                            if (txt && txt.length < 50 &&
+                                !child.querySelector('[data-sku-col]')) {
+                                label = txt.replace(/:$/, '').trim();
+                                break;
+                            }
                         }
                     }
                 }
             }
 
-            // Final fallback: use generic name
-            if (!label || label.length === 0) {
-                label = `type_${idx + 1}`;
-            }
+            if (!label) label = `type_${rowIndex + 1}`;
 
-            // ── Collect option values ─────────────────────────────────────
+            // ── Collect values ───────────────────────────────────────────
             const values = [];
 
-            // Image-based options: use alt attribute
-            const imgOptions = row.querySelectorAll('[class*="sku-item--image"] img');
-            imgOptions.forEach(img => {
-                const alt = (img.getAttribute('alt') || '').trim();
-                if (alt && !values.includes(alt)) values.push(alt);
+            // Image options: use alt text
+            elements.forEach(el => {
+                const img = el.querySelector('img');
+                if (img) {
+                    const alt = (img.getAttribute('alt') || img.getAttribute('title') || '').trim();
+                    if (alt && !values.includes(alt)) values.push(alt);
+                }
             });
 
-            // Text-based options: use span text content
+            // Text options: use visible text
             if (values.length === 0) {
-                const textOptions = row.querySelectorAll('[class*="sku-item--text"] span');
-                textOptions.forEach(span => {
-                    const txt = span.textContent.trim();
-                    if (txt && !values.includes(txt)) values.push(txt);
+                elements.forEach(el => {
+                    const span = el.querySelector('span');
+                    const txt  = (span ? span.textContent : el.textContent).trim();
+                    if (txt && txt.length < 50 && !values.includes(txt)) values.push(txt);
                 });
             }
 
             if (values.length > 0) {
-                // If label already exists (duplicate row name), append index
-                const key = result[label] !== undefined ? `${label}_${idx}` : label;
+                const key = result[label] !== undefined ? `${label}_${rowIndex}` : label;
                 result[key] = values.join(',');
             }
-        });
+            rowIndex++;
+        }
 
-        return result;
+        return Object.keys(result).length > 0 ? result : null;
     }
     """)
 
+    if variants:
+        return variants
 
-def _wait_for_skus(page) -> bool:
-    """Wait until SKU rows are rendered in the DOM."""
-    try:
-        page.wait_for_selector(
-            ".sku-item--skus--StEhULs",
-            timeout=15_000,
-            state="attached",
-        )
-        return True
-    except Exception:
-        return False
+    # ── Pass 2: class-name based scan (fallback for older page format) ────
+    variants = page.evaluate(r"""
+    () => {
+        const result = {};
+
+        // Find all elements whose class contains 'sku' and 'row' or 'group'
+        const skuContainers = [...document.querySelectorAll('*')].filter(el => {
+            const cls = (el.className || '');
+            if (typeof cls !== 'string') return false;
+            return (cls.includes('sku') && (cls.includes('row') || cls.includes('group') ||
+                    cls.includes('skus') || cls.includes('wrap')));
+        });
+
+        skuContainers.forEach((container, idx) => {
+            // Skip very large containers (they're wrappers)
+            if (container.querySelectorAll('img, span').length > 50) return;
+
+            const values = [];
+
+            // Try images first
+            container.querySelectorAll('img').forEach(img => {
+                const alt = (img.getAttribute('alt') || '').trim();
+                if (alt && alt.length < 40 && !values.includes(alt)) values.push(alt);
+            });
+
+            // Try text spans
+            if (values.length === 0) {
+                container.querySelectorAll('span').forEach(span => {
+                    const txt = span.textContent.trim();
+                    if (txt && txt.length < 30 && /^[a-zA-Z0-9\s\/\-\.]+$/.test(txt)
+                        && !values.includes(txt)) {
+                        values.push(txt);
+                    }
+                });
+            }
+
+            if (values.length >= 2) {
+                // Try to find a label above
+                let label = null;
+                const prev = container.previousElementSibling;
+                if (prev) {
+                    const txt = prev.textContent.trim();
+                    if (txt && txt.length < 50) label = txt.replace(/:$/, '').trim();
+                }
+                if (!label) label = `variant_${idx + 1}`;
+                if (!result[label]) result[label] = values.join(',');
+            }
+        });
+
+        return Object.keys(result).length > 0 ? result : null;
+    }
+    """)
+
+    if variants:
+        return variants
+
+    # ── Pass 3: dump all classes so we can debug ──────────────────────────
+    all_sku_classes = page.evaluate(r"""
+    () => {
+        const found = new Set();
+        document.querySelectorAll('*').forEach(el => {
+            if (el.className && typeof el.className === 'string') {
+                el.className.split(' ').forEach(c => {
+                    if (c.toLowerCase().includes('sku') ||
+                        c.toLowerCase().includes('variant') ||
+                        c.toLowerCase().includes('property') ||
+                        c.toLowerCase().includes('option')) {
+                        found.add(c);
+                    }
+                });
+            }
+        });
+        return [...found];
+    }
+    """)
+    print(f"   ℹ️  SKU-related classes on page: {all_sku_classes[:30]}")
+
+    return {}
 
 
 # ── Main scraper function ─────────────────────────────────────────────────────
@@ -208,16 +288,7 @@ def _wait_for_skus(page) -> bool:
 def scrape_product_variants(product_id: int | str) -> dict:
     """
     Scrape all variant types and values for a given AliExpress product ID.
-
-    Returns:
-        {
-            "product_id":  <int>,
-            "url":         <str>,
-            "variants":    { "Color": "black,white", "Size": "S,M,L" },
-            "success":     True/False,
-            "error":       None or error message,
-            "scraped_at":  ISO datetime string
-        }
+    Uses Tor + plain playwright, same as scraper3.py.
     """
     pid = int(product_id)
     url = f"https://www.aliexpress.com/item/{pid}.html"
@@ -237,60 +308,126 @@ def scrape_product_variants(product_id: int | str) -> dict:
         "scraped_at": datetime.utcnow().isoformat(),
     }
 
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        print(f"\n📍 Attempt {attempt}/{MAX_ATTEMPTS}")
-        cm = browser = ctx = page = None
+    for attempt in range(MAX_RETRIES):
+        print(f"\n📍 Attempt {attempt + 1}/{MAX_RETRIES}")
 
-        try:
-            cm, browser, ctx, page = _launch(url)
+        if attempt > 0:
+            print("🔄 Rotating Tor circuit...")
+            rotate_tor_circuit()
+            wait_time = 20 + (attempt * 5)
+            print(f"   Waiting {wait_time}s before next attempt...")
+            time.sleep(wait_time)
 
-            print("   ⏳ Navigating...")
-            page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-            time.sleep(random.uniform(2, 3))
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                proxy={"server": "socks5://127.0.0.1:9050"},
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                ],
+            )
 
-            # Wait for SKU section to hydrate
-            found = _wait_for_skus(page)
-            if not found:
-                print("   ⚠️  SKU rows not found — may be a single-variant product or page error")
-                # Still try to extract — might load late
-                time.sleep(WAIT_SECS)
+            page = browser.new_page(
+                viewport=random.choice(VIEWPORTS),
+                user_agent=random.choice(USER_AGENTS),
+                timezone_id=random.choice([
+                    "America/New_York", "America/Chicago",
+                    "America/Denver",   "America/Los_Angeles",
+                ]),
+            )
 
-            # Extra wait for JS rendering
-            time.sleep(random.uniform(1, 2))
+            # Anti-detection scripts
+            page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+            page.add_init_script(
+                "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});"
+            )
 
-            variants = _extract_variants(page)
+            # AliExpress region cookies
+            page.context.add_cookies([
+                {"name": "aep_usuc_f", "value": "site=glo&c_tp=SEK&region=SE&b_locale=en_US",
+                 "domain": ".aliexpress.com", "path": "/"},
+                {"name": "xman_us_f",  "value": "x_locale=en_US&x_site=SWE",
+                 "domain": ".aliexpress.com", "path": "/"},
+                {"name": "aep_common_f",         "value": "F=F&reg=SE",
+                 "domain": ".aliexpress.com", "path": "/"},
+                {"name": "_aep_modified_region", "value": "SE",
+                 "domain": ".aliexpress.com", "path": "/"},
+            ])
 
-            if not variants:
-                print("   ⚠️  No variants extracted — retrying...")
-                _close(cm, browser, ctx)
-                continue
+            try:
+                print("   ⏳ Navigating...")
+                page.goto(url, timeout=120_000, wait_until="domcontentloaded")
+                time.sleep(3)
 
-            print(f"   ✅ Extracted {len(variants)} variant type(s):")
-            for vtype, values in variants.items():
-                print(f"      • {vtype}: {values}")
+                if is_captcha_page(page):
+                    print("   ⚠️ CAPTCHA — rotating and retrying...")
+                    browser.close()
+                    continue
 
-            _close(cm, browser, ctx)
+                print("   ⏳ Waiting for page JS to render (10s)...")
+                time.sleep(10)
 
-            return {
-                **base_result,
-                "variants":   variants,
-                "success":    True,
-                "scraped_at": datetime.utcnow().isoformat(),
-            }
+                # Gentle scroll to trigger lazy rendering of SKU section
+                for _ in range(4):
+                    page.mouse.wheel(0, random.randint(200, 400))
+                    time.sleep(random.uniform(0.3, 0.6))
+                page.evaluate("window.scrollTo(0, 0)")
+                time.sleep(2)
 
-        except PlaywrightTimeout as e:
-            print(f"   ⚠️  Timeout: {e}")
-            _close(cm, browser, ctx)
+                if is_captcha_page(page):
+                    print("   ⚠️ CAPTCHA after scroll — rotating and retrying...")
+                    browser.close()
+                    continue
 
-        except Exception as e:
-            print(f"   ❌ Error: {e}")
-            import traceback; traceback.print_exc()
-            _close(cm, browser, ctx)
+                print(f"   ✓ Page title: {page.title()[:80]}")
 
-    print(f"\n❌ Failed after {MAX_ATTEMPTS} attempts")
+                # Extract variants
+                variants = _extract_variants(page)
+                browser.close()
+
+                if not variants:
+                    print("   ⚠️ No variants found — product may have no options or page blocked")
+                    # Don't retry — return empty success so we don't waste retries
+                    # on genuinely single-variant products
+                    return {
+                        **base_result,
+                        "variants":   {},
+                        "success":    True,   # scrape succeeded, product just has no variants
+                        "error":      None,
+                        "scraped_at": datetime.utcnow().isoformat(),
+                    }
+
+                print(f"   ✅ Extracted {len(variants)} variant type(s):")
+                for vtype, values in variants.items():
+                    print(f"      • {vtype}: {values}")
+
+                return {
+                    **base_result,
+                    "variants":   variants,
+                    "success":    True,
+                    "error":      None,
+                    "scraped_at": datetime.utcnow().isoformat(),
+                }
+
+            except PlaywrightTimeoutError as e:
+                print(f"   ⚠️ Timeout: {e}")
+                try: browser.close()
+                except Exception: pass
+
+            except Exception as e:
+                print(f"   ❌ Error: {e}")
+                import traceback; traceback.print_exc()
+                try: browser.close()
+                except Exception: pass
+
+    print(f"\n❌ Failed after {MAX_RETRIES} attempts")
     return {
         **base_result,
-        "error":      f"Failed after {MAX_ATTEMPTS} attempts",
+        "error":      f"Failed after {MAX_RETRIES} attempts",
         "scraped_at": datetime.utcnow().isoformat(),
     }
 
