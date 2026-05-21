@@ -17,7 +17,7 @@ from models import (
     ProductRefined,
     CategoryAssignment,
     ManufacturerInfo,
-    Productvariant,
+    ProductVariant,
 )
 from schemas import (
     ScrapeRequest,
@@ -29,7 +29,9 @@ from schemas import (
     ProductFullOut,
     ManufacturerInfoOut,
     ProductDetailsRequest,
-    StoreScrapeByRangeRequest, ProductVariantsOut, BulkVariantRequest )
+    StoreScrapeByRangeRequest, 
+    ProductVariantOut,
+    BulkVariantRequest )
 from scraper3 import extract_aliexpress_product
 from llm_refiner2 import refine_product
 from assign_embeddings2 import categorize_product as assign_category
@@ -1313,7 +1315,7 @@ def merge_store_results():
     }
 # ── Single product variant endpoint ──────────────────────────────────────────
 
-@app.post("/variants/{product_id}", response_model=list[ProductvariantOut])
+@app.post("/variants/{product_id}", response_model=list[ProductVariantOut])
 def scrape_and_save_variants(product_id: int, db: Session = Depends(get_db)):
 
     product = db.query(ProductFetched).filter_by(product_id=product_id).first()
@@ -1341,7 +1343,7 @@ def scrape_and_save_variants(product_id: int, db: Session = Depends(get_db)):
         )
 
     # Delete old rows
-    db.query(Productvariant).filter_by(product_id=product_id).delete()
+    db.query(ProductVariant).filter_by(product_id=product_id).delete()
 
     saved_rows = []
 
@@ -1356,7 +1358,7 @@ def scrape_and_save_variants(product_id: int, db: Session = Depends(get_db)):
         else:
             variant_values = str(values)
 
-        row = Productvariant(
+        row = ProductVariant(
             product_id=product_id,
             variant_type=variant_type,
             variant_values=variant_values,
@@ -1404,7 +1406,7 @@ def scrape_variants_bulk(
 
         already_done = {
             r[0]
-            for r in db.query(Productvariant.product_id).distinct().all()
+            for r in db.query(ProductVariant.product_id).distinct().all()
         }
 
         pending_ids = [pid for pid in all_ids if pid not in already_done]
@@ -1447,7 +1449,7 @@ def scrape_variants_bulk(
 
                         scraped_variants = result.get("variants", {})
 
-                        db_thread.query(Productvariant).filter_by(
+                        db_thread.query(ProductVariant).filter_by(
                             product_id=pid
                         ).delete()
 
@@ -1462,7 +1464,7 @@ def scrape_variants_bulk(
                             else:
                                 variant_values = str(values)
 
-                            row = Productvariant(
+                            row = ProductVariant(
                                 product_id=pid,
                                 variant_type=variant_type,
                                 variant_values=variant_values,
@@ -1552,10 +1554,10 @@ def get_variant_job(job_id: str):
 
 # ── Read endpoint ────────────────────────────────────────────────────────────
 
-@app.get("/variants/{product_id}", response_model=list[ProductvariantOut])
+@app.get("/variants/{product_id}", response_model=list[ProductVariantOut])
 def get_variants(product_id: int, db: Session = Depends(get_db)):
 
-    rows = db.query(Productvariant).filter_by(
+    rows = db.query(ProductVariant).filter_by(
         product_id=product_id
     ).all()
 
