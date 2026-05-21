@@ -547,7 +547,11 @@ def scrape_product_variants(product_id: int | str) -> dict:
                     img_hint = f"  → {imgs[i][:60]}..." if has_imgs and imgs[i] else ""
                     print(f"          - {v}{img_hint}")
 
-            return {**base_result, "variants": variants, "success": True,
+            flat_variants = {
+                vtype: data["values"] if isinstance(data, dict) else data
+                for vtype, data in variants.items()
+            }
+            return {**base_result, "variants": flat_variants, "success": True,
                     "scraped_at": datetime.utcnow().isoformat()}
 
     finally:
