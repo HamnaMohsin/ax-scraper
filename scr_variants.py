@@ -53,6 +53,19 @@ VIEWPORTS = [
     {"width": 1280, "height": 720},
 ]
 
+COOKIES = [
+    {"name": "aep_usuc_f",           "value": "site=glo&c_tp=SEK&region=SE&b_locale=en_US",
+     "domain": ".aliexpress.com", "path": "/"},
+    {"name": "xman_us_f",            "value": "x_locale=en_US&x_site=SWE",
+     "domain": ".aliexpress.com", "path": "/"},
+    {"name": "aep_common_f",         "value": "F=F&reg=SE",
+     "domain": ".aliexpress.com", "path": "/"},
+    {"name": "_aep_modified_region", "value": "SE",
+     "domain": ".aliexpress.com", "path": "/"},
+    {"name": "intl_locale",          "value": "en_US",
+     "domain": ".aliexpress.com", "path": "/"},
+]
+
 # ── Tor ───────────────────────────────────────────────────────────────────────
 
 def rotate_tor_circuit():
@@ -72,7 +85,7 @@ def rotate_tor_circuit():
         return False
 
 
-# ── Captcha detection (same as scraper3) ─────────────────────────────────────
+# ── Captcha detection ─────────────────────────────────────────────────────────
 
 def is_captcha_page(page) -> bool:
     page_url   = page.url.lower()
@@ -105,25 +118,21 @@ def _extract_variants(page) -> dict[str, str]:
     """
     Extract all SKU variant groups from the rendered page.
 
-    Strategy — multiple passes to handle AliExpress class name changes:
-      Pass 1: Look for elements with 'sku' in their class, group by data-sku-row.
-      Pass 2: Look for the SKU wrap container and parse its structure.
-      Pass 3: Full DOM scan for any image/text option groups near a label.
+    Pass 1: data-sku-col/data-sku-row attributes (most reliable).
+    Pass 2: class-name based scan (fallback for older format).
+    Pass 3: debug dump of all SKU-related class names.
     """
 
-    # ── Pass 1: data-sku-row grouping (most reliable) ─────────────────────
+    # ── Pass 1: data-sku-row grouping ─────────────────────────────────────
     variants = page.evaluate(r"""
     () => {
         const result = {};
-
-        // Group all sku option elements by their data-sku-row attribute
         const allSkuCols = document.querySelectorAll('[data-sku-col]');
         if (allSkuCols.length === 0) return null;
 
-        // Build map: rowId -> [elements]
         const rowMap = {};
         allSkuCols.forEach(el => {
-            const col = el.getAttribute('data-sku-col') || '';
+            const col   = el.getAttribute('data-sku-col') || '';
             const rowId = col.split('-')[0];
             if (!rowMap[rowId]) rowMap[rowId] = [];
             rowMap[rowId].push(el);
@@ -131,15 +140,13 @@ def _extract_variants(page) -> dict[str, str]:
 
         let rowIndex = 0;
         for (const [rowId, elements] of Object.entries(rowMap)) {
-            // ── Find label for this row ──────────────────────────────────
-            // Walk up from first element to find a label/title sibling
             let label = null;
             const firstEl = elements[0];
-            const parent  = firstEl.closest('[class*="sku-item--box"], [class*="skuItem"], [class*="sku-wrap"]')
-                         || firstEl.parentElement?.parentElement;
+            const parent  = firstEl.closest(
+                '[class*="sku-item--box"], [class*="skuItem"], [class*="sku-wrap"]'
+            ) || firstEl.parentElement?.parentElement;
 
             if (parent) {
-                // Search for a title element near this group
                 const titleCandidates = parent.querySelectorAll(
                     '[class*="sku-item--title"], [class*="sku-title"], ' +
                     '[class*="property-title"], [class*="sku-item--property"], ' +
@@ -149,15 +156,12 @@ def _extract_variants(page) -> dict[str, str]:
                 if (titleCandidates.length > 0) {
                     label = titleCandidates[0].textContent.trim().replace(/:$/, '').trim();
                 }
-
-                // Fallback: short sibling text before the options
                 if (!label) {
                     const gp = parent.parentElement;
                     if (gp) {
                         for (const child of gp.children) {
                             const txt = child.textContent.trim();
-                            if (txt && txt.length < 50 &&
-                                !child.querySelector('[data-sku-col]')) {
+                            if (txt && txt.length < 50 && !child.querySelector('[data-sku-col]')) {
                                 label = txt.replace(/:$/, '').trim();
                                 break;
                             }
@@ -165,13 +169,9 @@ def _extract_variants(page) -> dict[str, str]:
                     }
                 }
             }
-
             if (!label) label = `type_${rowIndex + 1}`;
 
-            // ── Collect values ───────────────────────────────────────────
             const values = [];
-
-            // Image options: use alt text
             elements.forEach(el => {
                 const img = el.querySelector('img');
                 if (img) {
@@ -179,8 +179,6 @@ def _extract_variants(page) -> dict[str, str]:
                     if (alt && !values.includes(alt)) values.push(alt);
                 }
             });
-
-            // Text options: use visible text
             if (values.length === 0) {
                 elements.forEach(el => {
                     const span = el.querySelector('span');
@@ -188,59 +186,45 @@ def _extract_variants(page) -> dict[str, str]:
                     if (txt && txt.length < 50 && !values.includes(txt)) values.push(txt);
                 });
             }
-
             if (values.length > 0) {
-                const key = result[label] !== undefined ? `${label}_${rowIndex}` : label;
-                result[key] = values.join(',');
+                const key    = result[label] !== undefined ? `${label}_${rowIndex}` : label;
+                result[key]  = values.join(',');
             }
             rowIndex++;
         }
-
         return Object.keys(result).length > 0 ? result : null;
     }
     """)
-
     if variants:
         return variants
 
-    # ── Pass 2: class-name based scan (fallback for older page format) ────
+    # ── Pass 2: class-name based scan ─────────────────────────────────────
     variants = page.evaluate(r"""
     () => {
         const result = {};
-
-        // Find all elements whose class contains 'sku' and 'row' or 'group'
         const skuContainers = [...document.querySelectorAll('*')].filter(el => {
             const cls = (el.className || '');
             if (typeof cls !== 'string') return false;
-            return (cls.includes('sku') && (cls.includes('row') || cls.includes('group') ||
-                    cls.includes('skus') || cls.includes('wrap')));
+            return cls.includes('sku') && (
+                cls.includes('row') || cls.includes('group') ||
+                cls.includes('skus') || cls.includes('wrap')
+            );
         });
-
         skuContainers.forEach((container, idx) => {
-            // Skip very large containers (they're wrappers)
             if (container.querySelectorAll('img, span').length > 50) return;
-
             const values = [];
-
-            // Try images first
             container.querySelectorAll('img').forEach(img => {
                 const alt = (img.getAttribute('alt') || '').trim();
                 if (alt && alt.length < 40 && !values.includes(alt)) values.push(alt);
             });
-
-            // Try text spans
             if (values.length === 0) {
                 container.querySelectorAll('span').forEach(span => {
                     const txt = span.textContent.trim();
                     if (txt && txt.length < 30 && /^[a-zA-Z0-9\s\/\-\.]+$/.test(txt)
-                        && !values.includes(txt)) {
-                        values.push(txt);
-                    }
+                        && !values.includes(txt)) values.push(txt);
                 });
             }
-
             if (values.length >= 2) {
-                // Try to find a label above
                 let label = null;
                 const prev = container.previousElementSibling;
                 if (prev) {
@@ -251,35 +235,29 @@ def _extract_variants(page) -> dict[str, str]:
                 if (!result[label]) result[label] = values.join(',');
             }
         });
-
         return Object.keys(result).length > 0 ? result : null;
     }
     """)
-
     if variants:
         return variants
 
-    # ── Pass 3: dump all classes so we can debug ──────────────────────────
+    # ── Pass 3: debug dump ────────────────────────────────────────────────
     all_sku_classes = page.evaluate(r"""
     () => {
         const found = new Set();
         document.querySelectorAll('*').forEach(el => {
-            if (el.className && typeof el.className === 'string') {
+            if (el.className && typeof el.className === 'string')
                 el.className.split(' ').forEach(c => {
                     if (c.toLowerCase().includes('sku') ||
                         c.toLowerCase().includes('variant') ||
                         c.toLowerCase().includes('property') ||
-                        c.toLowerCase().includes('option')) {
-                        found.add(c);
-                    }
+                        c.toLowerCase().includes('option')) found.add(c);
                 });
-            }
         });
         return [...found];
     }
     """)
     print(f"   ℹ️  SKU-related classes on page: {all_sku_classes[:30]}")
-
     return {}
 
 
@@ -289,9 +267,12 @@ def scrape_product_variants(product_id: int | str) -> dict:
     """
     Scrape all variant types and values for a given AliExpress product ID.
     Uses Tor + plain playwright, same as scraper3.py.
+    Navigates to homepage first to anchor cookies, then to the product URL
+    with gatewayAdapt=glo2swe to prevent regional redirects.
     """
     pid = int(product_id)
-    url = f"https://www.aliexpress.com/item/{pid}.html"
+    # Always use gatewayAdapt=glo2swe to stay on global site
+    url = f"https://www.aliexpress.com/item/{pid}.html?gatewayAdapt=glo2swe"
 
     print(f"\n🔍 Variant Scraper")
     print("━" * 50)
@@ -329,7 +310,7 @@ def scrape_product_variants(product_id: int | str) -> dict:
                 ],
             )
 
-            page = browser.new_page(
+            ctx = browser.new_context(
                 viewport=random.choice(VIEWPORTS),
                 user_agent=random.choice(USER_AGENTS),
                 timezone_id=random.choice([
@@ -338,7 +319,10 @@ def scrape_product_variants(product_id: int | str) -> dict:
                 ]),
             )
 
-            # Anti-detection scripts
+            # Set cookies on context BEFORE any navigation
+            ctx.add_cookies(COOKIES)
+
+            page = ctx.new_page()
             page.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
             )
@@ -346,22 +330,22 @@ def scrape_product_variants(product_id: int | str) -> dict:
                 "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});"
             )
 
-            # AliExpress region cookies
-            page.context.add_cookies([
-                {"name": "aep_usuc_f", "value": "site=glo&c_tp=SEK&region=SE&b_locale=en_US",
-                 "domain": ".aliexpress.com", "path": "/"},
-                {"name": "xman_us_f",  "value": "x_locale=en_US&x_site=SWE",
-                 "domain": ".aliexpress.com", "path": "/"},
-                {"name": "aep_common_f",         "value": "F=F&reg=SE",
-                 "domain": ".aliexpress.com", "path": "/"},
-                {"name": "_aep_modified_region", "value": "SE",
-                 "domain": ".aliexpress.com", "path": "/"},
-            ])
-
             try:
-                print("   ⏳ Navigating...")
+                # ── Step 1: hit homepage first to anchor cookies ──────────
+                print("   ⏳ Loading homepage to anchor cookies...")
+                page.goto(
+                    "https://www.aliexpress.com/",
+                    timeout=60_000,
+                    wait_until="domcontentloaded",
+                )
+                time.sleep(3)
+                print(f"   ✓ Homepage URL: {page.url}")
+
+                # ── Step 2: navigate to product with glo2swe adapter ──────
+                print("   ⏳ Navigating to product...")
                 page.goto(url, timeout=120_000, wait_until="domcontentloaded")
                 time.sleep(3)
+                print(f"   ✓ Product URL: {page.url}")
 
                 if is_captcha_page(page):
                     print("   ⚠️ CAPTCHA — rotating and retrying...")
@@ -383,20 +367,26 @@ def scrape_product_variants(product_id: int | str) -> dict:
                     browser.close()
                     continue
 
-                print(f"   ✓ Page title: {page.title()[:80]}")
+                title = page.title()
+                print(f"   ✓ Page title: {title[:80]}")
 
-                # Extract variants
+                # If page still has no title, it's blocked — rotate
+                if not title.strip():
+                    print("   ⚠️ Empty title — page blocked, rotating...")
+                    browser.close()
+                    if attempt < MAX_RETRIES - 1:
+                        rotate_tor_circuit()
+                    continue
+
                 variants = _extract_variants(page)
                 browser.close()
 
                 if not variants:
-                    print("   ⚠️ No variants found — product may have no options or page blocked")
-                    # Don't retry — return empty success so we don't waste retries
-                    # on genuinely single-variant products
+                    print("   ⚠️ No variants found — product may have no options")
                     return {
                         **base_result,
                         "variants":   {},
-                        "success":    True,   # scrape succeeded, product just has no variants
+                        "success":    True,
                         "error":      None,
                         "scraped_at": datetime.utcnow().isoformat(),
                     }
