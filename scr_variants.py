@@ -85,7 +85,7 @@ def rotate_tor_circuit():
         return False
 
 
-# ── Captcha detection ─────────────────────────────────────────────────────────
+# ── Captcha / redirect detection ──────────────────────────────────────────────
 
 def is_captcha_page(page) -> bool:
     page_url   = page.url.lower()
@@ -109,6 +109,20 @@ def is_captcha_page(page) -> bool:
         print("❌ Block page detected from title")
         return True
 
+    return False
+
+
+def is_homepage_redirect(page, product_url: str) -> bool:
+    """
+    Returns True if we landed on the homepage instead of the product page.
+    This happens when Tor IP is flagged — AliExpress silently redirects
+    /item/... to the homepage root.
+    """
+    current = page.url.rstrip("/")
+    expected_fragment = "/item/"
+    if expected_fragment not in current:
+        print(f"❌ Homepage redirect detected. Current URL: {page.url}")
+        return True
     return False
 
 
@@ -264,14 +278,7 @@ def _extract_variants(page) -> dict[str, str]:
 # ── Main scraper function ─────────────────────────────────────────────────────
 
 def scrape_product_variants(product_id: int | str) -> dict:
-    """
-    Scrape all variant types and values for a given AliExpress product ID.
-    Uses Tor + plain playwright, same as scraper3.py.
-    Navigates to homepage first to anchor cookies, then to the product URL
-    with gatewayAdapt=glo2swe to prevent regional redirects.
-    """
     pid = int(product_id)
-    # Always use gatewayAdapt=glo2swe to stay on global site
     url = f"https://www.aliexpress.com/item/{pid}.html?gatewayAdapt=glo2swe"
 
     print(f"\n🔍 Variant Scraper")
@@ -319,7 +326,6 @@ def scrape_product_variants(product_id: int | str) -> dict:
                 ]),
             )
 
-            # Set cookies on context BEFORE any navigation
             ctx.add_cookies(COOKIES)
 
             page = ctx.new_page()
@@ -331,22 +337,20 @@ def scrape_product_variants(product_id: int | str) -> dict:
             )
 
             try:
-                # ── Step 1: hit homepage first to anchor cookies ──────────
-                print("   ⏳ Loading homepage to anchor cookies...")
-                page.goto(
-                    "https://www.aliexpress.com/",
-                    timeout=60_000,
-                    wait_until="domcontentloaded",
-                )
-                time.sleep(3)
-                print(f"   ✓ Homepage URL: {page.url}")
-
-                # ── Step 2: navigate to product with glo2swe adapter ──────
-                print("   ⏳ Navigating to product...")
+                # ── Go directly to product URL — no homepage visit ────────
+                print("   ⏳ Navigating directly to product...")
                 page.goto(url, timeout=120_000, wait_until="domcontentloaded")
                 time.sleep(3)
-                print(f"   ✓ Product URL: {page.url}")
+                print(f"   ✓ Landed URL: {page.url}")
 
+                # ── Check for homepage redirect immediately ────────────────
+                if is_homepage_redirect(page, url):
+                    print("   ⚠️ Redirected to homepage — rotating and retrying...")
+                    browser.close()
+                    rotate_tor_circuit()
+                    continue
+
+                # ── Check for CAPTCHA ─────────────────────────────────────
                 if is_captcha_page(page):
                     print("   ⚠️ CAPTCHA — rotating and retrying...")
                     browser.close()
@@ -362,6 +366,13 @@ def scrape_product_variants(product_id: int | str) -> dict:
                 page.evaluate("window.scrollTo(0, 0)")
                 time.sleep(2)
 
+                # ── Re-check after scroll (some challenges appear post-scroll)
+                if is_homepage_redirect(page, url):
+                    print("   ⚠️ Homepage redirect after scroll — rotating...")
+                    browser.close()
+                    rotate_tor_circuit()
+                    continue
+
                 if is_captcha_page(page):
                     print("   ⚠️ CAPTCHA after scroll — rotating and retrying...")
                     browser.close()
@@ -370,7 +381,6 @@ def scrape_product_variants(product_id: int | str) -> dict:
                 title = page.title()
                 print(f"   ✓ Page title: {title[:80]}")
 
-                # If page still has no title, it's blocked — rotate
                 if not title.strip():
                     print("   ⚠️ Empty title — page blocked, rotating...")
                     browser.close()
