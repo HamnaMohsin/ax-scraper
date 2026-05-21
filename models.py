@@ -2,7 +2,6 @@ from sqlalchemy import Column, BigInteger, Integer, String, Float, Text, JSON, F
 from sqlalchemy.orm import relationship
 from database import Base
 from sqlalchemy import UniqueConstraint
-from pydantic import BaseModel
 
 class ProductFetched(Base):
     __tablename__ = "product_fetched"
@@ -83,13 +82,12 @@ class ProductTranslation(Base):
 
     product = relationship("ProductRefined", back_populates="translation")
 
-class ProductVariantOut(BaseModel):
-    id: int
-    product_id: int
-    variant_type: str
-    variant_values: str
-    scraped_at: Optional[datetime] = None
 
-    model_config = {"from_attributes": True}
+class ProductVariant(Base):
+    __tablename__ = "product_variants"
 
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    product_id = Column(BigInteger, nullable=False, index=True)
+    variant_type = Column(String, nullable=True)
+    variant_values = Column(Text, nullable=True)
     scraped_at = Column(DateTime, nullable=True)
