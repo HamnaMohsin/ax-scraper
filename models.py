@@ -82,27 +82,46 @@ class ProductTranslation(Base):
 
     product = relationship("ProductRefined", back_populates="translation")
 
-class ProductVariants(Base):
+
+class ProductVariant(Base):
     """
-    One row per product. Each discovered variant type becomes a JSON key.
-    Variant values are stored as comma-separated strings.
- 
-    Example row:
-        product_id  = 1005011748833056
-        variants    = {"Color": "black,white,pink,blue", "Size": "S,M,L,XL,XXL"}
-        scraped_at  = 2026-04-30T10:00:00
+    One row per variant type.
+
+    Example:
+
+        product_id      = 1001
+        variant_type    = "Color"
+        variant_values  = "black,white,blue"
+
+        product_id      = 1001
+        variant_type    = "Size"
+        variant_values  = "S,M,L"
     """
-    __tablename__ = "product_variants"
- 
-    product_id  = Column(Integer, primary_key=True, index=True)
-    variants    = Column(JSON, nullable=False, default=dict)
-    scraped_at  = Column(DateTime, nullable=True)
- 
-    def variants_flat(self) -> dict[str, list[str]]:
-        """Return variants as { 'Color': ['black', 'white', ...] }"""
-        return {
-            k: [v.strip() for v in val.split(",") if v.strip()]
-            for k, val in (self.variants or {}).items()
-        }
- 
- 
+
+    __tablename__ = "product_variant"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    product_id = Column(Integer, nullable=False, index=True)
+
+    variant_type = Column(String(255), nullable=False, index=True)
+
+    variant_values = Column(Text, nullable=False)
+
+    scraped_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ix_product_variant_unique",
+            "product_id",
+            "variant_type",
+            unique=True,
+        ),
+    )
+
+    def values_list(self) -> list[str]:
+        return [
+            v.strip()
+            for v in (self.variant_values or "").split(",")
+            if v.strip()
+        ]
