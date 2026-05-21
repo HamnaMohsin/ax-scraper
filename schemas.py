@@ -95,11 +95,10 @@ class ProductVariantOut(BaseModel):
     id: int
     product_id: int
     variant_type: str
-    variant_values: str
+    variant_values: list[str]    # ← now a proper list
     scraped_at: Optional[datetime] = None
-
     model_config = {"from_attributes": True}
- 
+    
 class BulkVariantRequest(BaseModel):
     force_rescrape: bool = False  # if True, re-scrapes products that already have variants
  
