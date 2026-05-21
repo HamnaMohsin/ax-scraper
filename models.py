@@ -82,17 +82,13 @@ class ProductTranslation(Base):
 
     product = relationship("ProductRefined", back_populates="translation")
 
-class Productvariant(Base):
-    __tablename__ = "product_variant"
+class ProductVariantOut(BaseModel):
+    id: int
+    product_id: int
+    variant_type: str
+    variant_values: str
+    scraped_at: Optional[datetime] = None
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    product_id = Column(Integer, index=True, nullable=False)
-
-    variant_type = Column(String, nullable=False)
-    # Example: Color / Size / Material
-
-    variant_values = Column(Text, nullable=False)
-    # Example: black,white,blue
+    model_config = {"from_attributes": True}
 
     scraped_at = Column(DateTime, nullable=True)
