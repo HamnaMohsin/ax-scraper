@@ -83,11 +83,21 @@ class ProductTranslation(Base):
     product = relationship("ProductRefined", back_populates="translation")
 
 
+
 class ProductVariant(Base):
     __tablename__ = "product_variants"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    product_id = Column(BigInteger, nullable=False, index=True)
-    variant_type = Column(String, nullable=True)
-    variant_values = Column(Text, nullable=True)
+
+    product_id = Column(
+        BigInteger,
+        ForeignKey("product_fetched.product_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+
+    variant_type = Column(String, nullable=False)
+
+    variant_values = Column(JSON, nullable=False)
+
     scraped_at = Column(DateTime, nullable=True)
