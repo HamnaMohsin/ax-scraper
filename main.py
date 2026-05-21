@@ -17,7 +17,7 @@ from models import (
     ProductRefined,
     CategoryAssignment,
     ManufacturerInfo,
-    ProductVariant,
+    Productvariant,
 )
 from schemas import (
     ScrapeRequest,
