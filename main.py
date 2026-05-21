@@ -1348,20 +1348,12 @@ def scrape_and_save_variants(product_id: int, db: Session = Depends(get_db)):
     saved_rows = []
 
     for variant_type, values in scraped_variants.items():
-
-        if isinstance(values, list):
-            variant_values = ",".join(
-                str(v).strip()
-                for v in values
-                if str(v).strip()
-            )
-        else:
-            variant_values = str(values)
-
+        variant_values = values if isinstance(values, list) else [str(values)]
+    
         row = ProductVariant(
             product_id=product_id,
             variant_type=variant_type,
-            variant_values=variant_values,
+            variant_values=variant_values,   # store list directly into JSON column
             scraped_at=datetime.utcnow(),
         )
 
@@ -1455,14 +1447,8 @@ def scrape_variants_bulk(
 
                         for variant_type, values in scraped_variants.items():
 
-                            if isinstance(values, list):
-                                variant_values = ",".join(
-                                    str(v).strip()
-                                    for v in values
-                                    if str(v).strip()
-                                )
-                            else:
-                                variant_values = str(values)
+                            variant_values = values if isinstance(values, list) else [str(values)]
+
 
                             row = ProductVariant(
                                 product_id=pid,
