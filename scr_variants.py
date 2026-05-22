@@ -1,17 +1,30 @@
 """
 scr_variants.py — AliExpress Product Variant Scraper
 =====================================================
-Proxy strategy (in order of preference):
-  1. Residential proxy pool  — PROXY_URL env var (best)
-  2. Direct connection       — PROXY_URL="direct" or unset
-  3. Tor                     — PROXY_URL="tor" (last resort, often blocked)
+Scrapes all variant types, values, and images from an AliExpress product page.
+Uses Tor (socks5://127.0.0.1:9050) + Camoufox (if installed) or plain Playwright.
+
+Output format:
+    {
+        "product_id": 1005011831898302,
+        "url": "https://...",
+        "variants": {
+            "Color": {
+                "values": ["WiFi Cam No Card", "WiFi Cam Add 32G", ...],
+                "images": ["https://ae-pic-a1.../img1.avif", "https://...", ...]
+            },
+            "Size": {
+                "values": ["S", "M", "L"],
+                "images": [null, null, null]
+            }
+        },
+        "success": true,
+        "error": null,
+        "scraped_at": "2026-05-21T11:04:20+00:00"
+    }
 
 Usage:
     python scr_variants.py 1005011748833056
-
-    PROXY_URL=socks5://user:pass@host:port python scr_variants.py 1005011748833056
-    PROXY_URL=direct python scr_variants.py 1005011748833056
-    PROXY_URL=tor    python scr_variants.py 1005011748833056
 """
 
 import sys
@@ -19,7 +32,7 @@ import os
 import time
 import random
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 try:
     from camoufox.sync_api import Camoufox
@@ -28,31 +41,14 @@ except ImportError:
     USE_CAMOUFOX = False
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-
-# Tor is optional — only imported when PROXY_URL=tor
-_tor_available = False
-try:
-    from stem import Signal
-    from stem.control import Controller
-    _tor_available = True
-except ImportError:
-    pass
+from stem import Signal
+from stem.control import Controller
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 MAX_RETRIES = 3
 
-# Read proxy from environment
-_proxy_env = os.environ.get("PROXY_URL", "").strip()
-if _proxy_env.lower() == "tor":
-    PROXY_MODE = "tor"
-    PROXY_CFG  = {"server": "socks5://127.0.0.1:9050"}
-elif _proxy_env and _proxy_env.lower() != "direct":
-    PROXY_MODE = "custom"
-    PROXY_CFG  = {"server": _proxy_env}
-else:
-    PROXY_MODE = "direct"
-    PROXY_CFG  = None
+PROXY_CFG = {"server": "socks5://127.0.0.1:9050"}
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -80,17 +76,17 @@ COOKIES = [
      "domain": ".aliexpress.com", "path": "/"},
 ]
 
-# ── Tor helpers ───────────────────────────────────────────────────────────────
-TOR_PROXY = {"server": "socks5://127.0.0.1:9050"}
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-def rotate_tor_circuit():
-    if not _tor_available:
-        print("   ⚠️ stem not installed — cannot rotate Tor circuit")
-        return False
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def rotate_tor_circuit() -> bool:
     try:
-        with Controller.from_port(port=9051) as controller:
-            controller.authenticate()
-            controller.signal(Signal.NEWNYM)
+        with Controller.from_port(port=9051) as ctrl:
+            ctrl.authenticate()
+            ctrl.signal(Signal.NEWNYM)
             print("   Waiting 15s for new Tor circuit...")
             for i in range(15):
                 time.sleep(1)
@@ -99,24 +95,27 @@ def rotate_tor_circuit():
         print("✅ Tor circuit rotated")
         return True
     except Exception as e:
-        print(f"⚠️ Could not rotate Tor circuit: {e}")
+        print(f"⚠️  Could not rotate Tor circuit: {e}")
         return False
-
-
-def _maybe_rotate():
-    """Rotate circuit only when using Tor; no-op otherwise."""
-    if PROXY_MODE == "tor":
-        rotate_tor_circuit()
 
 
 # ── Detection helpers ─────────────────────────────────────────────────────────
 
 def is_captcha_page(page) -> bool:
-    page_url   = page.url.lower()
-    page_title = page.title().lower()
+    """
+    Detect genuine block/CAPTCHA pages.
 
-    # Hard URL signals
-    if any(kw in page_url for kw in ["baxia", "punish", "captcha", "_____tmd_____"]):
+    reCAPTCHA iframes appear on normal AliExpress pages too (login widgets).
+    Only flag as a block if:
+      - the iframe is VISIBLE, AND
+      - its bounding box is wider than 200px (a real challenge dialog).
+    A hidden 1×1 bot-score pixel will not trigger this.
+    """
+    url   = page.url.lower()
+    title = page.title().lower()
+
+    # Hard URL signals — always block pages
+    if any(kw in url for kw in ["baxia", "punish", "captcha", "_____tmd_____"]):
         print("❌ CAPTCHA detected in URL")
         return True
 
@@ -137,11 +136,11 @@ def is_captcha_page(page) -> bool:
         except Exception:
             continue
 
-    # reCAPTCHA: only a large visible iframe is a real challenge
+    # reCAPTCHA: only flag if large AND visible
     try:
-        rc_frames = page.locator("iframe[src*='recaptcha']")
-        for i in range(rc_frames.count()):
-            frame = rc_frames.nth(i)
+        frames = page.locator("iframe[src*='recaptcha']")
+        for i in range(frames.count()):
+            frame = frames.nth(i)
             if not frame.is_visible():
                 continue
             box = frame.bounding_box()
@@ -152,8 +151,8 @@ def is_captcha_page(page) -> bool:
         pass
 
     # Title-based block detection
-    is_product = "aliexpress" in page_title and len(page_title) > 40
-    if not is_product and any(kw in page_title for kw in
+    is_product = "aliexpress" in title and len(title) > 40
+    if not is_product and any(kw in title for kw in
                               ["verify", "access", "denied", "blocked", "challenge"]):
         print("❌ Block page detected from title")
         return True
@@ -171,30 +170,26 @@ def is_homepage_redirect(page) -> bool:
 # ── Browser factory ───────────────────────────────────────────────────────────
 
 def _launch_camoufox():
-    kwargs = dict(headless=True, geoip=True, humanize=True)
-    if PROXY_CFG:
-        kwargs["proxy"] = PROXY_CFG
-    cf      = Camoufox(**kwargs)
+    """Launch Camoufox with Tor proxy. Returns (cm, browser, ctx, page)."""
+    cf      = Camoufox(headless=True, proxy=PROXY_CFG, geoip=True, humanize=True)
     browser = cf.__enter__()
     ctx     = browser.new_context(locale="en-US")
     ctx.add_cookies(COOKIES)
-    page = ctx.new_page()
+    page    = ctx.new_page()
     return cf, browser, ctx, page
 
 
-def _launch_playwright(p):
-    launch_kwargs = dict(
+def _launch_playwright(pw):
+    """Launch plain Playwright with Tor proxy. Returns (browser, ctx, page)."""
+    browser = pw.chromium.launch(
         headless=True,
+        proxy=PROXY_CFG,
         args=[
             "--disable-blink-features=AutomationControlled",
             "--disable-dev-shm-usage",
             "--no-sandbox",
         ],
     )
-    if PROXY_CFG:
-        launch_kwargs["proxy"] = PROXY_CFG
-
-    browser = p.chromium.launch(**launch_kwargs)
     ctx = browser.new_context(
         viewport=random.choice(VIEWPORTS),
         user_agent=random.choice(USER_AGENTS),
@@ -216,37 +211,16 @@ def _launch_playwright(p):
 
 # ── Variant extraction ────────────────────────────────────────────────────────
 
-def _extract_variants(page) -> dict:
-    """
-    Extract all SKU variant groups from the rendered page.
+_EXTRACT_JS = r"""
+() => {
+    const result = {};
 
-    Returns a dict of variant groups, each with label, values and image URLs:
-    {
-        "Color": {
-            "values": ["WiFi Cam No Card", "WiFi Cam Add 32G", ...],
-            "images": ["https://...jpg", "https://...jpg", ...]   # parallel list, None for text variants
-        },
-        "Size": {
-            "values": ["S", "M", "L"],
-            "images": [None, None, None]
-        }
-    }
+    // ── Pass 1: data-sku-col grouping (most reliable) ──────────────────────
+    const allSkuCols = document.querySelectorAll('[data-sku-col]');
+    if (allSkuCols.length > 0) {
 
-    Pass 1: data-sku-col grouping with deep label search (most reliable).
-    Pass 2: class-name based scan (fallback).
-    Pass 3: debug dump of SKU-related class names.
-    """
-
-    # ── Pass 1: data-sku-col grouping ─────────────────────────────────────
-    variants = page.evaluate(r"""
-    () => {
-        const result = {};
-
-        // Group all [data-sku-col] elements by their row prefix (e.g. "14" from "14-193")
-        const allSkuCols = document.querySelectorAll('[data-sku-col]');
-        if (allSkuCols.length === 0) return null;
-
-        const rowMap = {};  // rowId -> [{el, skuCol}]
+        // Group by row prefix: "14-193" -> rowId "14"
+        const rowMap = {};
         allSkuCols.forEach(el => {
             const col   = el.getAttribute('data-sku-col') || '';
             const rowId = col.split('-')[0];
@@ -257,26 +231,31 @@ def _extract_variants(page) -> dict:
         let rowIndex = 0;
         for (const [rowId, elements] of Object.entries(rowMap)) {
 
-            // ── Label detection ──────────────────────────────────────────
-            // Structure: sku-item--property > [sku-item--title, extend--wrap > ... > sku-item--box > sku-item--skus]
-            // Walk up until we hit the sku-item--property container, then
-            // read its sku-item--title child. The title span contains e.g.
-            // "Color: <span>WiFi Cam Add 32G</span>" — we want only "Color".
+            // ── Label detection ────────────────────────────────────────────
+            // DOM path: sku-item--property
+            //             ├── sku-item--title   ← label is here
+            //             └── extend--wrap
+            //                   └── ... └── sku-item--box
+            //                                 └── sku-item--skus [data-sku-row]
+            //                                       └── [data-sku-col] ← we start here
+            //
+            // Walk up until we find the sku-item--property ancestor,
+            // then read the sku-item--title sibling.
             let label = null;
-            let el = elements[0];
+            let el    = elements[0];
 
             for (let depth = 0; depth < 10 && el && !label; depth++) {
                 el = el.parentElement;
                 if (!el) break;
-                const cls = el.className || '';
-                if (typeof cls === 'string' && cls.includes('sku-item--property')) {
-                    // Found the property wrapper — grab the title sibling
+                if (typeof el.className === 'string' &&
+                    el.className.includes('sku-item--property')) {
                     const titleEl = el.querySelector('[class*="sku-item--title"]');
                     if (titleEl) {
-                        // First text node before any colon or nested span
+                        // Title span: "Color:\u00a0<span>selected value</span>"
+                        // We want only the part before the colon.
                         const firstSpan = titleEl.querySelector('span');
                         const raw = firstSpan
-                            ? (firstSpan.childNodes[0] && firstSpan.childNodes[0].nodeType === 3
+                            ? (firstSpan.childNodes[0]?.nodeType === 3
                                 ? firstSpan.childNodes[0].textContent
                                 : firstSpan.textContent)
                             : titleEl.textContent;
@@ -286,7 +265,7 @@ def _extract_variants(page) -> dict:
                 }
             }
 
-            // Fallback: scan ancestor siblings for any short label-like text
+            // Fallback: scan ancestor siblings for a short label-like text
             if (!label) {
                 el = elements[0];
                 for (let depth = 0; depth < 8 && el && !label; depth++) {
@@ -308,32 +287,32 @@ def _extract_variants(page) -> dict:
 
             if (!label) label = `type_${rowIndex + 1}`;
 
-            // ── Value + image collection ─────────────────────────────────
+            // ── Value + image collection ───────────────────────────────────
             const values = [];
             const images = [];
 
-            // Image-based variants (colour swatches etc.)
+            // Image swatches
             const hasImages = elements.some(e => e.querySelector('img'));
             if (hasImages) {
-                elements.forEach(el => {
-                    const img = el.querySelector('img');
-                    if (img) {
-                        const alt = (img.getAttribute('alt') || img.getAttribute('title') || '').trim();
-                        if (alt && !values.includes(alt)) {
-                            values.push(alt);
-                            images.push(img.getAttribute('src') || null);
-                        }
+                elements.forEach(e => {
+                    const img = e.querySelector('img');
+                    if (!img) return;
+                    const alt = (img.getAttribute('alt') || img.getAttribute('title') || '').trim();
+                    if (alt && !values.includes(alt)) {
+                        values.push(alt);
+                        images.push(img.getAttribute('src') || null);
                     }
                 });
             }
 
-            // Text-based variants (size buttons etc.)
+            // Text buttons (sizes etc.)
             if (values.length === 0) {
-                elements.forEach(el => {
-                    const span = el.querySelector('span');
-                    const txt  = (span ? span.textContent
-                                       : el.getAttribute('title') || el.textContent
-                                 ).trim();
+                elements.forEach(e => {
+                    const span = e.querySelector('span');
+                    const txt  = (span
+                        ? span.textContent
+                        : e.getAttribute('title') || e.textContent
+                    ).trim();
                     if (txt && txt.length < 50 && !values.includes(txt)) {
                         values.push(txt);
                         images.push(null);
@@ -342,113 +321,119 @@ def _extract_variants(page) -> dict:
             }
 
             if (values.length > 0) {
-                const key = result[label] !== undefined ? `${label}_${rowIndex}` : label;
+                const key = result[label] !== undefined
+                    ? `${label}_${rowIndex}`
+                    : label;
                 result[key] = { values, images };
             }
             rowIndex++;
         }
-        return Object.keys(result).length > 0 ? result : null;
-    }
-    """)
-    if variants:
-        return variants
 
-    # ── Pass 2: class-name based scan ─────────────────────────────────────
-    variants = page.evaluate(r"""
-    () => {
-        const result = {};
-        const skuContainers = [...document.querySelectorAll('*')].filter(el => {
-            const cls = (el.className || '');
-            if (typeof cls !== 'string') return false;
-            return cls.includes('sku') && (
-                cls.includes('row') || cls.includes('group') ||
-                cls.includes('skus') || cls.includes('wrap')
-            );
+        if (Object.keys(result).length > 0) return result;
+    }
+
+    // ── Pass 2: class-name fallback ────────────────────────────────────────
+    const skuContainers = [...document.querySelectorAll('*')].filter(el => {
+        const cls = el.className || '';
+        if (typeof cls !== 'string') return false;
+        return cls.includes('sku') && (
+            cls.includes('row') || cls.includes('group') ||
+            cls.includes('skus') || cls.includes('wrap')
+        );
+    });
+
+    skuContainers.forEach((container, idx) => {
+        if (container.querySelectorAll('img, span').length > 50) return;
+        const values = [], images = [];
+
+        container.querySelectorAll('img').forEach(img => {
+            const alt = (img.getAttribute('alt') || '').trim();
+            if (alt && alt.length < 40 && !values.includes(alt)) {
+                values.push(alt);
+                images.push(img.getAttribute('src') || null);
+            }
         });
-        skuContainers.forEach((container, idx) => {
-            if (container.querySelectorAll('img, span').length > 50) return;
-            const values = [];
-            const images = [];
-            container.querySelectorAll('img').forEach(img => {
-                const alt = (img.getAttribute('alt') || '').trim();
-                if (alt && alt.length < 40 && !values.includes(alt)) {
-                    values.push(alt);
-                    images.push(img.getAttribute('src') || null);
+
+        if (values.length === 0) {
+            container.querySelectorAll('span').forEach(span => {
+                const txt = span.textContent.trim();
+                if (txt && txt.length < 30 &&
+                    /^[a-zA-Z0-9\s\/\-\.]+$/.test(txt) &&
+                    !values.includes(txt)) {
+                    values.push(txt);
+                    images.push(null);
                 }
             });
-            if (values.length === 0) {
-                container.querySelectorAll('span').forEach(span => {
-                    const txt = span.textContent.trim();
-                    if (txt && txt.length < 30 && /^[a-zA-Z0-9\s\/\-\.]+$/.test(txt)
-                        && !values.includes(txt)) {
-                        values.push(txt);
-                        images.push(null);
-                    }
-                });
+        }
+
+        if (values.length >= 2) {
+            let label = null;
+            const prev = container.previousElementSibling;
+            if (prev) {
+                const txt = prev.textContent.trim();
+                if (txt && txt.length < 50) label = txt.replace(/:$/, '').trim();
             }
-            if (values.length >= 2) {
-                let label = null;
-                const prev = container.previousElementSibling;
-                if (prev) {
-                    const txt = prev.textContent.trim();
-                    if (txt && txt.length < 50) label = txt.replace(/:$/, '').trim();
-                }
-                if (!label) label = `variant_${idx + 1}`;
-                if (!result[label]) result[label] = { values, images };
-            }
-        });
-        return Object.keys(result).length > 0 ? result : null;
-    }
-    """)
-    if variants:
-        return variants
+            if (!label) label = `variant_${idx + 1}`;
+            if (!result[label]) result[label] = { values, images };
+        }
+    });
 
-    # ── Pass 3: debug dump ────────────────────────────────────────────────
-    all_sku_classes = page.evaluate(r"""
-    () => {
-        const found = new Set();
-        document.querySelectorAll('*').forEach(el => {
-            if (el.className && typeof el.className === 'string')
-                el.className.split(' ').forEach(c => {
-                    if (c.toLowerCase().includes('sku') ||
-                        c.toLowerCase().includes('variant') ||
-                        c.toLowerCase().includes('property') ||
-                        c.toLowerCase().includes('option')) found.add(c);
-                });
-        });
-        return [...found];
-    }
-    """)
-    print(f"   ℹ️  SKU-related classes on page: {all_sku_classes[:30]}")
-    return {}
+    if (Object.keys(result).length > 0) return result;
+
+    // ── Pass 3: debug — return SKU-related class names for diagnosis ───────
+    const found = new Set();
+    document.querySelectorAll('*').forEach(el => {
+        if (el.className && typeof el.className === 'string')
+            el.className.split(' ').forEach(c => {
+                if (['sku','variant','property','option'].some(k =>
+                    c.toLowerCase().includes(k))) found.add(c);
+            });
+    });
+    return { __debug_classes__: [...found].slice(0, 30) };
+}
+"""
 
 
-# ── One attempt ───────────────────────────────────────────────────────────────
+def _extract_variants(page) -> dict:
+    result = page.evaluate(_EXTRACT_JS)
+    if not result:
+        return {}
+    if "__debug_classes__" in result:
+        print(f"   ℹ️  SKU classes on page: {result['__debug_classes__']}")
+        return {}
+    return result
+
+
+# ── One scrape attempt ────────────────────────────────────────────────────────
 
 def _attempt(url: str, pw) -> tuple[dict | None, str | None]:
+    """
+    Run one attempt. Returns (variants, None) on success or (None, reason) on failure.
+    variants is {} (empty dict) for single-variant products — that is a success.
+    """
     cm = browser = ctx = page = None
     try:
         if USE_CAMOUFOX:
-            print("   🦊 Using Camoufox")
+            print("   🦊 Using Camoufox + Tor")
             cm, browser, ctx, page = _launch_camoufox()
         else:
-            print("   🌐 Using plain Playwright")
+            print("   🌐 Using Playwright + Tor")
             browser, ctx, page = _launch_playwright(pw)
 
-        print("   ⏳ Navigating directly to product...")
+        print("   ⏳ Navigating to product...")
         page.goto(url, timeout=120_000, wait_until="domcontentloaded")
         time.sleep(3)
-        print(f"   ✓ Landed URL: {page.url}")
+        print(f"   ✓ Landed: {page.url}")
 
         if is_homepage_redirect(page):
             return None, "homepage_redirect"
-
         if is_captcha_page(page):
             return None, "captcha"
 
-        print("   ⏳ Waiting for page JS to render (10s)...")
+        print("   ⏳ Waiting 10s for JS to render...")
         time.sleep(10)
 
+        # Gentle scroll to trigger lazy SKU rendering
         for _ in range(4):
             page.mouse.wheel(0, random.randint(200, 400))
             time.sleep(random.uniform(0.3, 0.6))
@@ -457,18 +442,15 @@ def _attempt(url: str, pw) -> tuple[dict | None, str | None]:
 
         if is_homepage_redirect(page):
             return None, "homepage_redirect_post_scroll"
-
         if is_captcha_page(page):
             return None, "captcha_post_scroll"
 
         title = page.title()
-        print(f"   ✓ Page title: {title[:80]}")
-
+        print(f"   ✓ Title: {title[:80]}")
         if not title.strip():
             return None, "empty_title"
 
-        variants = _extract_variants(page)
-        return variants, None
+        return _extract_variants(page), None
 
     finally:
         objs = [ctx, browser, cm] if USE_CAMOUFOX else [ctx, browser]
@@ -482,25 +464,25 @@ def _attempt(url: str, pw) -> tuple[dict | None, str | None]:
                 pass
 
 
-# ── Main scraper function ─────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def scrape_product_variants(product_id: int | str) -> dict:
     pid = int(product_id)
     url = f"https://www.aliexpress.com/item/{pid}.html?gatewayAdapt=glo2swe"
 
-    print(f"\n🔍 Variant Scraper  ({'Camoufox' if USE_CAMOUFOX else 'Playwright'} / {PROXY_MODE})")
+    print(f"\n🔍 Variant Scraper  ({'Camoufox' if USE_CAMOUFOX else 'Playwright'} / Tor)")
     print("━" * 50)
     print(f"📦 Product ID : {pid}")
     print(f"🔗 URL        : {url}")
     print("━" * 50)
 
-    base_result = {
+    base = {
         "product_id": pid,
         "url":        url,
         "variants":   {},
         "success":    False,
         "error":      None,
-        "scraped_at": datetime.utcnow().isoformat(),
+        "scraped_at": _now(),
     }
 
     pw_ctx = sync_playwright().__enter__() if not USE_CAMOUFOX else None
@@ -510,16 +492,16 @@ def scrape_product_variants(product_id: int | str) -> dict:
             print(f"\n📍 Attempt {attempt + 1}/{MAX_RETRIES}")
 
             if attempt > 0:
-                _maybe_rotate()
+                rotate_tor_circuit()
                 wait_time = 20 + (attempt * 5)
-                print(f"   Waiting {wait_time}s before next attempt...")
+                print(f"   Waiting {wait_time}s before retry...")
                 time.sleep(wait_time)
 
             try:
                 variants, reason = _attempt(url, pw_ctx)
             except PlaywrightTimeoutError as e:
-                print(f"   ⚠️ Timeout: {e}")
-                _maybe_rotate()
+                print(f"   ⚠️  Timeout: {e}")
+                rotate_tor_circuit()
                 continue
             except Exception as e:
                 import traceback
@@ -528,43 +510,43 @@ def scrape_product_variants(product_id: int | str) -> dict:
                 continue
 
             if reason:
-                print(f"   ⚠️ Failed ({reason}) — rotating and retrying...")
-                _maybe_rotate()
+                print(f"   ⚠️  Failed ({reason}) — rotating and retrying...")
+                rotate_tor_circuit()
                 continue
 
+            # Empty dict = product has no variants (single-SKU) — still a success
             if not variants:
-                print("   ⚠️ No variants found — product may have no options")
-                return {**base_result, "variants": {}, "success": True,
-                        "scraped_at": datetime.utcnow().isoformat()}
+                print("   ⚠️  No variants found — product may be single-SKU")
+                return {**base, "variants": {}, "success": True, "scraped_at": _now()}
 
-            print(f"   ✅ Extracted {len(variants)} variant type(s):")
-            for vtype, data in variants.items():
-                vals = data.get("values", data) if isinstance(data, dict) else data
-                imgs = data.get("images", []) if isinstance(data, dict) else []
-                has_imgs = any(imgs)
-                print(f"      • {vtype} ({len(vals)} options{'  +images' if has_imgs else ''}):")
+            print(f"   ✅ Extracted {len(variants)} variant group(s):")
+            for group, data in variants.items():
+                vals = data["values"]
+                imgs = data["images"]
+                has_img = any(imgs)
+                print(f"      • {group} ({len(vals)} options{'  +images' if has_img else ''}):")
                 for i, v in enumerate(vals):
-                    img_hint = f"  → {imgs[i][:60]}..." if has_imgs and imgs[i] else ""
-                    print(f"          - {v}{img_hint}")
+                    suffix = f"  → {imgs[i][:70]}..." if has_img and imgs[i] else ""
+                    print(f"          - {v}{suffix}")
 
-            flat_variants = {
-                vtype: data["values"] if isinstance(data, dict) else data
-                for vtype, data in variants.items()
+            # Flatten to original format: {"Color": "val1,val2,val3", ...}
+            flat = {
+                group: ",".join(data["values"]) if isinstance(data, dict) else data
+                for group, data in variants.items()
             }
-            return {**base_result, "variants": flat_variants, "success": True,
-                    "scraped_at": datetime.utcnow().isoformat()}
+            return {**base, "variants": flat, "success": True, "scraped_at": _now()}
 
     finally:
         if pw_ctx:
             try: pw_ctx.__exit__(None, None, None)
             except Exception: pass
 
-    print(f"\n❌ Failed after {MAX_RETRIES} attempts")
-    return {**base_result, "error": f"Failed after {MAX_RETRIES} attempts",
-            "scraped_at": datetime.utcnow().isoformat()}
+    msg = f"Failed after {MAX_RETRIES} attempts"
+    print(f"\n❌ {msg}")
+    return {**base, "error": msg, "scraped_at": _now()}
 
 
-# ── CLI entry point ───────────────────────────────────────────────────────────
+# ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     pid = sys.argv[1] if len(sys.argv) > 1 else "1005011748833056"
