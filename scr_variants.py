@@ -4,19 +4,20 @@ scr_variants.py — AliExpress Product Variant Scraper
 Scrapes all variant types, values, and images from an AliExpress product page.
 Uses Tor (socks5://127.0.0.1:9050) + Camoufox (if installed) or plain Playwright.
 
+Changes from previous version:
+  - Removed gatewayAdapt=glo2swe from URL (was causing redirects/blocks)
+  - Simplified cookies to avoid region mismatch detection
+  - Replaced fixed 10s sleep with explicit SKU selector wait
+  - Added HTML debug snippet on empty variant result
+  - Expanded default exit node pool suggestion in comments
+
 Output format:
     {
         "product_id": 1005011831898302,
         "url": "https://...",
         "variants": {
-            "Color": {
-                "values": ["WiFi Cam No Card", "WiFi Cam Add 32G", ...],
-                "images": ["https://ae-pic-a1.../img1.avif", "https://...", ...]
-            },
-            "Size": {
-                "values": ["S", "M", "L"],
-                "images": [null, null, null]
-            }
+            "Color": "WiFi Cam No Card,WiFi Cam Add 32G,...",
+            "Size": "S,M,L"
         },
         "success": true,
         "error": null,
@@ -28,7 +29,6 @@ Usage:
 """
 
 import sys
-import os
 import time
 import random
 import json
@@ -63,18 +63,19 @@ VIEWPORTS = [
     {"width": 1280, "height": 720},
 ]
 
+# Minimal cookies — only locale, no region/currency that could mismatch
+# with the Tor exit IP and trigger bot detection.
+# Removed: aep_usuc_f (had region=SE conflicting with glo2swe),
+#          xman_us_f, aep_common_f, _aep_modified_region
 COOKIES = [
-    {"name": "aep_usuc_f",           "value": "site=glo&c_tp=SEK&region=SE&b_locale=en_US",
+    {"name": "intl_locale", "value": "en_US",
      "domain": ".aliexpress.com", "path": "/"},
-    {"name": "xman_us_f",            "value": "x_locale=en_US&x_site=SWE",
-     "domain": ".aliexpress.com", "path": "/"},
-    {"name": "aep_common_f",         "value": "F=F&reg=SE",
-     "domain": ".aliexpress.com", "path": "/"},
-    {"name": "_aep_modified_region", "value": "SE",
-     "domain": ".aliexpress.com", "path": "/"},
-    {"name": "intl_locale",          "value": "en_US",
+    {"name": "aep_usuc_f",  "value": "site=glo&c_tp=USD&region=US&b_locale=en_US",
      "domain": ".aliexpress.com", "path": "/"},
 ]
+
+# SKU selector used to wait for React variant widgets to render
+SKU_SELECTOR = '[data-sku-col], [class*="sku-item"], [class*="sku--wrap"]'
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -85,7 +86,7 @@ def _now() -> str:
 def rotate_tor_circuit() -> bool:
     try:
         with Controller.from_port(port=9051) as ctrl:
-            ctrl.authenticate()
+            ctrl.authenticate()   # null auth — no password needed
             ctrl.signal(Signal.NEWNYM)
             print("   Waiting 15s for new Tor circuit...")
             for i in range(15):
@@ -232,15 +233,6 @@ _EXTRACT_JS = r"""
         for (const [rowId, elements] of Object.entries(rowMap)) {
 
             // ── Label detection ────────────────────────────────────────────
-            // DOM path: sku-item--property
-            //             ├── sku-item--title   ← label is here
-            //             └── extend--wrap
-            //                   └── ... └── sku-item--box
-            //                                 └── sku-item--skus [data-sku-row]
-            //                                       └── [data-sku-col] ← we start here
-            //
-            // Walk up until we find the sku-item--property ancestor,
-            // then read the sku-item--title sibling.
             let label = null;
             let el    = elements[0];
 
@@ -251,8 +243,6 @@ _EXTRACT_JS = r"""
                     el.className.includes('sku-item--property')) {
                     const titleEl = el.querySelector('[class*="sku-item--title"]');
                     if (titleEl) {
-                        // Title span: "Color:\u00a0<span>selected value</span>"
-                        // We want only the part before the colon.
                         const firstSpan = titleEl.querySelector('span');
                         const raw = firstSpan
                             ? (firstSpan.childNodes[0]?.nodeType === 3
@@ -291,7 +281,6 @@ _EXTRACT_JS = r"""
             const values = [];
             const images = [];
 
-            // Image swatches
             const hasImages = elements.some(e => e.querySelector('img'));
             if (hasImages) {
                 elements.forEach(e => {
@@ -305,7 +294,6 @@ _EXTRACT_JS = r"""
                 });
             }
 
-            // Text buttons (sizes etc.)
             if (values.length === 0) {
                 elements.forEach(e => {
                     const span = e.querySelector('span');
@@ -421,6 +409,8 @@ def _attempt(url: str, pw) -> tuple[dict | None, str | None]:
             browser, ctx, page = _launch_playwright(pw)
 
         print("   ⏳ Navigating to product...")
+        # Removed gatewayAdapt=glo2swe — was forcing Swedish storefront,
+        # causing region mismatches and increased block rate.
         page.goto(url, timeout=120_000, wait_until="domcontentloaded")
         time.sleep(3)
         print(f"   ✓ Landed: {page.url}")
@@ -430,8 +420,16 @@ def _attempt(url: str, pw) -> tuple[dict | None, str | None]:
         if is_captcha_page(page):
             return None, "captcha"
 
-        print("   ⏳ Waiting 10s for JS to render...")
-        time.sleep(10)
+        # Wait for SKU/variant widgets to render instead of a fixed sleep.
+        # AliExpress uses React — selectors appear async after domcontentloaded.
+        print("   ⏳ Waiting for SKU selector...")
+        try:
+            page.wait_for_selector(SKU_SELECTOR, timeout=20_000)
+            print("   ✓ SKU selector found")
+            time.sleep(2)  # small buffer after selector appears
+        except PlaywrightTimeoutError:
+            print("   ⚠️  SKU selector never appeared — may be single-SKU product, continuing...")
+            # Don't abort — single-SKU products won't have this selector
 
         # Gentle scroll to trigger lazy SKU rendering
         for _ in range(4):
@@ -450,7 +448,14 @@ def _attempt(url: str, pw) -> tuple[dict | None, str | None]:
         if not title.strip():
             return None, "empty_title"
 
-        return _extract_variants(page), None
+        variants = _extract_variants(page)
+
+        # Debug: if nothing found, print a page snippet to diagnose
+        if not variants:
+            snippet = page.content()[:800].replace("\n", " ").strip()
+            print(f"   🔍 DEBUG — no variants found. Page snippet:\n   {snippet}\n")
+
+        return variants, None
 
     finally:
         objs = [ctx, browser, cm] if USE_CAMOUFOX else [ctx, browser]
@@ -468,7 +473,8 @@ def _attempt(url: str, pw) -> tuple[dict | None, str | None]:
 
 def scrape_product_variants(product_id: int | str) -> dict:
     pid = int(product_id)
-    url = f"https://www.aliexpress.com/item/{pid}.html?gatewayAdapt=glo2swe"
+    # Clean URL — no gatewayAdapt param that forces a specific storefront
+    url = f"https://www.aliexpress.com/item/{pid}.html"
 
     print(f"\n🔍 Variant Scraper  ({'Camoufox' if USE_CAMOUFOX else 'Playwright'} / Tor)")
     print("━" * 50)
