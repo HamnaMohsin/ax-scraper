@@ -2,14 +2,15 @@
 scr_variants.py — AliExpress Product Variant Scraper
 =====================================================
 Scrapes all variant types, values, and images from an AliExpress product page.
-Uses Tor (socks5://127.0.0.1:9050) + Camoufox (if installed) or plain Playwright.
+Uses Tor (socks5://127.0.0.1:9050) + plain Playwright (same pattern as main scraper).
 
-Changes from previous version:
-  - Removed gatewayAdapt=glo2swe from URL (was causing redirects/blocks)
-  - Simplified cookies to avoid region mismatch detection
-  - Replaced fixed 10s sleep with explicit SKU selector wait
-  - Added HTML debug snippet on empty variant result
-  - Expanded default exit node pool suggestion in comments
+Approach:
+  - Per-attempt `with sync_playwright() as p` block (browser fully closed each retry)
+  - No Camoufox dependency
+  - No gatewayAdapt param (avoids .us redirect / login wall)
+  - Detects aliexpress.us redirect explicitly
+  - Smart reCAPTCHA detection (size + visibility check, not just presence)
+  - Waits for SKU selector instead of fixed sleep
 
 Output format:
     {
@@ -34,12 +35,6 @@ import random
 import json
 from datetime import datetime, timezone
 
-try:
-    from camoufox.sync_api import Camoufox
-    USE_CAMOUFOX = True
-except ImportError:
-    USE_CAMOUFOX = False
-
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from stem import Signal
 from stem.control import Controller
@@ -48,12 +43,10 @@ from stem.control import Controller
 
 MAX_RETRIES = 3
 
-PROXY_CFG = {"server": "socks5://127.0.0.1:9050"}
-
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
 VIEWPORTS = [
@@ -63,10 +56,7 @@ VIEWPORTS = [
     {"width": 1280, "height": 720},
 ]
 
-# Minimal cookies — only locale, no region/currency that could mismatch
-# with the Tor exit IP and trigger bot detection.
-# Removed: aep_usuc_f (had region=SE conflicting with glo2swe),
-#          xman_us_f, aep_common_f, _aep_modified_region
+# Minimal cookies — locale only, no region/currency that could mismatch Tor exit IP
 COOKIES = [
     {"name": "intl_locale", "value": "en_US",
      "domain": ".aliexpress.com", "path": "/"},
@@ -74,7 +64,7 @@ COOKIES = [
      "domain": ".aliexpress.com", "path": "/"},
 ]
 
-# SKU selector used to wait for React variant widgets to render
+# SKU selector — wait for React variant widgets to finish rendering
 SKU_SELECTOR = '[data-sku-col], [class*="sku-item"], [class*="sku--wrap"]'
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -83,21 +73,48 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def get_tor_ip() -> str:
+    """Return current exit IP via Tor socks proxy. Used to verify rotation."""
+    try:
+        import urllib.request
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({
+                "http":  "socks5h://127.0.0.1:9050",
+                "https": "socks5h://127.0.0.1:9050",
+            })
+        )
+        with opener.open("https://api.ipify.org", timeout=15) as r:
+            return r.read().decode().strip()
+    except Exception as e:
+        return f"unknown ({e})"
+
+
 def rotate_tor_circuit() -> bool:
+    ip_before = get_tor_ip()
+    print(f"   Current exit IP: {ip_before}")
     try:
         with Controller.from_port(port=9051) as ctrl:
-            ctrl.authenticate()   # null auth — no password needed
+            ctrl.authenticate()  # null auth — no password needed
             ctrl.signal(Signal.NEWNYM)
-            print("   Waiting 15s for new Tor circuit...")
-            for i in range(15):
+            print("   Waiting 20s for new Tor circuit...")
+            for i in range(20):
                 time.sleep(1)
                 if i % 5 == 4:
-                    print(f"   ... {15 - i - 1}s remaining")
-        print("✅ Tor circuit rotated")
+                    print(f"   ... {20 - i - 1}s remaining")
+        ip_after = get_tor_ip()
+        print(f"   New exit IP    : {ip_after}")
+        if ip_before == ip_after:
+            print("⚠️  WARNING: IP did not change — try adding more ExitNodes to torrc")
+        else:
+            print("✅ Tor circuit rotated — IP changed")
         return True
     except Exception as e:
         print(f"⚠️  Could not rotate Tor circuit: {e}")
         return False
+
+
+def random_viewport() -> dict:
+    return random.choice(VIEWPORTS)
 
 
 # ── Detection helpers ─────────────────────────────────────────────────────────
@@ -106,16 +123,13 @@ def is_captcha_page(page) -> bool:
     """
     Detect genuine block/CAPTCHA pages.
 
-    reCAPTCHA iframes appear on normal AliExpress pages too (login widgets).
-    Only flag as a block if:
-      - the iframe is VISIBLE, AND
-      - its bounding box is wider than 200px (a real challenge dialog).
-    A hidden 1×1 bot-score pixel will not trigger this.
+    reCAPTCHA iframes also appear on normal AliExpress pages (login score pixels).
+    Only flag as blocked if the iframe is VISIBLE and wider than 200px.
     """
     url   = page.url.lower()
     title = page.title().lower()
 
-    # Hard URL signals — always block pages
+    # Hard URL signals
     if any(kw in url for kw in ["baxia", "punish", "captcha", "_____tmd_____"]):
         print("❌ CAPTCHA detected in URL")
         return True
@@ -137,7 +151,7 @@ def is_captcha_page(page) -> bool:
         except Exception:
             continue
 
-    # reCAPTCHA: only flag if large AND visible
+    # reCAPTCHA: only flag if large AND visible (small = bot-score pixel, not a challenge)
     try:
         frames = page.locator("iframe[src*='recaptcha']")
         for i in range(frames.count()):
@@ -161,56 +175,24 @@ def is_captcha_page(page) -> bool:
     return False
 
 
-def is_homepage_redirect(page) -> bool:
-    if "/item/" not in page.url:
-        print(f"❌ Homepage redirect. URL: {page.url}")
+def is_bad_redirect(page) -> bool:
+    """
+    Detect redirects away from the product page.
+    Catches both homepage redirects and aliexpress.us (login wall).
+    """
+    url = page.url
+    if "aliexpress.us" in url:
+        # US storefront forces login wall / aggressive CAPTCHA on every visit.
+        # Fix: remove {US} from ExitNodes in torrc and restart Tor.
+        print(f"❌ Redirected to aliexpress.us (US storefront — remove US from torrc ExitNodes). URL: {url}")
+        return True
+    if "/item/" not in url:
+        print(f"❌ Not a product page. URL: {url}")
         return True
     return False
 
 
-# ── Browser factory ───────────────────────────────────────────────────────────
-
-def _launch_camoufox():
-    """Launch Camoufox with Tor proxy. Returns (cm, browser, ctx, page)."""
-    cf      = Camoufox(headless=True, proxy=PROXY_CFG, geoip=True, humanize=True)
-    browser = cf.__enter__()
-    ctx     = browser.new_context(locale="en-US")
-    ctx.add_cookies(COOKIES)
-    page    = ctx.new_page()
-    return cf, browser, ctx, page
-
-
-def _launch_playwright(pw):
-    """Launch plain Playwright with Tor proxy. Returns (browser, ctx, page)."""
-    browser = pw.chromium.launch(
-        headless=True,
-        proxy=PROXY_CFG,
-        args=[
-            "--disable-blink-features=AutomationControlled",
-            "--disable-dev-shm-usage",
-            "--no-sandbox",
-        ],
-    )
-    ctx = browser.new_context(
-        viewport=random.choice(VIEWPORTS),
-        user_agent=random.choice(USER_AGENTS),
-        timezone_id=random.choice([
-            "America/New_York", "America/Chicago",
-            "America/Denver",   "America/Los_Angeles",
-        ]),
-    )
-    ctx.add_cookies(COOKIES)
-    page = ctx.new_page()
-    page.add_init_script(
-        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-    )
-    page.add_init_script(
-        "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});"
-    )
-    return browser, ctx, page
-
-
-# ── Variant extraction ────────────────────────────────────────────────────────
+# ── Variant extraction JS ─────────────────────────────────────────────────────
 
 _EXTRACT_JS = r"""
 () => {
@@ -220,7 +202,6 @@ _EXTRACT_JS = r"""
     const allSkuCols = document.querySelectorAll('[data-sku-col]');
     if (allSkuCols.length > 0) {
 
-        // Group by row prefix: "14-193" -> rowId "14"
         const rowMap = {};
         allSkuCols.forEach(el => {
             const col   = el.getAttribute('data-sku-col') || '';
@@ -232,7 +213,7 @@ _EXTRACT_JS = r"""
         let rowIndex = 0;
         for (const [rowId, elements] of Object.entries(rowMap)) {
 
-            // ── Label detection ────────────────────────────────────────────
+            // Label detection — walk up DOM to find sku-item--property ancestor
             let label = null;
             let el    = elements[0];
 
@@ -277,7 +258,7 @@ _EXTRACT_JS = r"""
 
             if (!label) label = `type_${rowIndex + 1}`;
 
-            // ── Value + image collection ───────────────────────────────────
+            // Value + image collection
             const values = [];
             const images = [];
 
@@ -392,91 +373,14 @@ def _extract_variants(page) -> dict:
     return result
 
 
-# ── One scrape attempt ────────────────────────────────────────────────────────
-
-def _attempt(url: str, pw) -> tuple[dict | None, str | None]:
-    """
-    Run one attempt. Returns (variants, None) on success or (None, reason) on failure.
-    variants is {} (empty dict) for single-variant products — that is a success.
-    """
-    cm = browser = ctx = page = None
-    try:
-        if USE_CAMOUFOX:
-            print("   🦊 Using Camoufox + Tor")
-            cm, browser, ctx, page = _launch_camoufox()
-        else:
-            print("   🌐 Using Playwright + Tor")
-            browser, ctx, page = _launch_playwright(pw)
-
-        print("   ⏳ Navigating to product...")
-        # Removed gatewayAdapt=glo2swe — was forcing Swedish storefront,
-        # causing region mismatches and increased block rate.
-        page.goto(url, timeout=120_000, wait_until="domcontentloaded")
-        time.sleep(3)
-        print(f"   ✓ Landed: {page.url}")
-
-        if is_homepage_redirect(page):
-            return None, "homepage_redirect"
-        if is_captcha_page(page):
-            return None, "captcha"
-
-        # Wait for SKU/variant widgets to render instead of a fixed sleep.
-        # AliExpress uses React — selectors appear async after domcontentloaded.
-        print("   ⏳ Waiting for SKU selector...")
-        try:
-            page.wait_for_selector(SKU_SELECTOR, timeout=20_000)
-            print("   ✓ SKU selector found")
-            time.sleep(2)  # small buffer after selector appears
-        except PlaywrightTimeoutError:
-            print("   ⚠️  SKU selector never appeared — may be single-SKU product, continuing...")
-            # Don't abort — single-SKU products won't have this selector
-
-        # Gentle scroll to trigger lazy SKU rendering
-        for _ in range(4):
-            page.mouse.wheel(0, random.randint(200, 400))
-            time.sleep(random.uniform(0.3, 0.6))
-        page.evaluate("window.scrollTo(0, 0)")
-        time.sleep(2)
-
-        if is_homepage_redirect(page):
-            return None, "homepage_redirect_post_scroll"
-        if is_captcha_page(page):
-            return None, "captcha_post_scroll"
-
-        title = page.title()
-        print(f"   ✓ Title: {title[:80]}")
-        if not title.strip():
-            return None, "empty_title"
-
-        variants = _extract_variants(page)
-
-        # Debug: if nothing found, print a page snippet to diagnose
-        if not variants:
-            snippet = page.content()[:800].replace("\n", " ").strip()
-            print(f"   🔍 DEBUG — no variants found. Page snippet:\n   {snippet}\n")
-
-        return variants, None
-
-    finally:
-        objs = [ctx, browser, cm] if USE_CAMOUFOX else [ctx, browser]
-        for obj in objs:
-            if obj is None:
-                continue
-            try:
-                if hasattr(obj, "close"):      obj.close()
-                elif hasattr(obj, "__exit__"): obj.__exit__(None, None, None)
-            except Exception:
-                pass
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def scrape_product_variants(product_id: int | str) -> dict:
     pid = int(product_id)
-    # Clean URL — no gatewayAdapt param that forces a specific storefront
+    # No gatewayAdapt — avoids forced storefront redirects
     url = f"https://www.aliexpress.com/item/{pid}.html"
 
-    print(f"\n🔍 Variant Scraper  ({'Camoufox' if USE_CAMOUFOX else 'Playwright'} / Tor)")
+    print(f"\n🔍 Variant Scraper  (Playwright / Tor)")
     print("━" * 50)
     print(f"📦 Product ID : {pid}")
     print(f"🔗 URL        : {url}")
@@ -491,61 +395,140 @@ def scrape_product_variants(product_id: int | str) -> dict:
         "scraped_at": _now(),
     }
 
-    pw_ctx = sync_playwright().__enter__() if not USE_CAMOUFOX else None
+    for attempt in range(MAX_RETRIES):
+        print(f"\n📍 Attempt {attempt + 1}/{MAX_RETRIES}")
 
-    try:
-        for attempt in range(MAX_RETRIES):
-            print(f"\n📍 Attempt {attempt + 1}/{MAX_RETRIES}")
+        if attempt > 0:
+            # Rotation already fired inline at end of previous attempt.
+            # Just add a short settling buffer here before launching the browser.
+            wait_time = 10 + (attempt * 5)
+            print(f"   Settling {wait_time}s before launching browser on new circuit...")
+            time.sleep(wait_time)
 
-            if attempt > 0:
-                rotate_tor_circuit()
-                wait_time = 20 + (attempt * 5)
-                print(f"   Waiting {wait_time}s before retry...")
-                time.sleep(wait_time)
+        # Fresh playwright + browser per attempt — same pattern as main scraper
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                proxy={"server": "socks5://127.0.0.1:9050"},
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                ],
+            )
+            page = browser.new_page(
+                viewport=random_viewport(),
+                user_agent=random.choice(USER_AGENTS),
+                timezone_id=random.choice([
+                    "America/New_York", "America/Chicago",
+                    "America/Denver",   "America/Los_Angeles",
+                ]),
+            )
+            page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+            page.add_init_script(
+                "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});"
+            )
+            # Set cookies after page context is ready
+            page.context.add_cookies(COOKIES)
 
             try:
-                variants, reason = _attempt(url, pw_ctx)
+                print("📡 Loading page...")
+                page.goto(url, timeout=120_000, wait_until="domcontentloaded")
+                time.sleep(2)
+                print(f"   ✓ Landed: {page.url}")
+
+                if is_bad_redirect(page):
+                    browser.close()
+                    rotate_tor_circuit()
+                    time.sleep(15)
+                    continue
+
+                if is_captcha_page(page):
+                    print("⚠️  CAPTCHA detected — closing browser and rotating IP...")
+                    browser.close()
+                    rotate_tor_circuit()
+                    print("   Waiting 15s after rotation before next attempt...")
+                    time.sleep(15)
+                    continue
+
+                # Wait for SKU widgets to render (React renders async after domcontentloaded)
+                print("   ⏳ Waiting for SKU selector...")
+                try:
+                    page.wait_for_selector(SKU_SELECTOR, timeout=20_000)
+                    print("   ✓ SKU selector found")
+                    time.sleep(2)
+                except PlaywrightTimeoutError:
+                    print("   ⚠️  SKU selector not found — may be single-SKU, continuing...")
+
+                # Gentle scroll to trigger lazy SKU rendering
+                print("   ⏳ Scrolling to load all variants...")
+                for _ in range(4):
+                    page.mouse.wheel(0, random.randint(200, 400))
+                    time.sleep(random.uniform(0.3, 0.6))
+                page.evaluate("window.scrollTo(0, 0)")
+                time.sleep(2)
+
+                if is_bad_redirect(page):
+                    browser.close()
+                    rotate_tor_circuit()
+                    time.sleep(15)
+                    continue
+
+                if is_captcha_page(page):
+                    print("⚠️  CAPTCHA after scroll — rotating IP and retrying...")
+                    browser.close()
+                    continue
+
+                title = page.title()
+                print(f"   ✓ Title: {title[:80]}")
+                if not title.strip():
+                    print("⚠️  Empty title — page may not have loaded correctly")
+                    browser.close()
+                    continue
+
+                variants = _extract_variants(page)
+                browser.close()
+
+                # Debug: print page snippet when nothing extracted
+                if not variants:
+                    print("   ⚠️  No variants found — product may be single-SKU")
+                    # Uncomment below to debug blank/unexpected pages:
+                    # snippet = page.content()[:800].replace("\n", " ").strip()
+                    # print(f"   🔍 DEBUG page snippet: {snippet}")
+                    return {**base, "variants": {}, "success": True, "scraped_at": _now()}
+
+                print(f"   ✅ Extracted {len(variants)} variant group(s):")
+                for group, data in variants.items():
+                    vals = data["values"]
+                    imgs = data["images"]
+                    has_img = any(imgs)
+                    print(f"      • {group} ({len(vals)} options{'  +images' if has_img else ''}):")
+                    for i, v in enumerate(vals):
+                        suffix = f"  → {imgs[i][:70]}..." if has_img and imgs[i] else ""
+                        print(f"          - {v}{suffix}")
+
+                # Flatten: {"Color": {"values": [...], "images": [...]}} → {"Color": "v1,v2,v3"}
+                flat = {
+                    group: ",".join(data["values"]) if isinstance(data, dict) else data
+                    for group, data in variants.items()
+                }
+                return {**base, "variants": flat, "success": True, "scraped_at": _now()}
+
             except PlaywrightTimeoutError as e:
-                print(f"   ⚠️  Timeout: {e}")
-                rotate_tor_circuit()
+                print(f"⚠️  Timeout on attempt {attempt + 1}: {e}")
+                try: browser.close()
+                except Exception: pass
                 continue
+
             except Exception as e:
                 import traceback
-                print(f"   ❌ Error: {e}")
+                print(f"❌ Error on attempt {attempt + 1}: {e}")
                 traceback.print_exc()
+                try: browser.close()
+                except Exception: pass
                 continue
-
-            if reason:
-                print(f"   ⚠️  Failed ({reason}) — rotating and retrying...")
-                rotate_tor_circuit()
-                continue
-
-            # Empty dict = product has no variants (single-SKU) — still a success
-            if not variants:
-                print("   ⚠️  No variants found — product may be single-SKU")
-                return {**base, "variants": {}, "success": True, "scraped_at": _now()}
-
-            print(f"   ✅ Extracted {len(variants)} variant group(s):")
-            for group, data in variants.items():
-                vals = data["values"]
-                imgs = data["images"]
-                has_img = any(imgs)
-                print(f"      • {group} ({len(vals)} options{'  +images' if has_img else ''}):")
-                for i, v in enumerate(vals):
-                    suffix = f"  → {imgs[i][:70]}..." if has_img and imgs[i] else ""
-                    print(f"          - {v}{suffix}")
-
-            # Flatten to original format: {"Color": "val1,val2,val3", ...}
-            flat = {
-                group: ",".join(data["values"]) if isinstance(data, dict) else data
-                for group, data in variants.items()
-            }
-            return {**base, "variants": flat, "success": True, "scraped_at": _now()}
-
-    finally:
-        if pw_ctx:
-            try: pw_ctx.__exit__(None, None, None)
-            except Exception: pass
 
     msg = f"Failed after {MAX_RETRIES} attempts"
     print(f"\n❌ {msg}")
