@@ -88,6 +88,7 @@ class ProductVariant(Base):
     __tablename__ = "product_variants"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    
 
     product_id = Column(
         BigInteger,
@@ -99,5 +100,6 @@ class ProductVariant(Base):
     variant_type = Column(String, nullable=False)
 
     variant_values = Column(JSON, nullable=False)
+    variant_images = Column(JSON, nullable=True, default=list)
 
     scraped_at = Column(DateTime, nullable=True)
