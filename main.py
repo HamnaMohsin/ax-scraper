@@ -1445,18 +1445,21 @@ def scrape_variants_bulk(
                             product_id=pid
                         ).delete()
 
-                        for variant_type, values in scraped_variants.items():
-
-                            variant_values = values if isinstance(values, list) else [str(values)]
-
-
+                        for variant_type, data in scraped_variants.items():
+                            if isinstance(data, dict):
+                                variant_values = data.get("values", [])
+                                variant_images = data.get("images", [])
+                            else:
+                                variant_values = [str(data)]
+                                variant_images = []
+                        
                             row = ProductVariant(
-                                product_id=pid,
+                                product_id=product_id,
                                 variant_type=variant_type,
                                 variant_values=variant_values,
+                                variant_images=variant_images,   # ← new column
                                 scraped_at=datetime.utcnow(),
                             )
-
                             db_thread.add(row)
 
                         db_thread.commit()
