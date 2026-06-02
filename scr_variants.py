@@ -412,7 +412,10 @@ def scrape_product_variants(product_id: int | str) -> dict:
                         print(f"          - {v}{suffix}")
 
                 flat = {
-                    group: ",".join(data["values"]) if isinstance(data, dict) else data
+                    group: {
+                        "values": data["values"] if isinstance(data, dict) else [str(data)],
+                        "images": data["images"] if isinstance(data, dict) else [],
+                    }
                     for group, data in variants.items()
                 }
                 return {**base, "variants": flat, "success": True, "scraped_at": _now()}
