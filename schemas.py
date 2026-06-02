@@ -96,6 +96,7 @@ class ProductVariantOut(BaseModel):
     product_id: int
     variant_type: str
     variant_values: list[str]    # ← now a proper list
+    variant_images: list[str | None] = []
     scraped_at: Optional[datetime] = None
     model_config = {"from_attributes": True}
     
