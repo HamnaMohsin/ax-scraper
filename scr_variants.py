@@ -35,7 +35,7 @@ VIEWPORTS = [
     {"width": 1280, "height": 720},
 ]
 
-# Swedish storefront cookies — same as working main scraper
+# Swedish storefront cookies — tell AliExpress to serve SE/global regardless of exit IP
 COOKIES = [
     {"name": "aep_usuc_f",           "value": "site=glo&c_tp=SEK&region=SE&b_locale=en_US",
      "domain": ".aliexpress.com",    "path": "/"},
@@ -61,26 +61,7 @@ def random_viewport() -> dict:
     return random.choice(VIEWPORTS)
 
 
-def get_tor_ip() -> str:
-    """Return current Tor exit IP. Requires requests[socks]."""
-    try:
-        import requests
-        r = requests.get(
-            "https://api.ipify.org",
-            proxies={
-                "http":  "socks5h://127.0.0.1:9050",
-                "https": "socks5h://127.0.0.1:9050",
-            },
-            timeout=15,
-        )
-        return r.text.strip()
-    except Exception as e:
-        return f"unknown ({e})"
-
-
 def rotate_tor_circuit() -> bool:
-    ip_before = get_tor_ip()
-    print(f"   Current exit IP: {ip_before}")
     try:
         with Controller.from_port(port=9051) as ctrl:
             ctrl.authenticate()
@@ -90,12 +71,7 @@ def rotate_tor_circuit() -> bool:
                 time.sleep(1)
                 if i % 5 == 4:
                     print(f"   ... {15 - i - 1}s remaining")
-        ip_after = get_tor_ip()
-        print(f"   New exit IP    : {ip_after}")
-        if ip_before == ip_after:
-            print("⚠️  WARNING: IP did not change")
-        else:
-            print("✅ Tor circuit rotated — IP changed")
+        print("✅ Tor circuit rotated")
         return True
     except Exception as e:
         print(f"⚠️  Could not rotate Tor circuit: {e}")
@@ -366,8 +342,7 @@ def scrape_product_variants(product_id: int | str) -> dict:
             page.add_init_script(
                 "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});"
             )
-
-            # Swedish storefront cookies — set BEFORE navigation
+            # Swedish storefront cookies — set before navigation
             page.context.add_cookies(COOKIES)
 
             try:
@@ -404,7 +379,7 @@ def scrape_product_variants(product_id: int | str) -> dict:
                     browser.close()
                     continue
 
-                # Wait for SKU selector
+                # Belt-and-suspenders: also wait for SKU selector
                 try:
                     page.wait_for_selector(SKU_SELECTOR, timeout=10_000)
                     print("   ✓ SKU selector found")
@@ -436,7 +411,6 @@ def scrape_product_variants(product_id: int | str) -> dict:
                         suffix = f"  → {imgs[i][:70]}..." if has_img and imgs[i] else ""
                         print(f"          - {v}{suffix}")
 
-                # Flatten to {"Color": "v1,v2,v3", ...}
                 flat = {
                     group: ",".join(data["values"]) if isinstance(data, dict) else data
                     for group, data in variants.items()
