@@ -89,19 +89,35 @@ def is_captcha_page(page) -> bool:
         return True
 
     for selector in [
-        "iframe[src*='recaptcha']",
         ".baxia-punish",
         "#captcha-verify",
-        "[id*='captcha']",
+        "[id*='captcha-box']",
         "iframe[src*='geetest']",
-        "[class*='captcha']",
+        "[class*='baxia']",
+        "[class*='punish']",
     ]:
         try:
-            if page.locator(selector).count() > 0:
-                print(f"❌ CAPTCHA detected: {selector}")
+            loc = page.locator(selector)
+            if loc.count() > 0 and loc.first.is_visible():
+                print(f"❌ CAPTCHA widget detected: {selector}")
                 return True
         except Exception:
             continue
+
+    # reCAPTCHA: only flag if VISIBLE and large (>200px wide)
+    # Normal pages have a hidden 1x1 bot-score iframe — don't flag that
+    try:
+        frames = page.locator("iframe[src*='recaptcha']")
+        for i in range(frames.count()):
+            frame = frames.nth(i)
+            if not frame.is_visible():
+                continue
+            box = frame.bounding_box()
+            if box and box.get("width", 0) > 200:
+                print(f"❌ Visible reCAPTCHA challenge (width={box['width']}px)")
+                return True
+    except Exception:
+        pass
 
     is_product_page = "aliexpress" in page_title and len(page_title) > 40
     if not is_product_page and any(kw in page_title for kw in
