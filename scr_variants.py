@@ -1,14 +1,7 @@
 """
 scr_variants.py — AliExpress Product Variant Scraper
-=====================================================
+Uses Camoufox (anti-detection Firefox) if available, falls back to Playwright.
 Forces Swedish storefront via gatewayAdapt=glo2swe + SE cookies.
-Uses Tor (socks5://127.0.0.1:9050) + plain Playwright.
-
-Returns per variant group:
-    {"Color": {"values": ["Red", "Blue"], "images": ["https://...", null]}}
-
-Usage:
-    python scr_variants.py 1005011748833056
 """
 
 import sys
@@ -20,6 +13,14 @@ from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from stem import Signal
 from stem.control import Controller
+
+try:
+    from camoufox.sync_api import Camoufox
+    USE_CAMOUFOX = True
+    print("✅ Using camoufox (anti-detection Firefox)")
+except ImportError:
+    USE_CAMOUFOX = False
+    print("⚠️  camoufox not found, falling back to plain Playwright")
 
 MAX_RETRIES = 3
 
@@ -50,6 +51,7 @@ COOKIES = [
 ]
 
 SKU_SELECTOR = '[data-sku-col], [class*="sku-item"], [class*="sku--wrap"]'
+PROXY = {"server": "socks5://127.0.0.1:9050"}
 
 
 def _now() -> str:
@@ -81,12 +83,10 @@ def is_captcha_page(page) -> bool:
     page_url   = page.url.lower()
     page_title = page.title().lower()
 
-    # Hard URL signals
     if any(kw in page_url for kw in ["baxia", "punish", "captcha", "_____tmd_____"]):
         print("❌ CAPTCHA detected in URL")
         return True
 
-    # Visible block-page DOM elements only
     for selector in [
         ".baxia-punish",
         "#captcha-verify",
@@ -103,8 +103,7 @@ def is_captcha_page(page) -> bool:
         except Exception:
             continue
 
-    # reCAPTCHA: ONLY flag if visible AND wider than 200px
-    # Normal product pages have a hidden 1x1 bot-score iframe — never flag that
+    # reCAPTCHA: only flag if visible AND wider than 200px
     try:
         frames = page.locator("iframe[src*='recaptcha']")
         for i in range(frames.count()):
@@ -118,7 +117,6 @@ def is_captcha_page(page) -> bool:
     except Exception:
         pass
 
-    # Title-based block detection
     is_product_page = "aliexpress" in page_title and len(page_title) > 40
     if not is_product_page and any(kw in page_title for kw in
                                    ["verify", "access", "denied", "blocked", "challenge"]):
@@ -128,11 +126,64 @@ def is_captcha_page(page) -> bool:
     return False
 
 
+def _launch_browser():
+    """
+    Launch browser + return (page, cleanup_fn).
+    Uses Camoufox if available, otherwise plain Playwright Chromium.
+    """
+    if USE_CAMOUFOX:
+        cm      = Camoufox(headless=True, proxy=PROXY, geoip=True, humanize=True)
+        browser = cm.__enter__()
+        ctx     = browser.new_context(locale="en-US")
+        ctx.add_cookies(COOKIES)
+        page    = ctx.new_page()
+
+        def cleanup():
+            try: cm.__exit__(None, None, None)
+            except Exception: pass
+
+        return page, cleanup
+
+    else:
+        pw      = sync_playwright().__enter__()
+        browser = pw.chromium.launch(
+            headless=True,
+            proxy=PROXY,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+            ],
+        )
+        page = browser.new_page(
+            viewport=random_viewport(),
+            user_agent=random.choice(USER_AGENTS),
+            timezone_id=random.choice([
+                "America/New_York", "America/Chicago",
+                "America/Denver",   "America/Los_Angeles",
+            ]),
+        )
+        page.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+        )
+        page.add_init_script(
+            "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});"
+        )
+        page.context.add_cookies(COOKIES)
+
+        def cleanup():
+            try: browser.close()
+            except Exception: pass
+            try: pw.__exit__(None, None, None)
+            except Exception: pass
+
+        return page, cleanup
+
+
 _EXTRACT_JS = r"""
 () => {
     const result = {};
 
-    // ── Pass 1: data-sku-col grouping (most reliable) ──────────────────────
     const allSkuCols = document.querySelectorAll('[data-sku-col]');
     if (allSkuCols.length > 0) {
         const rowMap = {};
@@ -185,10 +236,9 @@ _EXTRACT_JS = r"""
 
             if (!label) label = `type_${rowIndex + 1}`;
 
-            const values = [];
-            const images = [];
-
+            const values = [], images = [];
             const hasImages = elements.some(e => e.querySelector('img'));
+
             if (hasImages) {
                 elements.forEach(e => {
                     const img = e.querySelector('img');
@@ -204,10 +254,8 @@ _EXTRACT_JS = r"""
             if (values.length === 0) {
                 elements.forEach(e => {
                     const span = e.querySelector('span');
-                    const txt  = (span
-                        ? span.textContent
-                        : e.getAttribute('title') || e.textContent
-                    ).trim();
+                    const txt  = (span ? span.textContent
+                                       : e.getAttribute('title') || e.textContent).trim();
                     if (txt && txt.length < 50 && !values.includes(txt)) {
                         values.push(txt);
                         images.push(null);
@@ -221,11 +269,9 @@ _EXTRACT_JS = r"""
             }
             rowIndex++;
         }
-
         if (Object.keys(result).length > 0) return result;
     }
 
-    // ── Pass 2: class-name fallback ────────────────────────────────────────
     const skuContainers = [...document.querySelectorAll('*')].filter(el => {
         const cls = el.className || '';
         if (typeof cls !== 'string') return false;
@@ -273,7 +319,6 @@ _EXTRACT_JS = r"""
 
     if (Object.keys(result).length > 0) return result;
 
-    // ── Pass 3: debug ──────────────────────────────────────────────────────
     const found = new Set();
     document.querySelectorAll('*').forEach(el => {
         if (el.className && typeof el.className === 'string')
@@ -301,7 +346,7 @@ def scrape_product_variants(product_id: int | str) -> dict:
     pid = int(product_id)
     url = f"https://www.aliexpress.com/item/{pid}.html?gatewayAdapt=glo2swe"
 
-    print(f"\n🔍 Variant Scraper  (Playwright / Tor)")
+    print(f"\n🔍 Variant Scraper  ({'Camoufox' if USE_CAMOUFOX else 'Playwright'} / Tor)")
     print("━" * 50)
     print(f"📦 Product ID : {pid}")
     print(f"🔗 URL        : {url}")
@@ -326,121 +371,92 @@ def scrape_product_variants(product_id: int | str) -> dict:
             print(f"   Waiting {wait_time}s before next attempt...")
             time.sleep(wait_time)
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                proxy={"server": "socks5://127.0.0.1:9050"},
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-dev-shm-usage",
-                    "--no-sandbox",
-                ],
-            )
-            page = browser.new_page(
-                viewport=random_viewport(),
-                user_agent=random.choice(USER_AGENTS),
-                timezone_id=random.choice([
-                    "America/New_York", "America/Chicago",
-                    "America/Denver",   "America/Los_Angeles",
-                ]),
-            )
-            page.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-            )
-            page.add_init_script(
-                "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});"
-            )
-            page.context.add_cookies(COOKIES)
+        page, cleanup = _launch_browser()
+
+        try:
+            print("📡 Loading page...")
+            page.goto(url, timeout=120_000, wait_until="domcontentloaded")
+            time.sleep(2)
+
+            current_url = page.url
+            if current_url != url:
+                print(f"⚠️  Redirected to: {current_url}")
+
+            # Wait for React to fully render BEFORE checking for CAPTCHA
+            print("⏳ Waiting for page to render...")
+            time.sleep(8)
+
+            if is_captcha_page(page):
+                print("⚠️  CAPTCHA detected — rotating IP and retrying...")
+                cleanup()
+                continue
+
+            print("⏳ Scrolling to load variants...")
+            try:
+                for _ in range(3):
+                    page.mouse.wheel(0, random.randint(150, 400))
+                    time.sleep(random.uniform(0.2, 0.6))
+                page.evaluate("window.scrollTo(0, 0)")
+                time.sleep(1)
+            except Exception as e:
+                print(f"⚠️  Scroll error: {e}")
+
+            if is_captcha_page(page):
+                print("⚠️  CAPTCHA after scroll — rotating IP and retrying...")
+                cleanup()
+                continue
 
             try:
-                print("📡 Loading page...")
-                page.goto(url, timeout=120_000, wait_until="domcontentloaded")
-                time.sleep(2)
+                page.wait_for_selector(SKU_SELECTOR, timeout=10_000)
+                print("   ✓ SKU selector found")
+                time.sleep(1)
+            except PlaywrightTimeoutError:
+                print("   ⚠️  SKU selector not found — may be single-SKU, continuing...")
 
-                current_url = page.url
-                if current_url != url:
-                    print(f"⚠️  Redirected to: {current_url}")
+            title = page.title()
+            print(f"   ✓ Title: {title[:80]}")
+            if not title.strip():
+                print("⚠️  Empty title — page did not load correctly")
+                cleanup()
+                continue
 
-                # Wait for React to fully render BEFORE checking for CAPTCHA
-                # Checking immediately after domcontentloaded catches login widgets
-                # that disappear once the real page content loads
-                print("⏳ Waiting for page to render...")
-                time.sleep(8)
+            variants = _extract_variants(page)
+            cleanup()
 
-                if is_captcha_page(page):
-                    print("⚠️  CAPTCHA detected — rotating IP and retrying...")
-                    browser.close()
-                    continue
+            if not variants:
+                print("   ⚠️  No variants found — product may be single-SKU")
+                return {**base, "variants": {}, "success": True, "scraped_at": _now()}
 
-                print("⏳ Scrolling to load variants...")
-                try:
-                    for _ in range(3):
-                        page.mouse.wheel(0, random.randint(150, 400))
-                        time.sleep(random.uniform(0.2, 0.6))
-                    page.evaluate("window.scrollTo(0, 0)")
-                    time.sleep(1)
-                except Exception as e:
-                    print(f"⚠️  Scroll error: {e}")
+            print(f"   ✅ Extracted {len(variants)} variant group(s):")
+            for group, data in variants.items():
+                vals, imgs = data["values"], data["images"]
+                has_img = any(imgs)
+                print(f"      • {group} ({len(vals)} options{'  +images' if has_img else ''}):")
+                for i, v in enumerate(vals):
+                    suffix = f"  → {imgs[i][:70]}..." if has_img and imgs[i] else ""
+                    print(f"          - {v}{suffix}")
 
-                if is_captcha_page(page):
-                    print("⚠️  CAPTCHA after scroll — rotating IP and retrying...")
-                    browser.close()
-                    continue
-
-                try:
-                    page.wait_for_selector(SKU_SELECTOR, timeout=10_000)
-                    print("   ✓ SKU selector found")
-                    time.sleep(1)
-                except PlaywrightTimeoutError:
-                    print("   ⚠️  SKU selector not found — may be single-SKU, continuing...")
-
-                title = page.title()
-                print(f"   ✓ Title: {title[:80]}")
-                if not title.strip():
-                    print("⚠️  Empty title — page did not load correctly")
-                    browser.close()
-                    continue
-
-                variants = _extract_variants(page)
-                browser.close()
-
-                if not variants:
-                    print("   ⚠️  No variants found — product may be single-SKU")
-                    return {**base, "variants": {}, "success": True, "scraped_at": _now()}
-
-                print(f"   ✅ Extracted {len(variants)} variant group(s):")
-                for group, data in variants.items():
-                    vals    = data["values"]
-                    imgs    = data["images"]
-                    has_img = any(imgs)
-                    print(f"      • {group} ({len(vals)} options{'  +images' if has_img else ''}):")
-                    for i, v in enumerate(vals):
-                        suffix = f"  → {imgs[i][:70]}..." if has_img and imgs[i] else ""
-                        print(f"          - {v}{suffix}")
-
-                # Return values AND images per group — consumed by main.py
-                flat = {
-                    group: {
-                        "values": data["values"] if isinstance(data, dict) else [str(data)],
-                        "images": data["images"] if isinstance(data, dict) else [],
-                    }
-                    for group, data in variants.items()
+            # Return values AND images per group
+            flat = {
+                group: {
+                    "values": data["values"] if isinstance(data, dict) else [str(data)],
+                    "images": data["images"] if isinstance(data, dict) else [],
                 }
-                return {**base, "variants": flat, "success": True, "scraped_at": _now()}
+                for group, data in variants.items()
+            }
+            return {**base, "variants": flat, "success": True, "scraped_at": _now()}
 
-            except PlaywrightTimeoutError as e:
-                print(f"⚠️  Timeout on attempt {attempt + 1}: {e}")
-                try: browser.close()
-                except Exception: pass
-                continue
+        except PlaywrightTimeoutError as e:
+            print(f"⚠️  Timeout on attempt {attempt + 1}: {e}")
+            cleanup()
+            continue
 
-            except Exception as e:
-                import traceback
-                print(f"❌ Error on attempt {attempt + 1}: {e}")
-                traceback.print_exc()
-                try: browser.close()
-                except Exception: pass
-                continue
+        except Exception as e:
+            import traceback
+            print(f"❌ Error on attempt {attempt + 1}: {e}")
+            traceback.print_exc()
+            cleanup()
+            continue
 
     msg = f"Failed after {MAX_RETRIES} attempts"
     print(f"\n❌ {msg}")
