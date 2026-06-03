@@ -196,7 +196,7 @@ def is_captcha_page(page) -> bool:
             if not frame.is_visible():
                 continue
             box = frame.bounding_box()
-            if box and box.get("width", 0) > 200:
+            if box and box.get("width", 0) > 500:
                 print(f"❌ Visible reCAPTCHA challenge (width={box['width']}px)")
                 return True
     except Exception:
