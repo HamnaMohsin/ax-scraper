@@ -4,6 +4,9 @@ scr_variants.py — AliExpress Product Variant Scraper
 Forces Swedish storefront via gatewayAdapt=glo2swe + SE cookies.
 Uses Tor (socks5://127.0.0.1:9050) + plain Playwright.
 
+Returns per variant group:
+    {"Color": {"values": ["Red", "Blue"], "images": ["https://...", null]}}
+
 Usage:
     python scr_variants.py 1005011748833056
 """
@@ -17,8 +20,6 @@ from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from stem import Signal
 from stem.control import Controller
-
-# ── Config ────────────────────────────────────────────────────────────────────
 
 MAX_RETRIES = 3
 
@@ -35,7 +36,6 @@ VIEWPORTS = [
     {"width": 1280, "height": 720},
 ]
 
-# Swedish storefront cookies — tell AliExpress to serve SE/global regardless of exit IP
 COOKIES = [
     {"name": "aep_usuc_f",           "value": "site=glo&c_tp=SEK&region=SE&b_locale=en_US",
      "domain": ".aliexpress.com",    "path": "/"},
@@ -51,7 +51,6 @@ COOKIES = [
 
 SKU_SELECTOR = '[data-sku-col], [class*="sku-item"], [class*="sku--wrap"]'
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -78,16 +77,16 @@ def rotate_tor_circuit() -> bool:
         return False
 
 
-# ── Detection ─────────────────────────────────────────────────────────────────
-
 def is_captcha_page(page) -> bool:
     page_url   = page.url.lower()
     page_title = page.title().lower()
 
+    # Hard URL signals
     if any(kw in page_url for kw in ["baxia", "punish", "captcha", "_____tmd_____"]):
         print("❌ CAPTCHA detected in URL")
         return True
 
+    # Visible block-page DOM elements only
     for selector in [
         ".baxia-punish",
         "#captcha-verify",
@@ -104,8 +103,8 @@ def is_captcha_page(page) -> bool:
         except Exception:
             continue
 
-    # reCAPTCHA: only flag if VISIBLE and large (>200px wide)
-    # Normal pages have a hidden 1x1 bot-score iframe — don't flag that
+    # reCAPTCHA: ONLY flag if visible AND wider than 200px
+    # Normal product pages have a hidden 1x1 bot-score iframe — never flag that
     try:
         frames = page.locator("iframe[src*='recaptcha']")
         for i in range(frames.count()):
@@ -119,6 +118,7 @@ def is_captcha_page(page) -> bool:
     except Exception:
         pass
 
+    # Title-based block detection
     is_product_page = "aliexpress" in page_title and len(page_title) > 40
     if not is_product_page and any(kw in page_title for kw in
                                    ["verify", "access", "denied", "blocked", "challenge"]):
@@ -127,8 +127,6 @@ def is_captcha_page(page) -> bool:
 
     return False
 
-
-# ── Variant extraction JS ─────────────────────────────────────────────────────
 
 _EXTRACT_JS = r"""
 () => {
@@ -180,10 +178,7 @@ _EXTRACT_JS = r"""
                         if (sibling === el || sibling.contains(el)) continue;
                         if (sibling.querySelectorAll('[data-sku-col]').length > 0) continue;
                         const txt = sibling.textContent.trim().split(':')[0].trim();
-                        if (txt && txt.length > 0 && txt.length < 40) {
-                            label = txt;
-                            break;
-                        }
+                        if (txt && txt.length > 0 && txt.length < 40) { label = txt; break; }
                     }
                 }
             }
@@ -302,11 +297,8 @@ def _extract_variants(page) -> dict:
     return result
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def scrape_product_variants(product_id: int | str) -> dict:
     pid = int(product_id)
-    # gatewayAdapt=glo2swe forces Swedish storefront regardless of exit IP
     url = f"https://www.aliexpress.com/item/{pid}.html?gatewayAdapt=glo2swe"
 
     print(f"\n🔍 Variant Scraper  (Playwright / Tor)")
@@ -358,7 +350,6 @@ def scrape_product_variants(product_id: int | str) -> dict:
             page.add_init_script(
                 "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});"
             )
-            # Swedish storefront cookies — set before navigation
             page.context.add_cookies(COOKIES)
 
             try:
@@ -375,11 +366,9 @@ def scrape_product_variants(product_id: int | str) -> dict:
                     browser.close()
                     continue
 
-                # Wait for React to render
                 print("⏳ Waiting for page to render...")
                 time.sleep(8)
 
-                # Scroll to trigger lazy variant rendering
                 print("⏳ Scrolling to load variants...")
                 try:
                     for _ in range(3):
@@ -395,7 +384,6 @@ def scrape_product_variants(product_id: int | str) -> dict:
                     browser.close()
                     continue
 
-                # Belt-and-suspenders: also wait for SKU selector
                 try:
                     page.wait_for_selector(SKU_SELECTOR, timeout=10_000)
                     print("   ✓ SKU selector found")
@@ -419,16 +407,20 @@ def scrape_product_variants(product_id: int | str) -> dict:
 
                 print(f"   ✅ Extracted {len(variants)} variant group(s):")
                 for group, data in variants.items():
-                    vals = data["values"]
-                    imgs = data["images"]
+                    vals    = data["values"]
+                    imgs    = data["images"]
                     has_img = any(imgs)
                     print(f"      • {group} ({len(vals)} options{'  +images' if has_img else ''}):")
                     for i, v in enumerate(vals):
                         suffix = f"  → {imgs[i][:70]}..." if has_img and imgs[i] else ""
                         print(f"          - {v}{suffix}")
 
+                # Return values AND images per group — consumed by main.py
                 flat = {
-                    group: ",".join(data["values"]) if isinstance(data, dict) else data
+                    group: {
+                        "values": data["values"] if isinstance(data, dict) else [str(data)],
+                        "images": data["images"] if isinstance(data, dict) else [],
+                    }
                     for group, data in variants.items()
                 }
                 return {**base, "variants": flat, "success": True, "scraped_at": _now()}
@@ -451,8 +443,6 @@ def scrape_product_variants(product_id: int | str) -> dict:
     print(f"\n❌ {msg}")
     return {**base, "error": msg, "scraped_at": _now()}
 
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     pid = sys.argv[1] if len(sys.argv) > 1 else "1005011748833056"
