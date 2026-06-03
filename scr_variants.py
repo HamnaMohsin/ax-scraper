@@ -361,13 +361,16 @@ def scrape_product_variants(product_id: int | str) -> dict:
                 if current_url != url:
                     print(f"⚠️  Redirected to: {current_url}")
 
+                # Wait for React to fully render BEFORE checking for CAPTCHA
+                # Checking immediately after domcontentloaded catches login widgets
+                # that disappear once the real page content loads
+                print("⏳ Waiting for page to render...")
+                time.sleep(8)
+
                 if is_captcha_page(page):
                     print("⚠️  CAPTCHA detected — rotating IP and retrying...")
                     browser.close()
                     continue
-
-                print("⏳ Waiting for page to render...")
-                time.sleep(8)
 
                 print("⏳ Scrolling to load variants...")
                 try:
