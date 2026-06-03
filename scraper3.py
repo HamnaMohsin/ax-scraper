@@ -170,7 +170,6 @@ def rotate_tor_circuit():
 
 
 def is_captcha_page(page) -> bool:
-    """Detect if page is a CAPTCHA/block page - multiple selectors"""
     page_url = page.url.lower()
     page_title = page.title().lower()
 
@@ -179,16 +178,9 @@ def is_captcha_page(page) -> bool:
         print("❌ CAPTCHA detected in URL")
         return True
 
-    captcha_selectors = [
-        ".baxia-punish",
-        "#captcha-verify",
-        "[id*='captcha']",
-        "iframe[src*='geetest']",
-        "[class*='captcha']",
-    ]
-
-  
-
+    # Only flag reCAPTCHA if it's an INTERACTIVE challenge (v2 checkbox/image)
+    # Invisible reCAPTCHA v3 also uses this iframe but width is typically 256px badge
+    # AliExpress product pages legitimately embed reCAPTCHA v3 for scoring
     try:
         frames = page.locator("iframe[src*='recaptcha']")
         for i in range(frames.count()):
@@ -197,12 +189,17 @@ def is_captcha_page(page) -> bool:
                 continue
             box = frame.bounding_box()
             if box and box.get("width", 0) > 200:
+                # ADDITIONAL CHECK: is there also a product title?
+                # If product title exists, this is just background v3, not a block
+                title_elem = page.locator('[data-pl="product-title"], h1').first
+                if title_elem.count() > 0 and len(title_elem.inner_text().strip()) > 5:
+                    print(f"ℹ️ reCAPTCHA present but product title found — likely v3 scoring, continuing")
+                    return False
                 print(f"❌ Visible reCAPTCHA challenge (width={box['width']}px)")
                 return True
     except Exception:
         pass
 
-    
     is_product_page = "aliexpress" in page_title and len(page_title) > 40
     block_title_keywords = ["verify", "access", "denied", "blocked", "challenge"]
     if not is_product_page and any(kw in page_title for kw in block_title_keywords):
