@@ -35,7 +35,7 @@ from schemas import (
 from scraper3 import extract_aliexpress_product
 from llm_refiner2 import refine_product
 from assign_embeddings2 import categorize_product as assign_category
-from scr_variants import scrape_product_variants
+from variants import scrape_product_variants
 
 from data.export_to_template import (
     load_products,
