@@ -180,7 +180,6 @@ def is_captcha_page(page) -> bool:
         return True
 
     captcha_selectors = [
-        "iframe[src*='recaptcha']",
         ".baxia-punish",
         "#captcha-verify",
         "[id*='captcha']",
@@ -188,14 +187,22 @@ def is_captcha_page(page) -> bool:
         "[class*='captcha']",
     ]
 
-    for selector in captcha_selectors:
-        try:
-            if page.locator(selector).count() > 0:
-                print(f"❌ CAPTCHA detected: {selector}")
-                return True
-        except:
-            continue
+  
 
+    try:
+        frames = page.locator("iframe[src*='recaptcha']")
+        for i in range(frames.count()):
+            frame = frames.nth(i)
+            if not frame.is_visible():
+                continue
+            box = frame.bounding_box()
+            if box and box.get("width", 0) > 200:
+                print(f"❌ Visible reCAPTCHA challenge (width={box['width']}px)")
+                return True
+    except Exception:
+        pass
+
+    
     is_product_page = "aliexpress" in page_title and len(page_title) > 40
     block_title_keywords = ["verify", "access", "denied", "blocked", "challenge"]
     if not is_product_page and any(kw in page_title for kw in block_title_keywords):
