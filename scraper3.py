@@ -6,6 +6,98 @@ from bs4 import BeautifulSoup
 from stem import Signal
 from stem.control import Controller
 
+
+# ─────────────────────────────────────────────
+# SWEDEN FORCING HELPERS
+# ─────────────────────────────────────────────
+
+def build_sweden_url(url: str) -> str:
+    """Rewrite URL to always target Swedish/global store"""
+    # Normalize regional domains → www.aliexpress.com
+    url = re.sub(r'https?://[a-z]{2}\.aliexpress\.com', 'https://www.aliexpress.com', url)
+    url = re.sub(r'https?://www\.aliexpress\.us', 'https://www.aliexpress.com', url)
+
+    # Force gateway param
+    if 'gatewayAdapt=' in url:
+        url = re.sub(r'gatewayAdapt=[^&]+', 'gatewayAdapt=glo2swe', url)
+    else:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}gatewayAdapt=glo2swe"
+
+    return url
+
+
+def force_sweden_context(page, context):
+    """
+    Pre-set cookies and headers so AliExpress serves the Swedish/global
+    store regardless of the exit node's IP geolocation.
+    Must be called AFTER new_page() but BEFORE page.goto().
+    """
+    context.add_cookies([
+        {
+            "name": "aep_usuc_f",
+            "value": "site=swe&c_tp=SEK&region=SE&b_locale=en_US",
+            "domain": ".aliexpress.com",
+            "path": "/",
+        },
+        {
+            "name": "intl_locale",
+            "value": "en_US",
+            "domain": ".aliexpress.com",
+            "path": "/",
+        },
+        {
+            "name": "acs_usuc_f",
+            "value": "x_locale=en_US&site=swe",
+            "domain": ".aliexpress.com",
+            "path": "/",
+        },
+    ])
+
+    page.set_extra_http_headers({
+        "Accept-Language": "en-US,en;q=0.9,sv;q=0.8",
+    })
+    print("🇸🇪 Sweden context applied (cookies + headers)")
+
+
+def block_geo_redirects(page):
+    """
+    Intercept any AliExpress regional redirect (*.aliexpress.us,
+    de.aliexpress.com, nl.aliexpress.com, etc.) and rewrite it back
+    to www.aliexpress.com with gatewayAdapt=glo2swe before the
+    browser follows it.
+    """
+    regional_pattern = re.compile(
+        r'https?://(www\.aliexpress\.us|[a-z]{2}\.aliexpress\.com)/'
+    )
+
+    def handle_route(route, request):
+        url = request.url
+        if regional_pattern.match(url) and "/item/" in url:
+            fixed = re.sub(
+                r'https?://(www\.aliexpress\.us|[a-z]{2}\.aliexpress\.com)',
+                'https://www.aliexpress.com',
+                url,
+            )
+            fixed = re.sub(r'gatewayAdapt=[^&]+', 'gatewayAdapt=glo2swe', fixed)
+            if 'gatewayAdapt' not in fixed:
+                sep = "&" if "?" in fixed else "?"
+                fixed = f"{fixed}{sep}gatewayAdapt=glo2swe"
+            print(f"🔀 Geo-redirect intercepted → rewriting to global/SWE")
+            print(f"   FROM: {url[:80]}")
+            print(f"   TO  : {fixed[:80]}")
+            route.continue_(url=fixed)
+        else:
+            route.continue_()
+
+    page.route("**aliexpress**", handle_route)
+    print("🛡️  Geo-redirect interceptor active")
+
+
+# ─────────────────────────────────────────────
+# EXISTING HELPERS (unchanged logic, minor tweaks)
+# ─────────────────────────────────────────────
+
 def extract_compliance_info(page) -> dict:
     """
     Click the 'Product compliance information' h2 heading to open the modal,
@@ -16,7 +108,6 @@ def extract_compliance_info(page) -> dict:
     print("📋 Extracting compliance info...")
 
     try:
-        # Step 1: Find and click the compliance h2 heading
         heading_selector = "h2.title--title--O6xcB1q"
         heading = page.locator(heading_selector).filter(
             has_text="Product compliance information"
@@ -30,7 +121,6 @@ def extract_compliance_info(page) -> dict:
         heading.click()
         page.wait_for_timeout(2000)
 
-        # Step 2: Wait for modal body
         modal_selector = "div.comet-v2-modal-body"
         try:
             page.wait_for_selector(modal_selector, timeout=8000)
@@ -46,52 +136,40 @@ def extract_compliance_info(page) -> dict:
         raw_text = modal.inner_text().strip()
         print(f"   ✓ Modal text ({len(raw_text)} chars):\n      {raw_text[:300]}")
 
-        # Step 3: Parse sections from raw text
-        # Sections we look for as keys
         section_headers = [
             "Manufacturer information",
             "EU responsible person information",
             "Product identifier",
         ]
 
-        # Split text into labelled sections
-        # Strategy: walk line by line, detect section headers, collect their content
         lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
-
         current_section = None
         section_lines: dict[str, list[str]] = {}
 
         for line in lines:
-            # Check if this line is a section header
             matched_header = next(
                 (h for h in section_headers if line.lower().startswith(h.lower())),
-                None
+                None,
             )
             if matched_header:
                 current_section = matched_header
                 section_lines[current_section] = []
-                # If there's content on the same line after the header, keep it
                 remainder = line[len(matched_header):].strip().lstrip(":").strip()
                 if remainder:
                     section_lines[current_section].append(remainder)
             elif current_section:
                 section_lines[current_section].append(line)
 
-        # Step 4: Parse key:value pairs inside each section
         def parse_kv_block(lines_list: list[str]) -> dict:
-            """Parse lines like 'Name:Foo', 'Address:Bar', etc."""
             result = {}
             for l in lines_list:
                 if ":" in l:
-                    # Split only on first colon to handle addresses with colons
                     k, _, v = l.partition(":")
                     k = k.strip()
                     v = v.strip()
                     if k and v and len(k) < 60:
                         result[k] = v
                 else:
-                    # Plain text line with no colon — store as raw value
-                    # (e.g. product identifier is just a number string)
                     if l and not result.get("value"):
                         result["value"] = l
             return result
@@ -102,7 +180,6 @@ def extract_compliance_info(page) -> dict:
                 compliance[section] = parsed
                 print(f"   ✅ {section}: {parsed}")
 
-        # Step 5: Close modal so it doesn't interfere with later extraction
         close_selectors = [
             "button.comet-v2-modal-close",
             "[class*='modal-close']",
@@ -126,8 +203,8 @@ def extract_compliance_info(page) -> dict:
 
     return compliance
 
+
 def clean_text(text: str) -> str:
-    """Clean and normalize text"""
     if not text:
         return ""
     text = BeautifulSoup(text, "html.parser").get_text(" ")
@@ -135,13 +212,11 @@ def clean_text(text: str) -> str:
 
 
 def random_delay(min_seconds: float = 1, max_seconds: float = 3):
-    """Random delay to mimic human behavior"""
     delay = random.uniform(min_seconds, max_seconds)
     time.sleep(delay)
 
 
 def random_viewport():
-    """Return random viewport size"""
     viewports = [
         {'width': 1366, 'height': 768},
         {'width': 1920, 'height': 1080},
@@ -152,7 +227,6 @@ def random_viewport():
 
 
 def rotate_tor_circuit():
-    """Rotate Tor circuit to get new exit IP - wait longer for actual change"""
     try:
         with Controller.from_port(port=9051) as controller:
             controller.authenticate()
@@ -170,6 +244,10 @@ def rotate_tor_circuit():
 
 
 def is_captcha_page(page) -> bool:
+    """
+    Detect if page is a CAPTCHA/block page.
+    Fixed: no longer false-positives on reCAPTCHA v3 when a product title exists.
+    """
     page_url = page.url.lower()
     page_title = page.title().lower()
 
@@ -178,9 +256,14 @@ def is_captcha_page(page) -> bool:
         print("❌ CAPTCHA detected in URL")
         return True
 
-    # Only flag reCAPTCHA if it's an INTERACTIVE challenge (v2 checkbox/image)
-    # Invisible reCAPTCHA v3 also uses this iframe but width is typically 256px badge
-    # AliExpress product pages legitimately embed reCAPTCHA v3 for scoring
+    captcha_selectors = [
+        ".baxia-punish",
+        "#captcha-verify",
+        "[id*='captcha']",
+        "iframe[src*='geetest']",
+        "[class*='captcha']",
+    ]
+
     try:
         frames = page.locator("iframe[src*='recaptcha']")
         for i in range(frames.count()):
@@ -189,12 +272,20 @@ def is_captcha_page(page) -> bool:
                 continue
             box = frame.bounding_box()
             if box and box.get("width", 0) > 200:
-                # ADDITIONAL CHECK: is there also a product title?
-                # If product title exists, this is just background v3, not a block
-                title_elem = page.locator('[data-pl="product-title"], h1').first
-                if title_elem.count() > 0 and len(title_elem.inner_text().strip()) > 5:
-                    print(f"ℹ️ reCAPTCHA present but product title found — likely v3 scoring, continuing")
-                    return False
+                # ── FIX: check if a product title is also present ──
+                # If yes, this is reCAPTCHA v3 background scoring, not a block
+                try:
+                    title_elem = page.locator('[data-pl="product-title"], h1').first
+                    if title_elem.count() > 0:
+                        title_text = title_elem.inner_text(timeout=3000).strip()
+                        if len(title_text) > 5:
+                            print(
+                                f"ℹ️ reCAPTCHA iframe present (w={box['width']}px) "
+                                f"but product title found — likely v3 scoring, not a block"
+                            )
+                            return False
+                except Exception:
+                    pass
                 print(f"❌ Visible reCAPTCHA challenge (width={box['width']}px)")
                 return True
     except Exception:
@@ -209,19 +300,29 @@ def is_captcha_page(page) -> bool:
     return False
 
 
+def is_valid_product_page(page) -> bool:
+    """Returns True if we have actual product content loaded"""
+    try:
+        title_sel = '[data-pl="product-title"], h1[class*="title"]'
+        elem = page.locator(title_sel).first
+        if elem.count() > 0:
+            text = elem.inner_text(timeout=3000).strip()
+            if len(text) > 10:
+                return True
+    except Exception:
+        pass
+    return False
+
 
 def extract_store_info_universal(page) -> dict:
-    """Extract store info by hovering over the store element to trigger the popup."""
     store_info = {}
- 
     print("📦 Extracting store info...")
- 
+
     try:
-        # Step 1: Extract store name directly from known selector (always visible)
         print("   🔍 Step 1: Extracting store name...")
         store_name_selector = "span[class*='store-detail--storeName']"
         store_name_elem = page.locator(store_name_selector).first
- 
+
         if store_name_elem.count() > 0:
             store_name = store_name_elem.inner_text().strip()
             if store_name:
@@ -229,28 +330,25 @@ def extract_store_info_universal(page) -> dict:
                 print(f"   ✓ Store name: {store_name}")
         else:
             print("   ⚠️ Store name element not found")
- 
-        # Step 2: Hover over the store link to trigger the popup
+
         print("   🔍 Step 2: Hovering to reveal store detail popup...")
         store_link_selector = "div[class*='store-detail--storeNameWrap']"
         store_link_elem = page.locator(store_link_selector).first
- 
+
         if store_link_elem.count() > 0:
             store_link_elem.hover()
             page.wait_for_timeout(1500)
             print("   ✓ Hovered over store element")
         else:
             print("   ⚠️ Store link element not found, skipping hover")
- 
-        # Step 3: Extract all key-value rows from the popup (renders after hover)
+
         print("   🔍 Step 3: Extracting popup store details...")
- 
         row_selectors = [
             "div[class*='store-detail'] table tr",
             "div[class*='storeDetail'] table tr",
             "[class*='store-detail--detail'] tr",
         ]
- 
+
         for row_selector in row_selectors:
             rows = page.locator(row_selector).all()
             if rows:
@@ -268,8 +366,7 @@ def extract_store_info_universal(page) -> dict:
                         continue
                 if len(store_info) > 1:
                     break
- 
-        # Step 4: Fallback — read visible popup text and parse key: value lines
+
         if len(store_info) <= 1:
             print("   🔍 Step 4: Fallback — reading popup text directly...")
             popup_selectors = [
@@ -278,7 +375,7 @@ def extract_store_info_universal(page) -> dict:
                 "div[class*='storePopup']",
                 "div[class*='store-detail']:not(a)",
             ]
- 
+
             for popup_selector in popup_selectors:
                 popup = page.locator(popup_selector).first
                 if popup.count() > 0:
@@ -296,23 +393,21 @@ def extract_store_info_universal(page) -> dict:
                                     print(f"      {key}: {value}")
                     if len(store_info) > 1:
                         break
- 
+
         if not store_info:
             print("   ⚠️ Could not extract store information")
         else:
             print(f"   ✅ Store info extracted: {store_info}")
- 
+
     except Exception as e:
         print(f"⚠️ Store extraction error: {e}")
         import traceback
         traceback.print_exc()
- 
+
     return store_info
 
 
 def extract_title_universal(page) -> str:
-    """Extract title - try multiple selectors"""
-
     print("📌 Extracting title...")
 
     title_selectors = [
@@ -337,16 +432,12 @@ def extract_title_universal(page) -> str:
     print("⚠️ Could not extract title")
     return ""
 
+
 def extract_specifications(page) -> dict:
-    """
-    Extract product specifications from the #nav-specification section.
-    Clicks 'View more' first to expand the full list.
-    """
     specifications = {}
     print("📋 Extracting specifications...")
 
     try:
-        # ── Step 1: scroll section into view and wait for initial render ──
         spec_section = page.locator("#nav-specification")
         if spec_section.count() == 0:
             print("   ⚠️ #nav-specification not found")
@@ -355,8 +446,6 @@ def extract_specifications(page) -> dict:
         spec_section.scroll_into_view_if_needed()
         page.wait_for_timeout(2500)
 
-        # ── Step 2: click "View more" button if present ──
-        # Selector targets the button directly inside #nav-specification
         view_more_sel = "#nav-specification > button"
         try:
             view_more_btn = page.locator(view_more_sel).first
@@ -365,14 +454,13 @@ def extract_specifications(page) -> dict:
                 view_more_btn.scroll_into_view_if_needed()
                 page.wait_for_timeout(500)
                 view_more_btn.click(timeout=5000)
-                page.wait_for_timeout(2000)   # wait for hidden rows to render
+                page.wait_for_timeout(2000)
                 print("   ✓ 'View more' clicked — full spec list should be visible")
             else:
                 print("   ℹ️ No 'View more' button — spec list already fully expanded")
         except Exception as btn_err:
             print(f"   ⚠️ Could not click 'View more' (non-fatal): {btn_err}")
 
-        # ── Step 3: slow-scroll through the section to trigger lazy items ──
         try:
             box = spec_section.bounding_box()
             if box:
@@ -390,7 +478,6 @@ def extract_specifications(page) -> dict:
         except Exception as scroll_err:
             print(f"   ⚠️ Scroll-through error (non-fatal): {scroll_err}")
 
-        # ── Step 4: locate <li> rows ──
         li_selector = "#nav-specification ul li"
         spec_items = page.locator(li_selector).all()
 
@@ -400,7 +487,6 @@ def extract_specifications(page) -> dict:
 
         print(f"   ✓ Found {len(spec_items)} spec <li> rows")
 
-        # ── Step 5: extract key/value pairs — three-strategy fallback ──
         prop_sel  = "[class*='specification--prop']"
         title_sel = "[class*='specification--title'] span, [class*='specTitle'] span"
         desc_sel  = "[class*='specification--desc'] span, [class*='specValue'] span"
@@ -410,23 +496,18 @@ def extract_specifications(page) -> dict:
                 props = item.locator(prop_sel).all()
 
                 if props:
-                    # Strategy A – structured prop containers
                     for prop in props:
                         try:
                             t_el = prop.locator(title_sel).first
                             d_el = prop.locator(desc_sel).first
-
                             key = t_el.inner_text(timeout=3000).strip() if t_el.count() > 0 else ""
                             val = d_el.inner_text(timeout=3000).strip() if d_el.count() > 0 else ""
-
                             if key and val:
                                 specifications[key] = val
                                 print(f"      [A] {key}: {val}")
                         except Exception:
                             continue
-
                 else:
-                    # Strategy B – flat row: two sibling spans
                     spans = item.locator("span").all()
                     if len(spans) >= 2:
                         try:
@@ -439,7 +520,6 @@ def extract_specifications(page) -> dict:
                         except Exception:
                             pass
 
-                    # Strategy C – raw text split
                     try:
                         raw = item.inner_text(timeout=2000).strip()
                         lines = [l.strip() for l in raw.splitlines() if l.strip()]
@@ -469,29 +549,27 @@ def extract_specifications(page) -> dict:
 
     return specifications
 
+
+# ─────────────────────────────────────────────
+# MAIN EXTRACTION FUNCTION
+# ─────────────────────────────────────────────
+
 def extract_aliexpress_product(url: str) -> dict:
     """
-    Extract AliExpress product data with Tor routing and anti-detection.
+    Extract AliExpress product data with Tor routing, anti-detection,
+    and forced Sweden/global store (regardless of exit node IP).
     """
-    if "gatewayAdapt" in url:
-        # Replace whatever gateway is there with glo2swe
-        url = re.sub(r'gatewayAdapt=[^&]+', 'gatewayAdapt=glo2swe', url)
-    else:
-        # Append it
-        separator = "&" if "?" in url else "?"
-        url = f"{url}{separator}gatewayAdapt=glo2swe"
-
-  
-
+    # Always target Swedish/global store
+    url = build_sweden_url(url)
     print(f"\n🔍 Scraping: {url}")
 
     empty_result = {
-    "title": "",
-    "description_text": "",
-    "images": [],
-    "store_info": {},
-    "compliance_info": {},
-    "specifications": {},
+        "title": "",
+        "description_text": "",
+        "images": [],
+        "store_info": {},
+        "compliance_info": {},
+        "specifications": {},
     }
 
     max_retries = 3
@@ -517,41 +595,60 @@ def extract_aliexpress_product(url: str) -> dict:
                 ]
             )
 
-            page = browser.new_page(
+            # ── Create context with Stockholm identity ──
+            context = browser.new_context(
                 viewport=random_viewport(),
                 user_agent=random.choice([
                     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 ]),
-                timezone_id=random.choice([
-                    'America/New_York',
-                    'America/Chicago',
-                    'America/Denver',
-                    'America/Los_Angeles',
-                ])
+                timezone_id="Europe/Stockholm",
+                locale="en-US",
+                geolocation={"latitude": 59.3293, "longitude": 18.0686},  # Stockholm
+                permissions=["geolocation"],
             )
 
+            page = context.new_page()
+
+            # Anti-detection patches
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             page.add_init_script("Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]})")
+
+            # ── Apply Sweden fixes before navigation ──
+            block_geo_redirects(page)          # Fix 3: intercept regional redirects
+            force_sweden_context(page, context) # Fix 1: cookies + headers
 
             try:
                 # NAVIGATION
                 print("📡 Loading page...")
                 page.goto(url, timeout=120000, wait_until="domcontentloaded")
-                time.sleep(2)
+
+                # Wait for JS to settle before checking for blocks
+                page.wait_for_timeout(5000)
 
                 current_url = page.url
                 if current_url != url:
-                    print(f"⚠️ Redirected to: {current_url}")
+                    print(f"⚠️ Final URL: {current_url}")
 
-                if is_captcha_page(page):
-                    print("⚠️ CAPTCHA detected - rotating IP and retrying...")
+                # ── Wait for product title as a proxy for "real page loaded" ──
+                print("⏳ Waiting for product title to appear...")
+                try:
+                    page.wait_for_selector(
+                        '[data-pl="product-title"], h1',
+                        timeout=15000
+                    )
+                    print("✅ Product title found — real page loaded")
+                except Exception:
+                    print("⚠️ Product title not found within 15s")
+
+                # ── CAPTCHA check (with v3 false-positive fix) ──
+                if is_captcha_page(page) and not is_valid_product_page(page):
+                    print("⚠️ Blocked and no product content — rotating IP and retrying...")
                     browser.close()
                     continue
-
-                print("⏳ Waiting for page to render...")
-                time.sleep(8)
+                elif is_captcha_page(page):
+                    print("ℹ️ CAPTCHA present but product loaded — proceeding anyway")
 
                 print("⏳ Scrolling to load images...")
                 try:
@@ -563,8 +660,9 @@ def extract_aliexpress_product(url: str) -> dict:
                 except Exception as e:
                     print(f"⚠️ Scroll error: {e}")
 
-                if is_captcha_page(page):
-                    print("⚠️ CAPTCHA after scroll - rotating IP and retrying...")
+                # Second CAPTCHA check after scroll
+                if is_captcha_page(page) and not is_valid_product_page(page):
+                    print("⚠️ CAPTCHA after scroll — rotating IP and retrying...")
                     browser.close()
                     continue
 
@@ -573,10 +671,9 @@ def extract_aliexpress_product(url: str) -> dict:
 
                 # EXTRACT STORE INFO
                 store_info = extract_store_info_universal(page)
-                
+
                 # EXTRACT COMPLIANCE INFO
                 compliance_info = extract_compliance_info(page)
-                
 
                 # EXTRACT DESCRIPTION
                 print("📝 Loading description...")
@@ -584,7 +681,6 @@ def extract_aliexpress_product(url: str) -> dict:
                 description_images = []
 
                 try:
-                    # Click description tab
                     print("   Clicking Description tab...")
                     try:
                         page.keyboard.press("Escape")
@@ -608,7 +704,7 @@ def extract_aliexpress_product(url: str) -> dict:
                     except Exception as e:
                         print(f"   ⚠️ Description tab click error: {e}")
 
-                    # METHOD 0: Extract all <p> tags inside #product-description
+                    # Method 0: paragraph text
                     print("   🎯 Method 0: Extracting paragraph text...")
                     method0_text = ""
                     try:
@@ -630,7 +726,7 @@ def extract_aliexpress_product(url: str) -> dict:
                     except Exception as e:
                         print(f"   ⚠️ Method 0 failed: {e}")
 
-                    # METHOD 1: inner_text() on full container
+                    # Method 1: inner_text on full container
                     desc_container = page.locator('#product-description').first
 
                     if desc_container.count() > 0:
@@ -641,7 +737,6 @@ def extract_aliexpress_product(url: str) -> dict:
                         method1_text = re.sub(r'\s+', ' ', method1_text).strip()
                         print(f"   ✓ Method 1: {len(method1_text)} chars")
 
-                        # Retry once if too short
                         if len(method1_text) < 100:
                             print("   ⏳ Content short, waiting 5s and retrying...")
                             page.wait_for_timeout(5000)
@@ -649,13 +744,12 @@ def extract_aliexpress_product(url: str) -> dict:
                             method1_text = re.sub(r'\s+', ' ', method1_text).strip()
                             print(f"   ✓ Method 1 after retry: {len(method1_text)} chars")
 
-                        # CONCATENATE: Method 0 + Method 1
                         parts = [t for t in [method0_text, method1_text] if t]
                         description_text = ' '.join(parts)
                         description_text = re.sub(r'\s+', ' ', description_text).strip()
-                        print(f"   ✅ Combined (Method 0 + Method 1): {len(description_text)} chars")
+                        print(f"   ✅ Combined: {len(description_text)} chars")
 
-                        # IMAGE EXTRACTION: direct locator on container
+                        # Image extraction
                         print("   🖼️ Extracting images...")
                         all_imgs = desc_container.locator('img').all()
                         print(f"      Found {len(all_imgs)} <img> tags")
@@ -669,11 +763,11 @@ def extract_aliexpress_product(url: str) -> dict:
                                 if clean_src not in description_images:
                                     description_images.append(clean_src)
 
-                        # Quality filter + limit
                         description_images = [
                             img for img in description_images
                             if len(img) > 50 and not any(
-                                bad in img.lower() for bad in ['icon', 'logo', '20x20', '50x50', '100x100']
+                                bad in img.lower()
+                                for bad in ['icon', 'logo', '20x20', '50x50', '100x100']
                             )
                         ][:20]
                         print(f"   ✓ Images: {len(description_images)}")
@@ -687,28 +781,26 @@ def extract_aliexpress_product(url: str) -> dict:
                 except Exception as e:
                     print(f"⚠️ Description extraction error: {e}")
 
-                # SUCCESS
+                # EXTRACT SPECIFICATIONS
                 specifications = extract_specifications(page)
 
                 browser.close()
 
-                
                 result = {
                     "title":            title if isinstance(title, str) else "",
                     "description_text": description_text if isinstance(description_text, str) else "",
                     "images":           description_images if isinstance(description_images, list) else [],
                     "store_info":       store_info if isinstance(store_info, dict) else {},
-                    "compliance_info":  compliance_info if isinstance(compliance_info, dict) else {},  # ← add
+                    "compliance_info":  compliance_info if isinstance(compliance_info, dict) else {},
                     "specifications":   specifications if isinstance(specifications, dict) else {},
-
                 }
-                print(f"   compliance_info: {result['compliance_info']}")
 
                 print(f"\n🔍 DEBUG RETURN VALUES:")
                 print(f"   title: {len(result['title'])} chars")
                 print(f"   description_text: {len(result['description_text'])} chars")
                 print(f"   images: {len(result['images'])} images")
                 print(f"   store_info: {result['store_info']}")
+                print(f"   compliance_info: {result['compliance_info']}")
                 print(f"✅ Extraction successful on attempt {attempt + 1}\n")
                 return result
 
