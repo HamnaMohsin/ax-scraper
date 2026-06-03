@@ -132,11 +132,11 @@ def _launch_browser():
     Uses Camoufox if available, otherwise plain Playwright Chromium.
     """
     if USE_CAMOUFOX:
+        # Match scraper3.py exactly: new_page() directly, no new_context()
         cm      = Camoufox(headless=True, proxy=PROXY, geoip=True, humanize=True)
         browser = cm.__enter__()
-        ctx     = browser.new_context(locale="en-US")
-        ctx.add_cookies(COOKIES)
-        page    = ctx.new_page()
+        page    = browser.new_page()
+        page.context.add_cookies(COOKIES)
 
         def cleanup():
             try: cm.__exit__(None, None, None)
